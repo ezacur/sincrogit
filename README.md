@@ -1,0 +1,2 @@
+# sincrogit
+Git automatic sincronization
