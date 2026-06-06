@@ -1,0 +1,5 @@
+watchdog>=3.0
+PyYAML>=6.0
+pathspec>=0.10
+# GUI (tray icon + control panel). Only needed for `--tray`:
+PyQt5>=5.15

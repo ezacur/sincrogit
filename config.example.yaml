@@ -1,0 +1,41 @@
+# SincroGit — example configuration.
+# Copy this file to config.yaml and adjust the 'repos' list.
+
+defaults:
+  snapshot_interval_sec: 300      # how often the WIP (Work In Progress) is amended (5 min)
+  debounce_sec: 25                # wait after the last change before a snapshot
+  seal_interval_min: 120          # "real" commit + push every 2h (only automatic trigger)
+  pull_interval_min: 10           # fetch every 10 min; pull only if there's something new
+  max_file_bytes: 1048576         # 1 MB: only text below this size is versioned
+  push: true                      # push sealed commits to the remote
+  pull: true                      # periodic pull from the remote (WIP rebase)
+  git_timeout_sec: 60             # limit for network operations (fetch/push)
+  extra_excludes:                 # in addition to the text/size filter (.gitignore style)
+    - "**/node_modules/**"
+    - "**/.venv/**"
+    - "**/__pycache__/**"
+    - "**/dist/**"
+    - "**/build/**"
+
+# AI configuration for commit messages when sealing.
+ai:
+  mode: hybrid                    # hybrid | local | cloud | none
+  cloud_provider: gemini
+  cloud_model: gemini-2.5-flash-lite   # free Flash (2026). Alt: gemini-2.5-flash
+  cloud_send_content: false       # false => only names + --stat go to the cloud (privacy)
+  api_key_env: SINCROGIT_GEMINI_KEY  # env var holding the API key (never here)
+  ollama_url: http://localhost:11434
+  ollama_model: llama3.2          # local Ollama model (if installed)
+  timeout_sec: 30
+  max_diff_chars: 6000            # max amount of diff to send to the model
+
+log:
+  file: sincrogit.log
+  level: DEBUG                    # DEBUG | INFO | WARNING | ERROR
+
+repos:
+  - path: "C:/path/to/your/repo"
+    remote: origin
+    branch: main
+    # Optional per-repo overrides, e.g.:
+    # seal_interval_min: 60

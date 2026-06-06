@@ -1,0 +1,23 @@
+[project]
+name = "sincrogit"
+version = "0.1.0"
+description = "Automatic, instant synchronization with robust Git versioning"
+requires-python = ">=3.10"
+dependencies = [
+    "watchdog>=3.0",
+    "PyYAML>=6.0",
+    "pathspec>=0.10",
+]
+
+[project.optional-dependencies]
+gui = ["PyQt5>=5.15"]
+
+[project.scripts]
+sincrogit = "sincrogit.__main__:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["sincrogit", "sincrogit.gui"]

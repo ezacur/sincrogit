@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller build artifacts
+/build/
+/dist/
+/*.spec
+/app.ico
+
+# Local config / runtime data (do not version secrets or per-machine paths)
+/config.yaml
+/sincrogit.log
+/log.txt
+/events.jsonl
