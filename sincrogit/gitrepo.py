@@ -168,23 +168,42 @@ class GitRepo:
                 paths.append(path)
         return paths
 
-    def stage_changes(self, file_filter) -> bool:
+    def stage_changes(self, file_filter, on_drop=None) -> bool:
         """Run `git add` ONLY on files that pass the filter.
 
         Deletions of already-tracked files are always staged.
         Returns True if anything was staged.
+
+        `on_drop(relpath, reason)` is called for files that are ALREADY tracked
+        but the filter now rejects (e.g. a text file that grew past the size
+        limit) so the caller can warn the user. New untracked binaries/large
+        files and user-configured excludes are skipped silently (expected).
         """
         to_stage = []
+        dropped = []  # (rel, reason) for existing files the filter rejected
         for rel in self.changed_paths():
             full = os.path.join(self.path, rel)
             if os.path.exists(full):
-                if file_filter.accept(full, rel):
+                reason = file_filter.reason_to_skip(full, rel)
+                if reason is None:
                     to_stage.append(rel)
                 else:
-                    log.debug("filtered out (binary/large/excluded): %s", rel)
+                    log.debug("filtered out (%s): %s", reason, rel)
+                    dropped.append((rel, reason))
             else:
                 # The file is no longer on disk => deletion of something tracked.
                 to_stage.append(rel)
+
+        # Only warn about TRACKED files that stopped being snapshotted, and not
+        # for explicit excludes (those are intentional). The tracked check is one
+        # extra git call, made only when something was dropped (usually nothing).
+        if on_drop and dropped:
+            reportable = [(r, why) for r, why in dropped if why != "excluded"]
+            if reportable:
+                tracked = self.list_tracked([r for r, _ in reportable])
+                for rel, why in reportable:
+                    if rel in tracked:
+                        on_drop(rel, why)
 
         if not to_stage:
             return False
@@ -197,6 +216,18 @@ class GitRepo:
             stdin_data=data,
         )
         return True
+
+    def list_tracked(self, paths: list) -> set:
+        """Subset of `paths` that are already tracked (present in the index).
+
+        Used to tell apart "a tracked file dropped out of auto-snapshot" from "a
+        brand-new file we never versioned". `paths` is small here (only rejected
+        files), so passing them as arguments is fine.
+        """
+        if not paths:
+            return set()
+        res = self._run(["ls-files", "-z", "--", *paths], check=False)
+        return {p for p in res.stdout.split("\0") if p}
 
     def has_staged_changes(self) -> bool:
         # `diff --cached --quiet` => code 1 if something is staged, 0 otherwise.

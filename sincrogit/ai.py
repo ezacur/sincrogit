@@ -50,17 +50,47 @@ def generate_commit_message(ai_cfg, diff_stat: str, diff_text: str):
 # --------------------------------------------------------------------- prompt
 def _build_prompt(ai_cfg, diff_stat: str, diff_text: str, include_content: bool) -> str:
     lang = "Spanish" if ai_cfg.language == "es" else "English"
+
+    # A SincroGit seal is an AUTOMATIC snapshot of a whole work session, not a
+    # single hand-crafted change, so unrelated edits may be mixed together. We ask
+    # for a Conventional-Commits-style header but only allow a specific type
+    # (feat/fix/...) when the model can SEE the diff AND one kind of change clearly
+    # dominates; otherwise we use the honest neutral type 'auto' (the same one the
+    # deterministic fallback uses) instead of faking a 'feat:'. See §6 of DESIGN.md.
     body = (
         f"You are an assistant that writes concise git commit messages in {lang}.\n"
-        "Based on the following changes, reply ONLY with the commit message:\n"
-        "- First line: clear summary of max. 72 characters, no trailing period.\n"
-        "- Then, optionally, up to 5 '- ' bullets with the relevant details.\n"
-        "Do not add explanations, quotes or code blocks.\n\n"
-        "Change summary (git diff --stat):\n"
-        f"{diff_stat.strip() or '(no stat)'}\n"
+        "You are summarizing an AUTOMATIC SNAPSHOT of a whole work session "
+        "(unrelated edits may be mixed together), not a single change.\n"
+        "Reply with ONLY the commit message. Rules:\n"
+        "- First line: '<type>: <summary>', at most 72 characters, no trailing period.\n"
+        "- Write the summary in the imperative mood (e.g. 'add X', not 'added X').\n"
+        "- Keep <type> in English even if the summary is in another language.\n"
     )
+
     if include_content and diff_text.strip():
-        body += f"\nDiff:\n{diff_text.strip()}\n"
+        # The model sees the diff: it may classify, but only when one kind of
+        # change clearly dominates the window.
+        body += (
+            "- <type>: use 'feat', 'fix', 'docs' or 'refactor' ONLY IF a single "
+            "kind of change clearly dominates; if the changes are mixed, use 'auto'.\n"
+            "- Optionally add up to 5 '- ' bullets with the most relevant details.\n"
+            "Do not add explanations, quotes or code blocks.\n\n"
+            "Change summary (git diff --stat):\n"
+            f"{diff_stat.strip() or '(no stat)'}\n"
+            f"\nDiff:\n{diff_text.strip()}\n"
+        )
+    else:
+        # Privacy mode: only --stat + file names are available, so classifying
+        # would be guessing. Always use the neutral 'auto' type.
+        body += (
+            "- <type>: ALWAYS use 'auto' (you cannot see the code, so do not guess "
+            "'feat' or 'fix').\n"
+            "- Optionally add up to 5 '- ' bullets naming the most relevant files.\n"
+            "Do not add explanations, quotes or code blocks.\n\n"
+            "Change summary (git diff --stat):\n"
+            f"{diff_stat.strip() or '(no stat)'}\n"
+        )
+
     return body
 
 

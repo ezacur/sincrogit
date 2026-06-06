@@ -38,19 +38,30 @@ class FileFilter:
                 )
 
     def accept(self, abspath: str, relpath: str) -> bool:
+        return self.reason_to_skip(abspath, relpath) is None
+
+    def reason_to_skip(self, abspath: str, relpath: str) -> str | None:
+        """Why this file is NOT auto-versioned, or None if it is accepted.
+
+        Returns a short human-readable reason ("excluded" / "too large (...)" /
+        "binary" / "unreadable") so callers can surface why a tracked file stopped
+        being snapshotted. `accept()` is just `reason_to_skip(...) is None`.
+        """
         rel = relpath.replace(os.sep, "/")
 
         if self._spec is not None and self._spec.match_file(rel):
-            return False
+            return "excluded"
 
         try:
             size = os.path.getsize(abspath)
         except OSError:
-            return False
+            return "unreadable"
         if size > self.max_bytes:
-            return False
+            return f"too large ({size} > {self.max_bytes} bytes)"
 
-        return self._is_text(abspath)
+        if not self._is_text(abspath):
+            return "binary"
+        return None
 
     @staticmethod
     def _is_text(abspath: str) -> bool:

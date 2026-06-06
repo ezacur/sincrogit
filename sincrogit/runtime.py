@@ -15,7 +15,12 @@ import sys
 APP_NAME = "SincroGit"
 CONFIG_NAME = "sincrogit.config.yaml"
 _LOCK_HOST = "127.0.0.1"
-_LOCK_PORT = 49677  # uncommon high port used as the single-instance lock
+_LOCK_PORT = 49677  # high port used as the single-instance lock + activation channel
+# Tiny handshake so we can tell a real SincroGit from an unrelated app that
+# happens to hold the port (it sits in Windows' ephemeral range, so a transient
+# squatter is possible). Only a peer that replies with the ACK counts as "us".
+_HANDSHAKE_REQ = b"SINCROGIT:show"
+_HANDSHAKE_ACK = b"SINCROGIT:ok"
 
 # Template written on first run when no config is found anywhere.
 # 'repos' starts empty: add them from the GUI (Status -> Add repo...).
@@ -126,13 +131,42 @@ def acquire_single_instance(port: int = _LOCK_PORT):
 
 
 def signal_existing_instance(port: int = _LOCK_PORT) -> bool:
-    """Ask the already-running instance to show its control panel."""
+    """Ask whoever holds the lock port to show SincroGit's panel.
+
+    Returns True ONLY if a real SincroGit answered our handshake. If the port is
+    held by an unrelated application (no valid reply), returns False so the caller
+    can start normally instead of silently refusing to run.
+    """
     try:
         with socket.create_connection((_LOCK_HOST, port), timeout=2) as c:
-            c.sendall(b"show")
-        return True
+            c.sendall(_HANDSHAKE_REQ)
+            c.settimeout(3)  # give the peer time to answer once its listener is up
+            reply = c.recv(64)
+        return reply.startswith(_HANDSHAKE_ACK)
     except OSError:
         return False
+
+
+def serve_activation(conn) -> bool:
+    """Handle one inbound connection on the lock socket (server side).
+
+    Returns True if it was a valid SincroGit activation request (the caller should
+    then show the panel); False for anything else that hit the port. Always closes
+    the connection.
+    """
+    try:
+        data = conn.recv(64)
+        if data.startswith(_HANDSHAKE_REQ):
+            conn.sendall(_HANDSHAKE_ACK)
+            return True
+        return False
+    except OSError:
+        return False
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
 
 
 # ----------------------------------------------------------------- console (CLI)

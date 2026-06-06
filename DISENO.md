@@ -26,11 +26,11 @@ El truco para conciliar *"snapshot casi instantáneo"* con *"no quiero miles de 
 
 | Nivel | Qué es | Frecuencia | Visible en historial |
 |-------|--------|-----------|----------------------|
-| **WIP (snapshot)** | Un **único** commit en la punta (`HEAD`) que se **amend**ea con el estado actual | Cada ~1 min (con debounce) | No (es transitorio, se sella o se reescribe) |
+| **WIP (snapshot)** | Un **único** commit en la punta (`HEAD`) que se **amend**ea con el estado actual | Cada ~5 min (con debounce) | No (es transitorio, se sella o se reescribe) |
 | **Sellado (historia)** | El WIP se "congela" con un mensaje IA descriptivo y se crea un WIP nuevo encima | Cada ~2 h (o por inactividad / apagado) | Sí (commit permanente) |
 
 ```
-... ── sellado_N ── WIP        ← HEAD (se amendea cada minuto)
+... ── sellado_N ── WIP        ← HEAD (se amendea cada ~5 min)
                      │
        cada 2h ──────┘ se sella (reword con mensaje IA) y nace un WIP nuevo encima
 
@@ -39,11 +39,11 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 
 **Por qué funciona:**
 
-- El estado actual queda guardado en disco cada minuto → **recuperación ante corte de luz** (al reiniciar, `HEAD` = último snapshot).
+- El estado actual queda guardado en disco cada ~5 min → **recuperación ante corte de luz** (al reiniciar, `HEAD` = último snapshot).
 - Como se hace `amend`, no se acumulan cientos de commits: solo **~12 commits/día** (uno cada 2 h).
 - El historial "limpio" (sellados) es lo único que viaja al remoto → **pull siempre limpio, sin force-push** (ver §4).
 
-> **Red de seguridad fina:** cada `amend` deja el snapshot anterior como commit *unreachable* en el **reflog** (≈30 días por defecto). Es decir, aunque el historial visible solo tenga 1 commit por ventana, internamente puedes recuperar estados intermedios con `git reflog`. *(Opcional, ver §12: una rama `autosnap` con commits reales cada minuto si quieres historial intra-ventana navegable.)*
+> **Red de seguridad fina:** cada `amend` deja el snapshot anterior como commit *unreachable* en el **reflog** (≈30 días por defecto). Es decir, aunque el historial visible solo tenga 1 commit por ventana, internamente puedes recuperar estados intermedios con `git reflog`. *(Opcional, ver §12: una rama `autosnap` con commits reales cada ~5 min si quieres historial intra-ventana navegable.)*
 
 ---
 
@@ -57,9 +57,9 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 3. Asegurar que existe un WIP en la punta (si no, crear uno vacío).
 4. Arrancar el watcher.
 
-### 3.2 Ciclo de snapshot (cada minuto, con debounce)
+### 3.2 Ciclo de snapshot (cada ~5 min, con debounce)
 - El **watcher** (eventos del sistema de ficheros) marca el repo como *dirty* y reinicia un debounce (p. ej. 20-30 s sin cambios).
-- Cuando el debounce se asienta **y** ha pasado ≥1 min desde el último snapshot:
+- Cuando el debounce se asienta **y** ha pasado ≥5 min desde el último snapshot:
   1. Calcular ficheros candidatos y aplicar el **filtro** (§5).
   2. `git add <solo los candidatos>`.
   3. Si hay algo staged: `git commit --amend --no-edit` (mensaje WIP estático tipo `WIP: autosnapshot`).
@@ -191,7 +191,7 @@ defaults:
 ai:
   mode: hybrid                   # hybrid | local | cloud | none
   cloud_provider: gemini         # elegido: Gemini
-  cloud_model: gemini-1.5-flash  # rápido y dentro del free tier
+  cloud_model: gemini-2.5-flash-lite  # rápido y dentro del free tier
   cloud_send_content: false      # false => solo --stat + nombres (privacidad)
   # api_key vía variable de entorno SINCROGIT_GEMINI_KEY, NO en el fichero
 
@@ -232,7 +232,7 @@ repos:
 
 | Escenario | Qué pasa | Cómo recupero |
 |-----------|----------|---------------|
-| **Corte de luz / crash de SO** | El último snapshot (≤1 min) está commiteado en `HEAD` (WIP) | Al reiniciar, el trabajo está ahí. `git reflog` para estados intermedios de la ventana. |
+| **Corte de luz / crash de SO** | El último snapshot (≤5 min) está commiteado en `HEAD` (WIP) | Al reiniciar, el trabajo está ahí. `git reflog` para estados intermedios de la ventana. |
 | **"Quiero la versión de ayer"** | Está en los commits sellados | `git checkout`/`git restore` desde el sellado correspondiente. |
 | **Borré algo hace 20 min (dentro de la ventana)** | Snapshot anterior quedó *unreachable* en reflog | `git reflog` + `git checkout`. *(Más cómodo con la rama `autosnap` opcional, §12.)* |
 | **Fallo total de disco** | Lo sellado+pusheado está en el remoto | `git clone` en máquina nueva. Pérdida máx ≈ lo no sellado (hasta 2 h; menos si lancé `sincrogit sync`). |
@@ -294,7 +294,7 @@ repos:
 - ✅ **Intervalos: snapshot cada 5 min, sellado cada 2 h.**
 - ✅ Push **solo de sellados** (WIP local; pull siempre limpio; sin force-push).
 - ✅ IA **híbrida** (Ollama local → nube fallback; opción de enviar solo stats).
-- ✅ **Proveedor de nube: Gemini** (`gemini-1.5-flash`), API key en variable de entorno.
+- ✅ **Proveedor de nube: Gemini** (`gemini-2.5-flash-lite`), API key en variable de entorno.
 - ✅ Filtro: **solo texto < 1 MB**; binarios/grandes a mano.
 - ✅ **Python**; git vía subprocess; `watchdog`.
 - ✅ Background: **Tarea programada al iniciar sesión** con `pythonw.exe`.

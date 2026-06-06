@@ -34,9 +34,19 @@ def _run_tray(explicit_config) -> int:
     """Launch the GUI/daemon as a single instance."""
     lock = acquire_single_instance()
     if lock is None:
-        signal_existing_instance()  # ask the running instance to show its panel
-        print("SincroGit is already running.", file=sys.stderr)
-        return 0
+        # The lock port is taken. Confirm it's really another SincroGit (via the
+        # handshake) before bowing out: the port is in Windows' ephemeral range,
+        # so an unrelated app could be squatting on it — in that case we start
+        # anyway (without single-instance protection) rather than refuse to run.
+        if signal_existing_instance():
+            print("SincroGit is already running.", file=sys.stderr)
+            return 0
+        print(
+            "Lock port held by another app; starting without single-instance "
+            "protection.",
+            file=sys.stderr,
+        )
+        # lock stays None -> the activation listener simply won't run.
     cfg_path, created = ensure_config(explicit_config)
     try:
         from .gui.app import main as tray_main

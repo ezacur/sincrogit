@@ -26,11 +26,11 @@ The trick to reconcile *"almost instant snapshot"* with *"I don't want thousands
 
 | Tier | What it is | Frequency | Visible in history |
 |------|-----------|-----------|--------------------|
-| **WIP (snapshot)** | A **single** commit at the tip (`HEAD`) that is **amend**ed with the current state | Every ~1 min (with debounce) | No (it's transient, it gets sealed or rewritten) |
+| **WIP (snapshot)** | A **single** commit at the tip (`HEAD`) that is **amend**ed with the current state | Every ~5 min (with debounce) | No (it's transient, it gets sealed or rewritten) |
 | **Sealed (history)** | The WIP is "frozen" with a descriptive AI message and a new WIP is created on top | Every ~2 h (or on idle / shutdown) | Yes (permanent commit) |
 
 ```
-... ── sealed_N ── WIP        ← HEAD (amended every minute)
+... ── sealed_N ── WIP        ← HEAD (amended every ~5 min)
                     │
        every 2h ────┘ it gets sealed (reword with AI message) and a new WIP is born on top
 
@@ -39,11 +39,11 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
 
 **Why it works:**
 
-- The current state is saved to disk every minute → **recovery on a power cut** (on reboot, `HEAD` = last snapshot).
+- The current state is saved to disk every ~5 min → **recovery on a power cut** (on reboot, `HEAD` = last snapshot).
 - Because we `amend`, hundreds of commits don't pile up: only **~12 commits/day** (one every 2 h).
 - The "clean" history (sealed) is the only thing that travels to the remote → **pull always clean, no force-push** (see §4).
 
-> **Fine-grained safety net:** each `amend` leaves the previous snapshot as an *unreachable* commit in the **reflog** (≈30 days by default). That is, even though the visible history only has 1 commit per window, internally you can recover intermediate states with `git reflog`. *(Optional, see §12: an `autosnap` branch with real commits every minute if you want browsable intra-window history.)*
+> **Fine-grained safety net:** each `amend` leaves the previous snapshot as an *unreachable* commit in the **reflog** (≈30 days by default). That is, even though the visible history only has 1 commit per window, internally you can recover intermediate states with `git reflog`. *(Optional, see §12: an `autosnap` branch with real commits every ~5 min if you want browsable intra-window history.)*
 
 ---
 
@@ -57,9 +57,9 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
 3. Ensure a WIP exists at the tip (if not, create an empty one).
 4. Start the watcher.
 
-### 3.2 Snapshot cycle (every minute, with debounce)
+### 3.2 Snapshot cycle (every ~5 min, with debounce)
 - The **watcher** (filesystem events) marks the repo as *dirty* and resets a debounce (e.g. 20-30 s without changes).
-- When the debounce settles **and** ≥1 min has passed since the last snapshot:
+- When the debounce settles **and** ≥5 min has passed since the last snapshot:
   1. Compute candidate files and apply the **filter** (§5).
   2. `git add <only the candidates>`.
   3. If something is staged: `git commit --amend --no-edit` (static WIP message like `WIP: autosnapshot`).
@@ -235,7 +235,7 @@ repos:
 
 | Scenario | What happens | How I recover |
 |----------|--------------|---------------|
-| **Power cut / OS crash** | The last snapshot (≤1 min) is committed in `HEAD` (WIP) | On reboot, the work is there. `git reflog` for intermediate states of the window. |
+| **Power cut / OS crash** | The last snapshot (≤5 min) is committed in `HEAD` (WIP) | On reboot, the work is there. `git reflog` for intermediate states of the window. |
 | **"I want yesterday's version"** | It's in the sealed commits | `git checkout`/`git restore` from the matching sealed commit. |
 | **I deleted something 20 min ago (within the window)** | The previous snapshot became *unreachable* in the reflog | `git reflog` + `git checkout`. *(More convenient with the optional `autosnap` branch, §12.)* |
 | **Total disk failure** | What's sealed+pushed is on the remote | `git clone` on a new machine. Max loss ≈ whatever is unsealed (up to 2 h; less if I ran `sincrogit sync`). |

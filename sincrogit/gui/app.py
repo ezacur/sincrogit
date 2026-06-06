@@ -7,7 +7,7 @@ Threading architecture:
     and (b) emits a Qt signal -> the GUI updates on its thread, without blocking.
 
 Manual actions (Sync/Seal now) run on a separate thread so as not to freeze the
-interface; the engine serializes them with its _oplock.
+interface; the engine serializes them per repo with each repo's op_lock.
 """
 
 import os
@@ -22,6 +22,7 @@ from ..config import append_repo, load_config
 from ..engine import Engine
 from ..events import EventLog
 from ..log import setup_logging
+from ..runtime import serve_activation
 from . import icon as iconmod
 from .control_panel import ControlPanel
 
@@ -81,12 +82,10 @@ class TrayApp:
                     conn, _ = self._lock_socket.accept()
                 except OSError:
                     break  # socket closed on quit
-                try:
-                    conn.recv(16)
-                    conn.close()
-                except OSError:
-                    pass
-                self.bridge.activate.emit()
+                # Only react to a valid SincroGit handshake (serve_activation
+                # answers the ACK); ignore anything else that hit the port.
+                if serve_activation(conn):
+                    self.bridge.activate.emit()
 
         threading.Thread(target=loop, name="sincrogit-activation", daemon=True).start()
 
@@ -214,11 +213,6 @@ class TrayApp:
             self.resume_all()
         else:
             self.pause_all()
-
-    def resume_repo(self, name) -> bool:
-        ok = self.engine.resume_repo(name)
-        self._refresh_tray()
-        return ok
 
     def _run_async(self, fn, label):
         """Runs a network action on a thread so as not to freeze the GUI."""
