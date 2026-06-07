@@ -251,6 +251,15 @@ class TrayApp:
     def seal_repo_now(self, name):
         self._run_async(lambda: self.engine.seal_repo_now(name), f"seal:{name}")
 
+    def propose_seal_message(self, name):
+        """(ok, title, body, files_text) — proposed manual-commit message. May be
+        slow (AI); callers run it off the GUI thread."""
+        return self.engine.propose_seal_message(name)
+
+    def smart_commit(self, name, message):
+        """Manual commit: seal the current WIP with the developer's own message."""
+        return self.engine.seal_repo_now(name, message=message)
+
     def pull_repo_now(self, name):
         self._run_async(lambda: self.engine.pull_repo_now(name), f"pull:{name}")
 

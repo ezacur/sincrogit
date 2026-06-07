@@ -135,17 +135,23 @@ Since sealing every 6 h would leave up to 6 h of work off the remote, **autosnap
 
 ## 6. AI commit messages (hybrid mode)
 
-They are generated **only when sealing** (~12 times/day at most → fits comfortably in any free tier or locally).
+They are generated when sealing (automatic) and on a **manual commit** (Smart Commit).
 
 **Hybrid strategy (chosen):**
 1. If **Ollama** is available locally → use it (free, no quota, **the code doesn't leave the machine**).
-2. Otherwise → fall back to a **cloud** provider (Gemini / Groq) with an API key.
+2. Otherwise → fall back to a **cloud** provider (Gemini) with an API key.
 3. **Privacy mode:** option to send to the cloud **only `git diff --stat` + file names** (not the content), so as not to expose sensitive code.
 4. **Fallback always available:** if the AI fails (no network, no quota, timeout) → automatic deterministic message, e.g.:
-   `auto: 4 modified, 1 new, 1 deleted (src/foo.py, ...)`.
+   `sincro: 4 file(s) (1 modified, 1 new, 1 deleted)`.
    **The commit/seal is never blocked because of the AI.**
 
-**Model input:** `git diff sealed_N..WIP --stat` + a summarized/truncated diff (token limit) → prompt asking for a concise *conventional commits*-style message on a single line + optional body.
+**Two prefix conventions (key to tell machine from human apart):**
+- **Automatic seal → `sincro:`** (a time-bucket; we don't pretend to classify it as `feat`/`fix`). The prefix marks it as a machine commit.
+- **Manual commit (Smart Commit) → Conventional Commits** (`feat:`/`fix:`/`docs:`/`refactor:`/…). The user triggers it from the GUI, the AI **proposes** an editable message, and on confirm the current WIP is sealed with it and the **6 h seal timer is reset**.
+
+**Model input:**
+- *Automatic seal:* `git diff sealed_N..WIP --stat` + truncated diff → a concise `sincro:` message.
+- *Manual commit:* diff **since the last manual commit** (skipping the `sincro:` seals) up to the WIP → the AI summarizes the whole unit of work. The commit only contains the WIP delta, so the body honestly notes it's a **cumulative summary** (some of the code is in earlier `sincro:` seals).
 
 ---
 
@@ -328,6 +334,7 @@ repos:
 - ✅ **Intervals: snapshot every 5 min, seal every 6 h, autosnap every 30 min.**
 - ✅ Push **only of sealed commits** (WIP local; pull always clean; no force-push).
 - ✅ **Hybrid** AI (Ollama local → cloud fallback; option to send only stats).
+- ✅ **Prefixes:** automatic seal `sincro:`; **manual commit (Smart Commit)** with an AI-proposed Conventional Commits message (cumulative summary since the last manual commit) + timer reset.
 - ✅ **Cloud provider: Gemini** (`gemini-2.5-flash-lite`), API key in an environment variable.
 - ✅ Filter: **text < 1 MB only**; binaries/large files by hand.
 - ✅ **Python**; git via subprocess; `watchdog`; **PyQt5** for the tray UI.

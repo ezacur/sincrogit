@@ -23,8 +23,14 @@ ante fallo de disco) y "sella" commits con historial limpio cada 6 horas.
 **Fase 2 (IA + sincronización remota):**
 
 - ✅ **Mensajes con IA** al sellar, modo híbrido: Ollama (local) → Gemini (nube) →
-  fallback determinista. Estilo *Conventional Commits* pero con un tipo honesto (`auto`)
-  para ventanas mixtas. Nunca bloquea el commit si la IA falla.
+  fallback determinista. Nunca bloquea el commit si la IA falla. Los sellados
+  automáticos llevan el prefijo **`sincro:`** para distinguir los commits de la máquina
+  de los tuyos.
+- ✅ **"Smart Commit" manual**: commitea tu trabajo actual ahora con un mensaje
+  **Conventional Commits propuesto por IA** (`feat:`/`fix:`/…) que puedes editar. La
+  propuesta resume todo lo hecho desde tu **último commit manual** (saltando los sellados
+  `sincro:`) y reinicia el temporizador de 6 h. Desde el panel (botón **"Commit…"** por
+  repo).
 - ✅ Privacidad: a la nube solo se manda el contenido si `cloud_send_content: true`.
 - ✅ **Push** de los commits sellados (nunca el WIP) tras sellar + reintento en cada sync.
 - ✅ **Pull periódico** (cada 10 min): `fetch` + rebase del WIP solo si el remoto adelanta.

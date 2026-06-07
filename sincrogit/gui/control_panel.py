@@ -38,6 +38,7 @@ from .. import __version__
 from ..events import ACTIONS
 from .add_repo_dialog import AddRepoDialog
 from .history_dialog import HistoryDialog
+from .smart_commit_dialog import SmartCommitDialog
 
 _LEVEL_COLOR = {
     "WARNING": QColor("#8a6d00"),
@@ -170,11 +171,14 @@ class ControlPanel(QMainWindow):
             h.setSpacing(4)
             b_pause = QPushButton("Pause")
             b_pause.clicked.connect(lambda _, n=name: self._toggle_repo_pause(n))
+            b_commit = QPushButton("Commit…")
+            b_commit.setToolTip("Manual commit now with an AI-proposed Conventional Commits message")
+            b_commit.clicked.connect(lambda _, n=name: self._open_smart_commit(n))
             b_seal = QPushButton("Seal+Push")
             b_seal.clicked.connect(lambda _, n=name: self.c.seal_repo_now(n))
             b_pull = QPushButton("Fetch+Pull")
             b_pull.clicked.connect(lambda _, n=name: self.c.pull_repo_now(n))
-            for b in (b_pause, b_seal, b_pull):
+            for b in (b_pause, b_commit, b_seal, b_pull):
                 b.setFixedHeight(24)
                 h.addWidget(b)
             self.tbl_repos.setCellWidget(i, 5, cell)
@@ -225,6 +229,11 @@ class ControlPanel(QMainWindow):
 
     def _open_add_repo(self):
         dlg = AddRepoDialog(self.c, parent=self)
+        if dlg.exec_():
+            self.refresh_status()
+
+    def _open_smart_commit(self, name):
+        dlg = SmartCommitDialog(self.c, name, parent=self)
         if dlg.exec_():
             self.refresh_status()
 

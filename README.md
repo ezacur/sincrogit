@@ -23,7 +23,12 @@ disk-failure recovery) and "seals" commits with a clean history every 6 hours.
 **Phase 2 (AI + remote sync):**
 
 - ✅ **AI commit messages** when sealing, hybrid mode: Ollama (local) → Gemini (cloud) →
-  deterministic fallback. Never blocks the commit if the AI fails.
+  deterministic fallback. Never blocks the commit if the AI fails. Automatic seals are
+  prefixed **`sincro:`** so machine commits are easy to tell apart from yours.
+- ✅ **Manual "Smart Commit"**: commit your current work now with an **AI-proposed
+  Conventional Commits** message (`feat:`/`fix:`/…) that you can edit. The proposal
+  summarizes everything since your **last manual commit** (skipping the `sincro:` seals);
+  it resets the 6 h seal timer. From the control panel (per-repo **"Commit…"**).
 - ✅ Privacy: content is only sent to the cloud if `cloud_send_content: true`.
 - ✅ **Push** of sealed commits (never the WIP) after sealing + retry on every sync.
 - ✅ **Periodic pull** (every 10 min): `fetch` + rebase of the WIP only if the remote is ahead.

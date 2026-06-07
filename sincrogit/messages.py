@@ -16,8 +16,13 @@ _STATUS_LABEL = {
 _STATUS_ORDER = ["A", "M", "D", "R", "C", "T"]
 
 
-def build_fallback_message(name_status: list) -> tuple:
-    """Return (title, body) from [(status, path), ...]."""
+def build_fallback_message(name_status: list, prefix: str = "sincro") -> tuple:
+    """Return (title, body) from [(status, path), ...].
+
+    `prefix` is the commit-type prefix: 'sincro' for automatic seals (so machine
+    commits are easy to tell apart from human ones), or e.g. 'chore' for the
+    fallback of a manual commit (which must NOT look like a machine commit).
+    """
     counts = {}
     for status, _ in name_status:
         counts[status] = counts.get(status, 0) + 1
@@ -34,7 +39,7 @@ def build_fallback_message(name_status: list) -> tuple:
             parts.append(f"{n} {_STATUS_LABEL.get(s, s)}")
 
     summary = ", ".join(parts) if parts else "no changes"
-    title = f"auto: {total} file(s) ({summary})"
+    title = f"{prefix}: {total} file(s) ({summary})"
 
     sample = name_status[:10]
     body_lines = [f"{status}  {path}" for status, path in sample]

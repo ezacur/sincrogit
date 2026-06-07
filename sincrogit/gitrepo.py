@@ -324,9 +324,31 @@ class GitRepo:
         except GitError:
             pass  # maintenance must never take down the cycle
 
+    def last_manual_sha(self) -> str | None:
+        """SHA of the most recent commit made by a HUMAN — i.e. not a WIP and not
+        an automatic seal (prefix 'sincro:' or the legacy 'auto:'). Used to scope a
+        manual commit's AI message to "everything since my last manual commit".
+        Returns None if there's only machine commits / WIPs so far.
+        """
+        res = self._run(
+            ["log", "--first-parent", "--format=%H%x09%s", "-n", "200"], check=False
+        )
+        for line in res.stdout.splitlines():
+            sha, subj, _ = self._split3(line)
+            if not sha:
+                continue
+            if subj.startswith(self.WIP_MESSAGE):
+                continue
+            if subj.startswith("sincro:") or subj.startswith("auto:"):
+                continue
+            return sha
+        return None
+
     # ------------------------------------------------------------- diffs (AI)
-    def diff_stat_for_seal(self, max_chars: int = 4000) -> str:
-        if self.head_has_parent():
+    def diff_stat_for_seal(self, max_chars: int = 4000, base: str | None = None) -> str:
+        if base:
+            out = self._run(["diff", "--stat", base, "HEAD"]).stdout
+        elif self.head_has_parent():
             out = self._run(["diff", "--stat", "HEAD~1", "HEAD"]).stdout
         else:
             out = self._run(["show", "--stat", "--format=", "HEAD"]).stdout
@@ -334,8 +356,10 @@ class GitRepo:
             out = out[:max_chars] + "\n... [stat truncated]"
         return out
 
-    def diff_text_for_seal(self, max_chars: int) -> str:
-        if self.head_has_parent():
+    def diff_text_for_seal(self, max_chars: int, base: str | None = None) -> str:
+        if base:
+            out = self._run(["diff", base, "HEAD"]).stdout
+        elif self.head_has_parent():
             out = self._run(["diff", "HEAD~1", "HEAD"]).stdout
         else:
             out = self._run(["show", "--format=", "HEAD"]).stdout

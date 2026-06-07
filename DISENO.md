@@ -133,17 +133,23 @@ Como sellar cada 6 h dejaría hasta 6 h de trabajo fuera del remoto, **autosnap*
 
 ## 6. Mensajes de commit con IA (modo híbrido)
 
-Se generan **solo al sellar** (~12 veces/día como mucho → entra de sobra en cualquier free tier o en local).
+Se generan al sellar (automático) y al hacer un **commit manual** (Smart Commit).
 
 **Estrategia híbrida (elegida):**
 1. Si **Ollama** está disponible localmente → usarlo (gratis, sin cuota, **el código no sale de la máquina**).
-2. Si no → caer a un proveedor de **nube** (Gemini / Groq) con API key.
+2. Si no → caer a un proveedor de **nube** (Gemini) con API key.
 3. **Modo privacidad:** opción para enviar a la nube **solo `git diff --stat` + nombres de fichero** (no el contenido), para no exponer código sensible.
 4. **Fallback siempre disponible:** si la IA falla (sin red, sin cuota, timeout) → mensaje automático determinista, p. ej.:
-   `auto: 4 modificados, 1 nuevo, 1 borrado (src/foo.py, ...)`.
+   `sincro: 4 file(s) (1 modified, 1 new, 1 deleted)`.
    **El commit/sellado nunca se bloquea por culpa de la IA.**
 
-**Entrada al modelo:** `git diff sellado_N..WIP --stat` + un diff resumido/troncado (límite de tokens) → prompt pidiendo un mensaje de commit conciso estilo *conventional commits* en una línea + cuerpo opcional.
+**Dos convenciones de prefijo (clave para distinguir máquina vs humano):**
+- **Sellado automático → `sincro:`** (un *time-bucket*; no se finge clasificarlo como `feat`/`fix`). El prefijo marca el commit como "de la máquina".
+- **Commit manual (Smart Commit) → Conventional Commits** (`feat:`/`fix:`/`docs:`/`refactor:`/…). El usuario lo dispara desde la GUI, la IA **propone** el mensaje (editable) y al confirmar se sella el WIP actual con él y se **reinicia el temporizador de 6 h**.
+
+**Entrada al modelo:**
+- *Sellado automático:* `git diff sellado_N..WIP --stat` + diff troncado → mensaje `sincro:` conciso.
+- *Commit manual:* diff **desde el último commit manual** (saltando los `sincro:`) hasta el WIP → la IA resume la *unidad de trabajo* completa. El commit solo contiene el delta del WIP, así que el cuerpo anota honestamente que es un **resumen acumulado** (parte del código está en sellados `sincro:` previos).
 
 ---
 
@@ -306,6 +312,7 @@ repos:
 - ✅ **Intervalos: snapshot cada 5 min, sellado cada 6 h, autosnap cada 30 min.**
 - ✅ Push **solo de sellados** (WIP local; pull siempre limpio; sin force-push).
 - ✅ IA **híbrida** (Ollama local → nube fallback; opción de enviar solo stats).
+- ✅ **Prefijos:** sellado automático `sincro:`; **commit manual (Smart Commit)** con mensaje Conventional Commits propuesto por IA (resumen acumulado desde el último manual) + reset del temporizador.
 - ✅ **Proveedor de nube: Gemini** (`gemini-2.5-flash-lite`), API key en variable de entorno.
 - ✅ Filtro: **solo texto < 1 MB**; binarios/grandes a mano.
 - ✅ **Python**; git vía subprocess; `watchdog`.

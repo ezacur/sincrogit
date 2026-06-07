@@ -440,9 +440,13 @@ class Engine:
         if push_due:
             self._dispatch_network(st, "push", lambda: self._do_push(st))
 
-    def _do_seal(self, st: RepoState, now_epoch: float) -> bool:
+    def _do_seal(self, st: RepoState, now_epoch: float, message: str | None = None) -> bool:
         """Core seal: final snapshot + reword the WIP + new WIP. Returns True if a
-        seal happened. Assumes the caller holds st.op_lock. Does NOT push."""
+        seal happened. Assumes the caller holds st.op_lock. Does NOT push.
+
+        `message` (a developer's manual commit message) overrides the automatic
+        AI/fallback message; its first line is the subject, the rest the body.
+        """
         if st.repo.is_busy():
             return False
 
@@ -456,7 +460,11 @@ class Engine:
             st.last_seal_epoch = now_epoch  # reschedule the clock
             return False
 
-        title, body = self._seal_message(st)
+        if message is not None:
+            title, _, body = message.strip().partition("\n")
+            title, body = title.strip(), body.strip()
+        else:
+            title, body = self._seal_message(st)
         st.repo.seal(title, body)
         st.repo.new_wip()
         st.last_seal_epoch = now_epoch
@@ -706,8 +714,9 @@ class Engine:
         self._emit(rc.name, "startup", f"repo added: '{rc.path}' (branch {st.branch})")
         return True, "added"
 
-    def seal_repo_now(self, name: str) -> tuple:
-        """Force a seal (+push) of a single repo. Returns (ok, message)."""
+    def seal_repo_now(self, name: str, message: str | None = None) -> tuple:
+        """Force a seal (+push) of a single repo. With `message`, seals with the
+        developer's own commit message (a manual "smart commit"). Returns (ok, msg)."""
         st = self.repo_state_by_name(name)
         if not st:
             return False, "repo not found"
@@ -716,13 +725,63 @@ class Engine:
             return False, f"on branch '{cur}', not configured '{st.cfg.branch}'; switch back first"
         with st.op_lock:
             try:
-                sealed = self._do_seal(st, time.time())
+                sealed = self._do_seal(st, time.time(), message=message)
                 # Synchronous push (manual action, already off the tick thread).
                 if sealed and st.cfg.push and st.repo.has_remote(st.cfg.remote):
                     self._do_push(st)
             except GitError as e:
                 return False, str(e)
         return True, ("sealed" if sealed else "nothing to seal")
+
+    def propose_seal_message(self, name: str) -> tuple:
+        """Propose a Conventional-Commits message for a manual commit, WITHOUT
+        committing. Returns (ok, title, body, files_text).
+
+        The AI sees the cumulative diff since the developer's last manual commit
+        (skipping the automatic 'sincro:'/'auto:' seals), so it can summarize the
+        whole unit of work; the body notes that scope honestly. The file list is
+        what actually enters this commit (the current WIP window). The slow AI call
+        runs WITHOUT holding the repo lock.
+        """
+        st = self.repo_state_by_name(name)
+        if not st:
+            return False, "", "", "repo not found"
+        ok, cur = self._branch_ok(st)
+        if not ok:
+            return False, "", "", f"on branch '{cur}', not configured '{st.cfg.branch}'; switch back first"
+
+        # Quick git work under the lock: capture the WIP and the diffs.
+        with st.op_lock:
+            if st.repo.is_busy():
+                return False, "", "", "repo busy (merge/rebase in progress)"
+            self._ensure_wip(st)
+            if self._stage(st) and st.repo.has_staged_changes():
+                st.repo.amend_keep_message()
+            if not st.repo.wip_differs_from_base():
+                return False, "", "", "nothing to commit"
+            base = st.repo.last_manual_sha()
+            name_status = st.repo.name_status_for_seal()  # files in THIS commit (WIP window)
+            stat = st.repo.diff_stat_for_seal(base=base)
+            text = st.repo.diff_text_for_seal(self.config.ai.max_diff_chars, base=base)
+
+        # Slow AI call OUTSIDE the lock (it doesn't touch git).
+        title, body = build_fallback_message(name_status, prefix="chore")
+        if self.config.ai.mode != "none":
+            try:
+                ai_msg = generate_commit_message(self.config.ai, stat, text, manual=True)
+                if ai_msg and ai_msg[0]:
+                    title, body = ai_msg
+            except Exception as e:  # noqa: BLE001 — never block on the AI
+                log.warning("[%s] AI proposal failed, using fallback: %s", name, e)
+
+        # Honest disclosure: the message summarizes work spread across earlier seals.
+        if base:
+            note = (f"(SincroGit: cumulative summary since {base[:8]}; some of this code "
+                    f"is already in earlier sincro: commits)")
+            body = f"{body}\n\n{note}" if body else note
+
+        files_text = "\n".join(f"{s}  {p}" for s, p in name_status)
+        return True, title, body, files_text
 
     def pull_repo_now(self, name: str) -> tuple:
         """Force a fetch + pull (rebase) of a single repo, no push. (ok, message)."""
