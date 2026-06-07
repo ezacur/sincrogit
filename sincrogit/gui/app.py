@@ -254,8 +254,12 @@ class TrayApp:
     def pull_repo_now(self, name):
         self._run_async(lambda: self.engine.pull_repo_now(name), f"pull:{name}")
 
-    def add_repo(self, path, branch="main", push=True, pull=True):
-        """Validate, persist to the config file, and add the repo live. (ok, msg)."""
+    def add_repo(self, path, branch="main", push=True, pull=True, normalize_eol=True):
+        """Validate, persist to the config file, and add the repo live. (ok, msg).
+
+        If `normalize_eol` and the repo has no .gitattributes, a '* text=auto' one
+        is created so line endings stay consistent across machines.
+        """
         from ..gitrepo import GitRepo
         path = os.path.abspath(path)
         if not GitRepo(path).is_git_repo():
@@ -283,6 +287,15 @@ class TrayApp:
         if rc is None:
             return False, "Repo was written but not found on reload."
         ok, msg = self.engine.add_repo(rc)
+        if ok and normalize_eol:
+            try:
+                if GitRepo(path).ensure_gitattributes():
+                    self.event_log.add(
+                        rc.name, "info",
+                        ".gitattributes created (line-ending normalization)",
+                    )
+            except Exception:  # noqa: BLE001 — best-effort convenience
+                pass
         self._refresh_tray()
         return ok, msg
 
@@ -298,6 +311,13 @@ class TrayApp:
 
     def restore_file(self, name, relpath, sha):
         return self.engine.restore_file(name, relpath, sha)
+
+    def fetch_autosnaps(self, name):
+        """Fetch + list other machines' autosnap recovery points (network)."""
+        return self.engine.fetch_autosnaps(name)
+
+    def restore_repo(self, name, sha):
+        return self.engine.restore_repo(name, sha)
 
     # ---- configuration ----
     def config_text(self) -> str:

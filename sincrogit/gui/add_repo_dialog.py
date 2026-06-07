@@ -52,6 +52,14 @@ class AddRepoDialog(QDialog):
         row2.addStretch(1)
         v.addLayout(row2)
 
+        self.cb_norm = QCheckBox("Normalize line endings (add .gitattributes if missing)")
+        self.cb_norm.setChecked(True)
+        self.cb_norm.setToolTip(
+            "Adds '* text=auto' so a CRLF/LF-only change is never treated as an edit "
+            "and machines don't fight over line endings. Recommended for sync."
+        )
+        v.addWidget(self.cb_norm)
+
         v.addWidget(QLabel(
             "Only existing git repos are accepted. Push/pull are skipped until a "
             "remote is configured for the repo."
@@ -83,6 +91,7 @@ class AddRepoDialog(QDialog):
             branch=self.ed_branch.text().strip() or "main",
             push=self.cb_push.isChecked(),
             pull=self.cb_pull.isChecked(),
+            normalize_eol=self.cb_norm.isChecked(),
         )
         if ok:
             QMessageBox.information(self, "Add repo", "Repo added.")

@@ -21,6 +21,8 @@ _INHERITABLE = [
     "push",
     "pull",
     "git_timeout_sec",
+    "autosnap",
+    "autosnap_interval_min",
 ]
 
 
@@ -30,15 +32,20 @@ class RepoConfig:
     name: str
     remote: str = "origin"
     branch: str = "main"
-    snapshot_interval_sec: int = 300      # 5 min
+    snapshot_interval_sec: int = 300      # 5 min (local WIP amend)
     debounce_sec: int = 25
-    seal_interval_min: int = 120          # 2 h
+    seal_interval_min: int = 360          # 6 h (with autosnap on, the seal is just
+                                          # the coarse permanent timeline; disk-failure
+                                          # RPO is covered by autosnap, not the seal)
     pull_interval_min: int = 10
     max_file_bytes: int = 1_048_576       # 1 MB
     extra_excludes: list = field(default_factory=list)
     push: bool = True                     # push sealed commits to the remote
     pull: bool = True                     # periodic pull from the remote
     git_timeout_sec: int = 60             # limit for network operations (fetch/push)
+    autosnap: bool = True                 # mirror HEAD (incl. WIP) to a side ref on the
+                                          # remote -> disk-failure RPO ~= autosnap_interval
+    autosnap_interval_min: int = 30       # how often the live mirror is force-pushed
 
     @property
     def seal_interval_sec(self) -> int:
@@ -47,6 +54,10 @@ class RepoConfig:
     @property
     def pull_interval_sec(self) -> int:
         return self.pull_interval_min * 60
+
+    @property
+    def autosnap_interval_sec(self) -> int:
+        return self.autosnap_interval_min * 60
 
 
 @dataclass

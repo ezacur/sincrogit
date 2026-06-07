@@ -27,7 +27,7 @@ import threading
 import time
 
 from .ai import generate_commit_message
-from .gitrepo import GitError, GitRepo
+from .gitrepo import GitError, GitRepo, autosnap_host
 from .filefilter import FileFilter
 from .messages import build_fallback_message
 from .notify import notify
@@ -49,10 +49,15 @@ class RepoState:
         self.last_snapshot_mono = time.monotonic()
         self.last_seal_epoch = time.time()
         self.last_pull_mono = time.monotonic()
-        self.net_busy = False     # a network task (fetch/pull/push) is in flight
+        self.net_busy = False     # a network task (fetch/pull/push/autosnap) is in flight
+        self.autosnap_pending = False  # HEAD changed since the last autosnap push
+        self.last_autosnap_mono = time.monotonic()
         self.paused = False       # set on rebase conflicts (not cleared on its own)
         self.user_paused = False  # set by the user from the GUI (per repo)
         self.dropped_warned = set()  # files already warned about (no longer snapshotted)
+        self.off_branch = False   # HEAD is on a branch other than cfg.branch -> yield
+        self._branch_cache = None      # last branch-check result (rate-limited, see below)
+        self._branch_checked_mono = 0.0
 
         # For the control panel (wall-clock time, not monotonic):
         self.branch = None
@@ -78,6 +83,7 @@ class RepoState:
 
 class Engine:
     TICK_SEC = 3
+    _BRANCH_CHECK_TTL = 15  # seconds: cap how often the per-repo branch check runs
 
     def __init__(self, config, emit_event=None):
         self.config = config
@@ -93,6 +99,8 @@ class Engine:
         # Optional callback (repo, action, message, level) for the structured
         # log / GUI. If None, only the text logger is used.
         self._emit_event = emit_event
+        # This machine's name for the per-host autosnap ref (computed once).
+        self._autosnap_host = autosnap_host()
 
     # --------------------------------------------------------------- events
     _LEVELS = {"INFO": logging.INFO, "WARNING": logging.WARNING, "ERROR": logging.ERROR}
@@ -121,6 +129,42 @@ class Engine:
         """A stable copy of the repo list to iterate without racing add_repo."""
         with self._states_lock:
             return list(self.states)
+
+    def _branch_ok(self, st: "RepoState"):
+        """(on_configured_branch, current_branch_name). Fresh, uncached check."""
+        current = st.repo.current_branch()
+        return (current == st.cfg.branch), current
+
+    def _ensure_on_branch(self, st: "RepoState", now_mono: float) -> bool:
+        """Guard for the tick loop: only operate when HEAD is on the configured
+        branch. If the user did a manual `git checkout`, SincroGit yields the repo
+        instead of snapshotting/sealing the wrong branch and pushing it to the
+        configured branch's ref. Logs the transition once each way. See §11 of
+        DESIGN.md.
+
+        Rate-limited (the check spawns `git rev-parse`): an overdue seal/sync on a
+        wrong branch must not run it every tick. A switch is still noticed within
+        _BRANCH_CHECK_TTL seconds.
+        """
+        if st._branch_cache is not None and now_mono - st._branch_checked_mono < self._BRANCH_CHECK_TTL:
+            return st._branch_cache
+        st._branch_checked_mono = now_mono
+        ok, current = self._branch_ok(st)
+        st._branch_cache = ok
+        if not ok and not st.off_branch:
+            st.off_branch = True
+            st.branch = current
+            self._emit(
+                st.cfg.name, "info",
+                f"HEAD on '{current}' != configured '{st.cfg.branch}'; autosync "
+                f"paused until you switch back",
+                "WARNING",
+            )
+        elif ok and st.off_branch:
+            st.off_branch = False
+            st.branch = current
+            self._emit(st.cfg.name, "info", f"back on '{current}'; autosync resumed")
+        return ok
 
     def _ensure_wip(self, st: "RepoState"):
         """Ensure HEAD is a WIP. If a WIP had to be created, HEAD was a non-WIP
@@ -227,6 +271,7 @@ class Engine:
                 "branch": st.branch,
                 "conflict_paused": st.paused,
                 "user_paused": st.user_paused,
+                "off_branch": st.off_branch,
                 "last_snapshot": st.last_snapshot_wall,
                 "last_seal": st.last_seal_epoch,
                 "last_action": st.last_action,
@@ -273,8 +318,10 @@ class Engine:
             branch = repo.current_branch()
             st.branch = branch
             if branch and branch != rc.branch:
+                st.off_branch = True  # the branch guard keeps autosync paused until you switch
                 log.warning(
-                    "[%s] current branch '%s' != configured '%s' (operating on the current one)",
+                    "[%s] current branch '%s' != configured '%s'; autosync will wait "
+                    "until you switch to it",
                     rc.name, branch, rc.branch,
                 )
             self._emit(rc.name, "startup", f"watching '{rc.path}' (branch {branch})")
@@ -316,9 +363,12 @@ class Engine:
             if st.paused or st.user_paused:
                 continue
             try:
+                if not self._ensure_on_branch(st, now_mono):
+                    continue  # user switched branches (git checkout): yield this repo
                 self._maybe_sync(st, now_mono)      # dispatched to a worker; returns at once
                 self._maybe_snapshot(st, now_mono)  # local; skipped if a worker holds the repo
                 self._maybe_seal(st, now_epoch)     # local seal; push dispatched to a worker
+                self._maybe_autosnap(st, now_mono)  # live mirror; dispatched to a worker
             except GitError as e:
                 log.error("[%s] error in the cycle: %s", st.cfg.name, e)
 
@@ -349,6 +399,8 @@ class Engine:
 
     def _initial_snapshot(self):
         for st in self._states_snapshot():
+            if not self._branch_ok(st)[0]:
+                continue  # on another branch: don't snapshot it (see _ensure_on_branch)
             try:
                 with st.op_lock:
                     if st.repo.is_busy():
@@ -367,6 +419,7 @@ class Engine:
         self._ensure_wip(st)
         if self._stage(st) and st.repo.has_staged_changes():
             st.repo.amend_keep_message()
+            st.autosnap_pending = True  # HEAD moved -> the live mirror is now stale
             return True
         return False
 
@@ -407,6 +460,7 @@ class Engine:
         st.repo.seal(title, body)
         st.repo.new_wip()
         st.last_seal_epoch = now_epoch
+        st.autosnap_pending = True  # HEAD moved (new WIP) -> refresh the live mirror
         self._mark_action(st, "seal")
         self._emit(st.cfg.name, "seal", title)
 
@@ -443,15 +497,47 @@ class Engine:
             # A rejected push (remote ahead) is reconciled in the next sync.
             self._emit(cfg.name, "push", f"push failed (will retry): {msg}", "WARNING")
 
+    # --------------------------------------------------------- autosnap (mirror)
+    def _maybe_autosnap(self, st: RepoState, now_mono: float):
+        """Mirror HEAD (incl. the WIP) to the remote on a background worker, so a
+        total disk failure loses at most ~autosnap_interval. Only when something
+        actually changed since the last mirror (autosnap_pending), so a dormant
+        repo never pushes. See §12 of DESIGN.md."""
+        if not st.cfg.autosnap or not st.autosnap_pending:
+            return
+        if now_mono - st.last_autosnap_mono < st.cfg.autosnap_interval_sec:
+            return
+        if not st.repo.has_remote(st.cfg.remote):
+            return
+        st.last_autosnap_mono = now_mono
+        self._dispatch_network(st, "autosnap", lambda: self._do_autosnap(st))
+
+    def _do_autosnap(self, st: RepoState):
+        """Force-push HEAD to this host's autosnap ref. Assumes op_lock (runs in a
+        _dispatch_network worker). Clears the pending flag only on success."""
+        repo, cfg = st.repo, st.cfg
+        ok, msg = repo.push_autosnap(
+            cfg.remote, cfg.branch, self._autosnap_host, timeout=cfg.git_timeout_sec
+        )
+        ref = repo.autosnap_ref(self._autosnap_host, cfg.branch)
+        if ok:
+            st.autosnap_pending = False
+            self._mark_action(st, "autosnap")
+            self._emit(cfg.name, "autosnap", f"mirror pushed -> {cfg.remote}/{ref}")
+        else:
+            # Keep pending=True so the next interval retries.
+            self._emit(cfg.name, "autosnap", f"mirror push failed (will retry): {msg}", "WARNING")
+
     def _initial_sync(self):
         # Runs on its own thread at startup. Per-repo op_lock keeps each repo's
         # sync from racing the tick (which simply skips a repo that's busy).
         for st in self._states_snapshot():
-            try:
-                with st.op_lock:
-                    self._do_sync(st)
-            except GitError as e:
-                log.error("[%s] error in initial sync: %s", st.cfg.name, e)
+            if self._branch_ok(st)[0]:
+                try:
+                    with st.op_lock:
+                        self._do_sync(st)
+                except GitError as e:
+                    log.error("[%s] error in initial sync: %s", st.cfg.name, e)
             st.last_pull_mono = time.monotonic()
 
     def _maybe_sync(self, st: RepoState, now_mono: float):
@@ -543,6 +629,10 @@ class Engine:
     # op_lock so they can't race the tick or a network worker on the same repo.)
     def snapshot_all_now(self):
         for st in self._states_snapshot():
+            ok, cur = self._branch_ok(st)
+            if not ok:
+                log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
+                continue
             try:
                 with st.op_lock:
                     if st.repo.is_busy():
@@ -560,6 +650,10 @@ class Engine:
     def seal_all_now(self):
         now = time.time()
         for st in self._states_snapshot():
+            ok, cur = self._branch_ok(st)
+            if not ok:
+                log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
+                continue
             try:
                 # Push synchronously: this is a manual / CLI one-shot action (off
                 # the tick thread), so the push must finish before we return —
@@ -572,6 +666,10 @@ class Engine:
 
     def sync_all_now(self):
         for st in self._states_snapshot():
+            ok, cur = self._branch_ok(st)
+            if not ok:
+                log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
+                continue
             try:
                 with st.op_lock:
                     self._do_sync(st)
@@ -613,6 +711,9 @@ class Engine:
         st = self.repo_state_by_name(name)
         if not st:
             return False, "repo not found"
+        ok, cur = self._branch_ok(st)
+        if not ok:
+            return False, f"on branch '{cur}', not configured '{st.cfg.branch}'; switch back first"
         with st.op_lock:
             try:
                 sealed = self._do_seal(st, time.time())
@@ -628,6 +729,9 @@ class Engine:
         st = self.repo_state_by_name(name)
         if not st:
             return False, "repo not found"
+        ok, cur = self._branch_ok(st)
+        if not ok:
+            return False, f"on branch '{cur}', not configured '{st.cfg.branch}'; switch back first"
         repo, cfg = st.repo, st.cfg
         with st.op_lock:
             if repo.is_busy():
@@ -687,4 +791,42 @@ class Engine:
             except GitError as e:
                 return False, str(e)
         self._emit(repo_name, "info", f"restored '{relpath}' from {sha[:8]}")
+        return True, "restored"
+
+    # ---------------------------------------------- autosnap recovery (cross-machine)
+    def fetch_autosnaps(self, repo_name: str) -> list:
+        """Fetch every machine's autosnap refs from the remote and return them
+        (newest first). Use this on another machine to recover after a disk
+        failure. Each item: ref, host, branch, sha, epoch, subject."""
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return []
+        with st.op_lock:
+            if st.repo.has_remote(st.cfg.remote):
+                st.repo.fetch_autosnaps(st.cfg.remote, timeout=st.cfg.git_timeout_sec)
+            return st.repo.list_autosnap_refs()
+
+    def list_autosnaps(self, repo_name: str) -> list:
+        """Locally-known autosnap states (no network). Call fetch_autosnaps first
+        to refresh from the remote."""
+        st = self.repo_state_by_name(repo_name)
+        return st.repo.list_autosnap_refs() if st else []
+
+    def restore_repo(self, repo_name: str, sha: str):
+        """Restore the WHOLE working tree to the state at `sha` (a sealed/snapshot/
+        autosnap commit), captured into the WIP so it's versioned and reversible.
+        HEAD is not moved. Returns (ok, message)."""
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return False, "repo not found"
+        with st.op_lock:  # don't race with the snapshot/seal cycle
+            try:
+                self._ensure_wip(st)
+                st.repo.restore_tree(sha)
+                if st.repo.has_staged_changes():
+                    st.repo.amend_keep_message()
+                st.autosnap_pending = True
+            except GitError as e:
+                return False, str(e)
+        self._emit(repo_name, "info", f"restored whole repo to {sha[:8]}")
         return True, "restored"

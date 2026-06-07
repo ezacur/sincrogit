@@ -31,12 +31,14 @@ DEFAULT_CONFIG_TEMPLATE = """\
 defaults:
   snapshot_interval_sec: 300      # how often the WIP is amended (5 min)
   debounce_sec: 25                # wait after the last change before a snapshot
-  seal_interval_min: 120          # "real" commit + push every 2h
+  seal_interval_min: 360          # "real" permanent commit + push every 6h
   pull_interval_min: 10           # fetch every 10 min; pull only if there's something new
   max_file_bytes: 1048576         # 1 MB: only text below this size is versioned
   push: true
   pull: true
   git_timeout_sec: 60
+  autosnap: true                  # mirror HEAD (incl. WIP) to refs/autosnap/<host>/<branch>
+  autosnap_interval_min: 30       # force-push the live mirror every 30 min (only if changed)
   extra_excludes:
     - "**/node_modules/**"
     - "**/.venv/**"

@@ -22,6 +22,7 @@ ACTIONS = [
     "snapshot",
     "seal",
     "push",
+    "autosnap",
     "pull",
     "conflict",
     "pause",

@@ -6,6 +6,7 @@ Launch model:
   --headless [--config X]   -> daemon without GUI (servers / automation)
   --snapshot-once|--seal-once|--sync-once   -> CLI one-shot and exit
   --history FILE [--pick N] -> browse/restore a file's version history
+  --autosnaps               -> fetch & list autosnap recovery points (per machine)
 
 With no arguments the GUI launches; if an instance is already running, the new
 launch just asks the running one to show its panel and exits. Any argument is
@@ -105,6 +106,29 @@ def _history_command(engine, file_arg: str, pick) -> int:
     return 1
 
 
+def _autosnaps_command(engine) -> int:
+    """Fetch and list the autosnap recovery points for every configured repo.
+
+    Useful on another machine after a disk failure: it shows each machine's last
+    mirrored state. Afterwards `--history FILE` includes those states too (the
+    refs are now local), so you can pull individual files from them.
+    """
+    found = False
+    for st in engine.states:
+        states = engine.fetch_autosnaps(st.cfg.name)
+        if not states:
+            continue
+        found = True
+        print(f"Autosnap states for repo '{st.cfg.name}':")
+        for s in states:
+            ts = (datetime.fromtimestamp(s["epoch"]).strftime("%Y-%m-%d %H:%M:%S")
+                  if s["epoch"] else "?")
+            print(f"  {ts}  {s['host']}/{s['branch']}  {s['sha'][:10]}")
+    if not found:
+        print("No autosnap states found on the remote(s).")
+    return 0
+
+
 def _run_headless(config, logger) -> int:
     engine = Engine(config)
 
@@ -150,6 +174,9 @@ def main(argv=None) -> int:
                         help="Show FILE's version history and restore a chosen version.")
     parser.add_argument("--pick", type=int, metavar="N",
                         help="With --history: restore version N non-interactively.")
+    parser.add_argument("--autosnaps", action="store_true",
+                        help="Fetch and list the autosnap recovery points (per machine) "
+                             "for every configured repo.")
     args = parser.parse_args(argv)
 
     if args.tray:
@@ -176,6 +203,11 @@ def main(argv=None) -> int:
         engine = Engine(config)
         engine.setup(with_watcher=False)
         return _history_command(engine, args.history, args.pick)
+
+    if args.autosnaps:
+        engine = Engine(config)
+        engine.setup(with_watcher=False)
+        return _autosnaps_command(engine)
 
     if args.snapshot_once or args.seal_once or args.sync_once:
         engine = Engine(config)

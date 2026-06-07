@@ -1,0 +1,4 @@
+# Normalize line endings: store text blobs as LF in the repo, regardless of each
+# machine's core.autocrlf. This keeps a CRLF/LF-only change from ever showing up
+# as an edit — and prevents phantom full-file diffs when syncing across machines.
+* text=auto

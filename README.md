@@ -1,8 +1,9 @@
 # SincroGit
 
-Automatic Dropbox-style synchronization, but with **robust Git versioning**.
+Automatic, instant file synchronization, but with **robust Git versioning**.
 It takes automatic *snapshots* of your repos every few minutes (auto-backup against
-power cuts) and "seals" commits with a clean history every 2 hours.
+power cuts), mirrors the latest state to the remote every ~30 min (**autosnap**, for
+disk-failure recovery) and "seals" commits with a clean history every 6 hours.
 
 > Full design and decisions in **[DESIGN.md](DESIGN.md)**.
 
@@ -13,7 +14,7 @@ power cuts) and "seals" commits with a clean history every 2 hours.
 - ✅ Filesystem watcher (`watchdog`) + *debounce*.
 - ✅ **Snapshot** every 5 min: `git commit --amend` over a WIP commit (no commit pile-up).
 - ✅ Initial snapshot on startup (captures pre-existing changes, e.g. after a reboot).
-- ✅ **Sealing** every 2 h: turns the WIP into a permanent commit + creates a new WIP.
+- ✅ **Sealing** every 6 h: turns the WIP into a permanent commit + creates a new WIP.
 - ✅ **Filter**: only text < 1 MB is versioned automatically; binaries/large files by hand.
 - ✅ Deterministic *fallback* commit message when sealing.
 - ✅ Clean shutdown with a final local snapshot.
@@ -28,6 +29,12 @@ power cuts) and "seals" commits with a clean history every 2 hours.
 - ✅ **Periodic pull** (every 10 min): `fetch` + rebase of the WIP only if the remote is ahead.
 - ✅ **Conflicts**: the rebase is aborted, the repo is paused and you are notified. Never
   force, never data loss.
+- ✅ **Autosnap** (live mirror, every 30 min, only if changed): force-pushes `HEAD`
+  (incl. the WIP) to a per-machine side ref `refs/autosnap/<host>/<branch>` so a total
+  disk failure loses at most ~30 min. Doesn't touch the clean branch; cross-machine
+  recovery from the CLI (`--autosnaps`) and the control panel.
+- ✅ **Branch guard**: if you `git checkout` another branch, SincroGit yields that repo
+  (no snapshot/seal/push on the wrong branch) until you switch back.
 
 **Phase 4 (system tray UI):**
 
@@ -37,14 +44,16 @@ power cuts) and "seals" commits with a clean history every 2 hours.
 - ✅ **Control panel** with tabs:
   - *Status*: repos table (branch, state, time since last seal, last action) with
     **per-repo buttons** (Pause/Resume, Seal+Push, Fetch+Pull) and an **"Add repo…"**
-    button. Repos can be added live, without restarting.
+    button (optionally drops a `* text=auto` **`.gitattributes`** so line endings stay
+    consistent across machines). Repos can be added live, without restarting.
   - *Log*: events **filterable by repo, action, level and text**.
   - *Configuration*: `config.yaml` editor (save / save and restart).
   - *About*.
 - ✅ Desktop **notifications** (via Qt) on conflicts/errors.
 - ✅ **File history / restore** ("time machine"): browse a file's past versions
-  (sealed commits + reflog snapshots), preview and restore — from the CLI
-  (`--history`) and the control panel.
+  (sealed commits + reflog snapshots + fetched autosnap states), see a **colored diff**
+  vs the current file, and restore **just that file or the whole repo** — from the CLI
+  (`--history`, `--autosnaps`) and the control panel.
 
 Pending (Phase 3): deployment as a Windows scheduled task (`pythonw.exe`) to launch
 `--tray` at log-on, and a `sincrogit status` command.
@@ -85,6 +94,7 @@ pip install -r requirements.txt
 | `--headless [--config X]` | daemon without GUI |
 | `--snapshot-once` / `--seal-once` / `--sync-once` | CLI one-shot and exit |
 | `--history FILE [--pick N]` | browse/restore a file's versions |
+| `--autosnaps` | fetch & list autosnap recovery points (per machine) |
 
 ### AI messages (optional)
 
@@ -127,7 +137,7 @@ python -m sincrogit -c config.yaml --sync-once       # one pull+push and exit
 
 ```
 ... ── sealed_N ── WIP        ← HEAD, amended every 5 min (snapshot)
-every 2h: the WIP is sealed (descriptive message) and a new WIP is created on top
+every 6h: the WIP is sealed (descriptive message) and a new WIP is created on top
 result: ... ── sealed_N ── sealed_N+1 ── WIP(new)
 ```
 
@@ -168,7 +178,8 @@ overridable per repo):
 |-----|---------|---------|
 | `snapshot_interval_sec` | 300 | How often the WIP is amended (5 min) |
 | `debounce_sec` | 25 | Wait after the last change before snapshotting |
-| `seal_interval_min` | 120 | How often a permanent commit is sealed (2 h) |
+| `seal_interval_min` | 360 | How often a permanent commit is sealed (6 h) |
+| `autosnap` | true | Live mirror of HEAD to `refs/autosnap/<host>/<branch>` (disk-failure recovery) |
+| `autosnap_interval_min` | 30 | How often the mirror is force-pushed (only if it changed) |
 | `max_file_bytes` | 1048576 | Maximum file size to version (1 MB) |
 | `extra_excludes` | — | `.gitignore`-style patterns to exclude |
-```

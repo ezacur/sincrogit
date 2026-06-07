@@ -4,12 +4,15 @@
 defaults:
   snapshot_interval_sec: 300      # how often the WIP (Work In Progress) is amended (5 min)
   debounce_sec: 25                # wait after the last change before a snapshot
-  seal_interval_min: 120          # "real" commit + push every 2h (only automatic trigger)
+  seal_interval_min: 360          # "real" permanent commit + push every 6h
   pull_interval_min: 10           # fetch every 10 min; pull only if there's something new
   max_file_bytes: 1048576         # 1 MB: only text below this size is versioned
   push: true                      # push sealed commits to the remote
   pull: true                      # periodic pull from the remote (WIP rebase)
   git_timeout_sec: 60             # limit for network operations (fetch/push)
+  autosnap: true                  # live mirror of HEAD (incl. WIP) to a side ref on the
+                                  # remote -> disk-failure recovery within autosnap_interval
+  autosnap_interval_min: 30       # force-push the mirror every 30 min (only if it changed)
   extra_excludes:                 # in addition to the text/size filter (.gitignore style)
     - "**/node_modules/**"
     - "**/.venv/**"

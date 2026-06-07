@@ -184,6 +184,8 @@ class ControlPanel(QMainWindow):
         for i, r in enumerate(repos):
             if r["conflict_paused"]:
                 state, color = "Conflict", "#D23F3F"
+            elif r.get("off_branch"):
+                state, color = "Off-branch", "#8a6d00"
             elif r["user_paused"]:
                 state, color = "Paused", "#8a6d00"
             elif global_paused:

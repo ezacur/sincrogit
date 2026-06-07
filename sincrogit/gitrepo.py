@@ -11,9 +11,22 @@ Two-tier model (see §2 of DESIGN.md):
 
 import logging
 import os
+import re
+import socket
 import subprocess
 
 log = logging.getLogger("sincrogit.git")
+
+
+def autosnap_host() -> str:
+    """This machine's name, sanitized for use inside a git ref path.
+
+    The autosnap ref is per-machine (refs/autosnap/<host>/<branch>) so two
+    machines mirroring the same repo never clobber each other.
+    """
+    name = socket.gethostname() or "host"
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name).strip("._-")
+    return name or "host"
 
 # On Windows, a windowed (--noconsole) app spawns a console window for every
 # child process. CREATE_NO_WINDOW suppresses that flash for each git call.
@@ -145,6 +158,31 @@ class GitRepo:
         return any(os.path.exists(os.path.join(gd, m)) for m in markers)
 
     # ------------------------------------------------------------ mutations
+    def ensure_gitattributes(self) -> bool:
+        """Create a .gitattributes with '* text=auto' if none exists.
+
+        This normalizes line endings inside the repo (text blobs stored as LF)
+        regardless of each machine's core.autocrlf, so a CRLF/LF-only change is
+        never seen as an edit and machines don't fight over line endings. Written
+        with LF itself. Returns True if it created the file. (The next snapshot
+        commits it; on a repo whose blobs were CRLF this triggers a one-time,
+        intended renormalization.)
+        """
+        path = os.path.join(self.path, ".gitattributes")
+        if os.path.exists(path):
+            return False
+        try:
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(
+                    "# Added by SincroGit: normalize line endings (store text blobs as\n"
+                    "# LF regardless of each machine's core.autocrlf), so a CRLF/LF-only\n"
+                    "# change is never an edit and machines don't fight over endings.\n"
+                    "* text=auto\n"
+                )
+            return True
+        except OSError:
+            return False
+
     def ensure_wip(self) -> bool:
         """Ensure HEAD is a WIP commit. Returns True if it created one."""
         if self.head_is_wip():
@@ -394,6 +432,64 @@ class GitRepo:
         msg = (res.stderr.strip() or res.stdout.strip())
         return res.returncode == 0, msg
 
+    # --------------------------------------------------------- autosnap (mirror)
+    @staticmethod
+    def autosnap_ref(host: str, branch: str) -> str:
+        return f"refs/autosnap/{host}/{branch}"
+
+    def push_autosnap(self, remote: str, branch: str, host: str, timeout: float | None = None):
+        """Force-push HEAD (sealed history + the live WIP) to this machine's
+        autosnap side ref, so the latest local state survives a total disk
+        failure. The ref is single-writer (only this host writes it), so a plain
+        --force is safe and it never touches the clean `branch`. Returns (ok, msg).
+        """
+        ref = self.autosnap_ref(host, branch)
+        res = self._run(
+            ["push", "--force", remote, f"HEAD:{ref}"], check=False, timeout=timeout
+        )
+        msg = (res.stderr.strip() or res.stdout.strip())
+        return res.returncode == 0, msg
+
+    def fetch_autosnaps(self, remote: str, timeout: float | None = None) -> bool:
+        """Fetch every machine's autosnap refs into local refs/autosnap/* (for
+        cross-machine recovery). Returns True on success."""
+        res = self._run(
+            ["fetch", "--quiet", remote, "+refs/autosnap/*:refs/autosnap/*"],
+            check=False, timeout=timeout,
+        )
+        if res.returncode != 0:
+            log.warning("fetch of autosnap refs from '%s' failed: %s", remote, res.stderr.strip())
+        return res.returncode == 0
+
+    def list_autosnap_refs(self) -> list:
+        """Local refs/autosnap/* as dicts: ref, host, branch, sha, epoch, subject.
+        Newest first. Present only after fetch_autosnaps (or this host's own)."""
+        # NOTE: for-each-ref does NOT understand %x09 (that's git-log syntax); use a
+        # literal tab as the field separator.
+        fmt = "--format=%(refname)\t%(objectname)\t%(committerdate:unix)\t%(contents:subject)"
+        res = self._run(["for-each-ref", fmt, "refs/autosnap/"], check=False)
+        out = []
+        for line in res.stdout.splitlines():
+            ref, sha, ct, subj = (line.split("\t", 3) + ["", "", "", ""])[:4]
+            if not ref or not sha:
+                continue
+            rest = ref[len("refs/autosnap/"):]
+            host, _, br = rest.partition("/")
+            out.append({
+                "ref": ref, "host": host, "branch": br, "sha": sha,
+                "epoch": int(ct) if ct.isdigit() else 0, "subject": subj,
+            })
+        out.sort(key=lambda e: e["epoch"], reverse=True)
+        return out
+
+    def restore_tree(self, sha: str):
+        """Make the working tree (and index) match the tree at `sha`, INCLUDING
+        deleting tracked files that aren't present there. HEAD is NOT moved, so the
+        restore is captured by the next snapshot (and stays reversible via the
+        reflog). Untracked files are left untouched. Raises GitError on failure.
+        """
+        self._run(["read-tree", "-u", "--reset", f"{sha}^{{tree}}"])
+
     # ------------------------------------------------------- history / restore
     @staticmethod
     def _split3(line: str):
@@ -403,13 +499,15 @@ class GitRepo:
     def file_history(self, relpath: str, limit: int = 50) -> list:
         """Distinct versions of a file, newest first.
 
-        Combines two sources: the reachable history (sealed commits, permanent)
-        and the reflog (intra-window snapshots, ~30 days). Versions with
-        identical content are collapsed. Each item is a dict with:
-        sha, blob, epoch, subject, source ('sealed' | 'snapshot').
+        Combines three sources: the reachable history (sealed commits, permanent),
+        the reflog (intra-window snapshots, ~30 days) and any fetched autosnap refs
+        (other machines' live mirrors). Versions with identical content are
+        collapsed. Each item is a dict with:
+        sha, blob, epoch, subject, source ('sealed' | 'snapshot' | 'autosnap').
         """
         relpath = relpath.replace("\\", "/")
         info = {}  # sha -> (epoch, commit subject)
+        autosnap_label = {}  # sha -> host (these shas are shown as 'autosnap')
 
         # 1) Reachable history that touched the file (sealed commits + current WIP).
         res = self._run(
@@ -430,9 +528,16 @@ class GitRepo:
             if sha and ct.isdigit() and sha not in info:
                 info[sha] = (int(ct), subj)
 
+        # 3) Autosnap refs (other machines' live mirrors), only present after a
+        #    recovery fetch. Each ref's tip is one extra recoverable state.
+        for r in self.list_autosnap_refs():
+            sha = r["sha"]
+            info.setdefault(sha, (r["epoch"], f"autosnap: {r['host']}"))
+            autosnap_label[sha] = r["host"]
+
         # Resolve the file blob at each commit (skip commits where it's absent).
-        # The kind is derived from the message: WIP commits are snapshots, the
-        # rest are sealed (permanent) commits.
+        # The kind is derived from the source: autosnap refs first, then WIP
+        # commits are snapshots, the rest are sealed (permanent) commits.
         entries = []
         for sha, (epoch, subj) in info.items():
             blob = self._run(
@@ -440,13 +545,18 @@ class GitRepo:
             ).stdout.strip()
             if not blob:
                 continue
-            is_wip = subj.startswith(self.WIP_MESSAGE)
+            if sha in autosnap_label:
+                source, subject = "autosnap", f"(autosnap: {autosnap_label[sha]})"
+            elif subj.startswith(self.WIP_MESSAGE):
+                source, subject = "snapshot", "(auto-snapshot)"
+            else:
+                source, subject = "sealed", subj
             entries.append({
                 "sha": sha,
                 "blob": blob,
                 "epoch": epoch,
-                "subject": "(auto-snapshot)" if is_wip else subj,
-                "source": "snapshot" if is_wip else "sealed",
+                "subject": subject,
+                "source": source,
             })
 
         entries.sort(key=lambda e: e["epoch"], reverse=True)

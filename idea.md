@@ -1,6 +1,6 @@
 Idea: lo que quiero que sea este proyecto.
 
-Me gusta la idea de sincronizacion automática e instantánea que tiene dropbox. Pero pierdo control sobre las versiones porque dropbox (en su versión gratuita) tiene una control de versiones débil.
+Me gusta la idea de sincronización automática e instantánea de archivos. Pero con ese tipo de herramientas pierdo control sobre las versiones, porque tienen un control de versiones débil.
 
 Quiero crear una herramienta que me permita tener una sincronización automática e instantánea de mis archivos, pero con un control de versiones robusto sobre repositorios de GIT.
 

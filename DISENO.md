@@ -1,6 +1,6 @@
 # SincroGit — Documento de diseño
 
-> Sincronización automática estilo Dropbox, pero con versionado robusto sobre Git.
+> Sincronización automática e instantánea, pero con versionado robusto sobre Git.
 > Plataforma objetivo: **Windows** (uso interactivo, una sola máquina a la vez).
 
 ---
@@ -27,12 +27,12 @@ El truco para conciliar *"snapshot casi instantáneo"* con *"no quiero miles de 
 | Nivel | Qué es | Frecuencia | Visible en historial |
 |-------|--------|-----------|----------------------|
 | **WIP (snapshot)** | Un **único** commit en la punta (`HEAD`) que se **amend**ea con el estado actual | Cada ~5 min (con debounce) | No (es transitorio, se sella o se reescribe) |
-| **Sellado (historia)** | El WIP se "congela" con un mensaje IA descriptivo y se crea un WIP nuevo encima | Cada ~2 h (o por inactividad / apagado) | Sí (commit permanente) |
+| **Sellado (historia)** | El WIP se "congela" con un mensaje IA descriptivo y se crea un WIP nuevo encima | Cada ~6 h | Sí (commit permanente) |
 
 ```
 ... ── sellado_N ── WIP        ← HEAD (se amendea cada ~5 min)
                      │
-       cada 2h ──────┘ se sella (reword con mensaje IA) y nace un WIP nuevo encima
+       cada 6h ──────┘ se sella (reword con mensaje IA) y nace un WIP nuevo encima
 
 resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 ```
@@ -40,7 +40,7 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 **Por qué funciona:**
 
 - El estado actual queda guardado en disco cada ~5 min → **recuperación ante corte de luz** (al reiniciar, `HEAD` = último snapshot).
-- Como se hace `amend`, no se acumulan cientos de commits: solo **~12 commits/día** (uno cada 2 h).
+- Como se hace `amend`, no se acumulan cientos de commits: solo **~4 commits/día** (uno cada 6 h).
 - El historial "limpio" (sellados) es lo único que viaja al remoto → **pull siempre limpio, sin force-push** (ver §4).
 
 > **Red de seguridad fina:** cada `amend` deja el snapshot anterior como commit *unreachable* en el **reflog** (≈30 días por defecto). Es decir, aunque el historial visible solo tenga 1 commit por ventana, internamente puedes recuperar estados intermedios con `git reflog`. *(Opcional, ver §12: una rama `autosnap` con commits reales cada ~5 min si quieres historial intra-ventana navegable.)*
@@ -65,8 +65,8 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
   3. Si hay algo staged: `git commit --amend --no-edit` (mensaje WIP estático tipo `WIP: autosnapshot`).
 - Sin cambios → no se hace nada.
 
-### 3.3 Sellado (cada 2 h)
-**Único disparador automático:** temporizador de **2 h desde el último sellado**.
+### 3.3 Sellado (cada 6 h)
+**Único disparador automático:** temporizador de **6 h desde el último sellado**.
 
 1. Si el WIP no tiene cambios respecto a `sellado_N` → **no sellar** (no ensuciar el historial).
 2. Generar mensaje con IA a partir de `git diff sellado_N..WIP` (§6).
@@ -101,16 +101,21 @@ Además del pull de arranque (§3.1), el demonio comprueba el remoto cada **10 m
 **Handoff entre máquinas (uso secuencial):**
 
 ```
-Sobremesa: trabaja → cada 2h (o `sincrogit sync` manual) sella + push  ──►  remoto al día
+Sobremesa: trabaja → cada 6h (o `sincrogit sync` manual) sella + push  ──►  remoto al día
 Portátil:  arranca → pull --rebase (limpio) → trabaja → sella + push ──► remoto al día
 Sobremesa: arranca → pull --rebase (limpio) → continúa...
 ```
 
-**Importante (consecuencia de sellar solo cada 2h):** entre sellados, lo último que trabajaste podría **no estar aún en el remoto** (hasta 2 h). Por eso, si voy a cambiar de equipo a media ventana, conviene lanzar **`sincrogit sync`** antes de levantarme, para que el portátil arranque con todo. Si no lo hago, el portátil tendrá el estado del último sellado (hasta 2 h atrás).
+**Handoff normal (rama limpia):** el portátil hace `pull --rebase` de la rama y arranca con lo **sellado** (hasta 6 h atrás). Para un handoff a media ventana, lanza **`sincrogit sync`** antes de levantarte (sella + push) y el portátil arrancará con todo por la vía limpia.
 
-**Coste aceptado:** ante un fallo **total de disco** (no un simple corte de luz), podrías perder hasta lo no sellado (máx. ~2 h). El corte de luz / crash de SO está cubierto por el snapshot local de cada 5 min.
+### 4.1 Autosnap (espejo en vivo) — recuperación ante desastre
 
-> *(Variante "espejo en vivo" descartada por ahora: hacía force-with-lease del WIP cada minuto para tener el remoto a <1 min. Más tráfico y complejidad; reevaluable si algún día el backup remoto en tiempo real se vuelve crítico.)*
+Como sellar cada 6 h dejaría hasta 6 h de trabajo fuera del remoto, **autosnap** desacopla el *backup remoto* del *historial*: cada **30 min** (y solo si hubo cambios) se hace `push --force` de `HEAD` (sellados **+ el WIP vivo**) a un ref lateral **por máquina** `refs/autosnap/<host>/<rama>`.
+
+- **No ensucia la rama:** nadie pullea ese ref para trabajar; la rama `main` sigue recibiendo solo sellados → pull siempre limpio. Es la excepción deliberada a "el WIP no sale de la máquina", acotada a un ref de backup.
+- **RPO ante fallo total de disco ≈ 30 min** (en vez de 6 h). En la otra máquina: *Fetch autosnaps* → explorar/restaurar el último estado (fichero o repo entero).
+- **Coste:** hasta ~48 push/día/repo en trabajo activo (force-push barato; **nada** en repos inactivos, porque solo sube si HEAD cambió). Objetos huérfanos en el remoto hasta su GC.
+- **Corte de luz / crash de SO** sigue cubierto por el snapshot local de cada 5 min (`HEAD` en disco) y el `reflog`.
 
 ---
 
@@ -147,16 +152,20 @@ Se generan **solo al sellar** (~12 veces/día como mucho → entra de sobra en c
 ```
 sincrogit/
 ├─ sincrogit/
-│  ├─ __main__.py        # entrypoint del daemon
+│  ├─ __main__.py        # entrypoint / CLI (tray, headless, --history, --autosnaps, ...)
 │  ├─ config.py          # carga/valida config YAML
-│  ├─ repo.py            # wrapper de git (vía subprocess)
-│  ├─ watcher.py         # watchdog + debounce por repo
-│  ├─ scheduler.py       # temporizadores: snapshot 1min / seal 2h / idle
-│  ├─ filter.py          # detección texto + tamaño
-│  ├─ ai.py              # proveedores (ollama/gemini/groq) + fallback
-│  ├─ service.py         # ciclo de vida, pull-on-start, shutdown hook
-│  └─ notify.py          # notificaciones Windows (toasts) + logging
-├─ config.yaml
+│  ├─ runtime.py         # config del exe, instancia única (+ handshake), consola
+│  ├─ gitrepo.py         # wrapper de git (subprocess): snapshot/seal/autosnap/restore
+│  ├─ watcher.py         # watchdog + debounce por repo (solo marca "dirty")
+│  ├─ engine.py          # orquestador: tick snapshot 5min / seal 6h / autosnap 30min / sync
+│  ├─ filefilter.py      # detección texto + tamaño
+│  ├─ messages.py        # mensaje de commit de fallback (determinista)
+│  ├─ ai.py              # proveedores IA (ollama/gemini) + fallback
+│  ├─ events.py          # log estructurado (JSONL) para la GUI
+│  ├─ log.py             # logging a fichero rotativo
+│  ├─ notify.py          # notificaciones Windows (toasts)
+│  └─ gui/               # bandeja PyQt5 + panel + diálogos (add-repo, historial)
+├─ config.example.yaml
 ├─ pyproject.toml
 └─ DISENO.md
 ```
@@ -164,10 +173,11 @@ sincrogit/
 **Librerías:**
 - **`watchdog`** — eventos de sistema de ficheros.
 - **git vía `subprocess`** (no GitPython) — control exacto de `amend`/`push HEAD~1`/`rebase`, comportamiento transparente y predecible.
-- **`httpx`** — llamadas a IA de nube; cliente de **Ollama** local por HTTP.
+- **`urllib`** (stdlib) — llamadas a la IA de nube y al **Ollama** local por HTTP (sin dependencias extra).
 - **`pyyaml`** — config.
-- **`logging`** (a fichero rotativo) + **`win10toast`/`winotify`** — avisos (p. ej. "autosync pausado por conflicto").
-- Scheduling: bucle propio con timers (o `apscheduler` si crece).
+- **`PyQt5`** — bandeja del sistema + panel de control (solo para `--tray`).
+- **`logging`** (a fichero rotativo) + **`winotify`** — avisos (p. ej. "autosync pausado por conflicto").
+- Scheduling: bucle propio con un *tick* y temporizadores por repo (sin dependencias).
 
 **Decisión:** envolver el CLI de `git` con `subprocess` en vez de GitPython, porque las operaciones finas (amend continuo, push de `HEAD~1`, rebase con política de conflicto) son más claras y robustas con el CLI.
 
@@ -180,8 +190,10 @@ sincrogit/
 defaults:
   snapshot_interval_sec: 300     # cada cuánto se amendea el WIP (5 min)
   debounce_sec: 25               # espera tras el último cambio antes de snapshot
-  seal_interval_min: 120         # commit "real" + push cada 2h (único disparo automático)
+  seal_interval_min: 360         # commit "real" + push cada 6h (timeline permanente)
   pull_interval_min: 10          # fetch cada 10 min; pull solo si hay algo nuevo
+  autosnap: true                 # espejo en vivo de HEAD a refs/autosnap/<host>/<rama>
+  autosnap_interval_min: 30      # force-push del espejo cada 30 min (solo si cambió)
   max_file_bytes: 1048576        # 1 MB
   extra_excludes:                # además del filtro texto/tamaño
     - "**/node_modules/**"
@@ -196,10 +208,10 @@ ai:
   # api_key vía variable de entorno SINCROGIT_GEMINI_KEY, NO en el fichero
 
 repos:
-  - path: "C:/Dropbox/mTools/sincrogit"
+  - path: "C:/repos/sincrogit"
     remote: origin
     branch: main
-  - path: "C:/Dropbox/proyectos/foo"
+  - path: "C:/repos/foo"
     remote: origin
     branch: main
     seal_interval_min: 60        # override por repo
@@ -235,7 +247,7 @@ repos:
 | **Corte de luz / crash de SO** | El último snapshot (≤5 min) está commiteado en `HEAD` (WIP) | Al reiniciar, el trabajo está ahí. `git reflog` para estados intermedios de la ventana. |
 | **"Quiero la versión de ayer"** | Está en los commits sellados | `git checkout`/`git restore` desde el sellado correspondiente. |
 | **Borré algo hace 20 min (dentro de la ventana)** | Snapshot anterior quedó *unreachable* en reflog | `git reflog` + `git checkout`. *(Más cómodo con la rama `autosnap` opcional, §12.)* |
-| **Fallo total de disco** | Lo sellado+pusheado está en el remoto | `git clone` en máquina nueva. Pérdida máx ≈ lo no sellado (hasta 2 h; menos si lancé `sincrogit sync`). |
+| **Fallo total de disco** | Lo sellado está en el remoto; el último estado (≤30 min) está en el ref `autosnap` (§4.1) | En otra máquina: *Fetch autosnaps* → restaurar (fichero o repo entero). Pérdida máx ≈ 30 min. Sin autosnap: hasta el último sellado (6 h). |
 | **Conflicto al cambiar de máquina** | Rebase falla en el arranque | Autosync **se pausa** para ese repo + notificación; resuelvo a mano. Nunca se pierde nada. |
 
 ---
@@ -257,7 +269,7 @@ repos:
 - Config + validación de repos.
 - Watcher + debounce + snapshot (amend) cada 5 min (+ snapshot inicial al arrancar).
 - Filtro texto/tamaño.
-- Sellado cada 2 h con **mensaje de fallback**.
+- Sellado cada 6 h con **mensaje de fallback**.
 - Logging.
 > Con esto ya tengo autobackup + versionado, que es el 80 % del valor.
 
@@ -283,15 +295,15 @@ repos:
 - Comando/pestaña **`sincrogit status`** y atajo de "sellar+push ahora" (ya en el menú).
 
 **Opcional / futuro:**
-- Rama `autosnap` con commits reales cada 5 min (historial intra-ventana navegable) en lugar de depender del reflog.
+- Rama `autosnap` con commits reales cada 5 min (historial intra-ventana navegable *en el remoto*) en lugar del espejo force-push del último estado.
 - Variante "espejo en vivo" (force-with-lease del WIP) si el backup remoto en tiempo real se vuelve necesario.
 
 ---
 
 ## 13. Decisiones tomadas
 
-- ✅ Modelo **WIP+amend → seal cada 2h**.
-- ✅ **Intervalos: snapshot cada 5 min, sellado cada 2 h.**
+- ✅ Modelo **WIP+amend → seal cada 6h** + **autosnap** (espejo en vivo) cada 30 min.
+- ✅ **Intervalos: snapshot cada 5 min, sellado cada 6 h, autosnap cada 30 min.**
 - ✅ Push **solo de sellados** (WIP local; pull siempre limpio; sin force-push).
 - ✅ IA **híbrida** (Ollama local → nube fallback; opción de enviar solo stats).
 - ✅ **Proveedor de nube: Gemini** (`gemini-2.5-flash-lite`), API key en variable de entorno.
@@ -299,9 +311,9 @@ repos:
 - ✅ **Python**; git vía subprocess; `watchdog`.
 - ✅ Background: **Tarea programada al iniciar sesión** con `pythonw.exe`.
 - ✅ Rama de trabajo: **`main`** (confirmar por repo).
-- ✅ **Sellado solo cada 2 h** (sin sellado por inactividad ni por apagado); `sincrogit sync` manual para el handoff.
+- ✅ **Sellado cada 6 h** (timeline permanente grueso); `sincrogit sync` manual para el handoff por la vía limpia.
 - ✅ **Pull periódico cada 10 min** (`fetch` + pull solo si el remoto tiene commits nuevos), además del pull de arranque.
-- ⏳ Rama `autosnap` (historial fino navegable): **diferida a futuro**; de momento `reflog`.
+- ✅ **Autosnap** (espejo en vivo de `HEAD` a `refs/autosnap/<host>/<rama>`, force-push cada 30 min, solo si cambió): RPO de fallo de disco ≈ 30 min, recuperación cross-machine por fichero o repo entero (CLI `--autosnaps` + GUI). La variante "historial fino navegable en el remoto" (un commit por snapshot) sigue diferida.
 
 ## 14. Cómo configurar la API key de Gemini (pendiente al llegar a Fase 2)
 
