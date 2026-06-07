@@ -6,6 +6,7 @@ de luz), espeja el último estado al remoto cada ~30 min (**autosnap**, para rec
 ante fallo de disco) y "sella" commits con historial limpio cada 6 horas.
 
 > Diseño completo y decisiones en **[DISENO.md](DISENO.md)**.
+> ¿No eres experto en Git? Empieza por la **[guía para humanos](GUIA.md)**.
 
 ## Estado: Fases 1 y 2 completas
 
@@ -199,6 +200,34 @@ olvida de commitear y cambia de máquina. Los compromisos deliberados:
 El coste que aceptamos: el historial se lee como bloques de tiempo en vez de commits
 perfectamente atómicos, y un fallo total de disco puede perder hasta ~30 min — a cambio
 de backup versionado sin esfuerzo y sincronización secuencial entre máquinas.
+
+## Limitaciones
+
+SincroGit tiene un alcance deliberadamente acotado. Lo que **no** hace:
+
+- **Secuencial, no simultáneo.** Asume una máquina a la vez. No fusiona ediciones
+  simultáneas en dos máquinas — el rebase se aborta y el repo se pausa para que resuelvas
+  a mano. Es una herramienta personal, no para trabajo en equipo sobre una rama compartida.
+- **Solo texto, < 1 MB.** Los binarios y ficheros grandes nunca se commitean
+  automáticamente; esos van a mano. No es un backup total de la carpeta.
+- **Historial por bloques de tiempo.** Los sellados `sincro:` agrupan ~6 h de cambios
+  inconexos, así que un `git bisect`/`revert` de un cambio lógico es más difícil que sobre
+  un historial curado (usa **Smart Commit** cuando quieras un commit limpio).
+- **Las ventanas de recuperación no son cero.** Corte de luz/crash: hasta ~5 min (último
+  snapshot); fallo total de disco: hasta ~30 min (último autosnap).
+- **Los conflictos los resuelves tú.** Ante conflicto nunca fuerza — pausa y avisa; lo
+  arreglas en la terminal y reanudas.
+- **Necesita tus credenciales de Git.** Corre en tu sesión de usuario y pushea con tu
+  configuración SSH/credenciales; sin acceso de push conserva el trabajo en local y
+  reintenta.
+- **Los mensajes de IA necesitan un modelo y son aproximados.** Sin Ollama ni API key de
+  Gemini usa un mensaje determinista; el resumen de una ventana de 6 h es grueso por
+  naturaleza.
+- **Pensado para Windows.** Diseñado para uso interactivo en Windows; en Linux/macOS
+  haces el pull a mano.
+- **No metas el repo dentro de la carpeta de otra herramienta de sync** (Dropbox/OneDrive/
+  Drive) — el sincronizador externo puede corromper `.git`. Deja que SincroGit gestione
+  Git y la otra herramienta gestione otros ficheros.
 
 ## Compilar un .exe autónomo
 

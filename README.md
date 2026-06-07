@@ -5,7 +5,8 @@ It takes automatic *snapshots* of your repos every few minutes (auto-backup agai
 power cuts), mirrors the latest state to the remote every ~30 min (**autosnap**, for
 disk-failure recovery) and "seals" commits with a clean history every 6 hours.
 
-> Full design and decisions in **[DESIGN.md](DESIGN.md)**.
+> Full design and decisions in **[DESIGN.md](DESIGN.md)**. New to Git or want the
+> plain-language version? See **[GUIDE.md](GUIDE.md)** (Spanish: [GUIA.md](GUIA.md)).
 
 ## Status: Phases 1 and 2 complete
 
@@ -184,6 +185,31 @@ commit and moves between machines. The deliberate trade-offs:
 The cost we accept: history reads as time-buckets rather than perfectly atomic
 commits, and a total disk failure can lose up to ~30 min — in exchange for effortless
 versioned backup and sequential multi-machine sync.
+
+## Limitations
+
+SincroGit has a deliberately narrow scope. What it does **not** do:
+
+- **Sequential, not concurrent.** It assumes one machine at a time. Simultaneous edits on
+  two machines are not merged — the rebase is aborted and the repo paused for you to
+  resolve by hand. It's a personal tool, not for team work on a shared branch.
+- **Text only, < 1 MB.** Binaries and large files are never auto-committed; add those by
+  hand. It is not a full backup of the folder.
+- **Time-bucket history.** `sincro:` seals group ~6 h of unrelated changes, so a
+  `git bisect`/`revert` of one logical change is harder than on curated history (use
+  **Smart Commit** when you want a clean, logical commit).
+- **Recovery windows aren't zero.** A power cut/crash can lose up to ~5 min (last
+  snapshot); a total disk failure up to ~30 min (last autosnap).
+- **Conflicts are yours to resolve.** On a rebase conflict it never forces — it pauses
+  and notifies; you fix it in the terminal and resume.
+- **Needs your Git credentials.** It runs in your user session and pushes with your
+  existing SSH/credential setup; without push access it keeps work local and retries.
+- **AI messages need a model and are approximate.** Without Ollama or a Gemini key it
+  uses a deterministic fallback; a summary of a 6 h window is coarse by nature.
+- **Windows-first.** Built for interactive use on Windows; on Linux/macOS you pull by hand.
+- **Don't nest the repo inside another sync tool's folder** (Dropbox/OneDrive/Drive) — the
+  external syncer can corrupt `.git`. Let SincroGit handle Git; let the other tool handle
+  other files.
 
 ## Building a standalone .exe
 
