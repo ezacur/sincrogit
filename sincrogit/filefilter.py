@@ -10,8 +10,27 @@ import os
 
 log = logging.getLogger("sincrogit.filter")
 
-# How many bytes to read to decide whether a file is text.
-_TEXT_SNIFF_BYTES = 8192
+# How many bytes to inspect to decide text vs binary. Generous on purpose: the
+# size filter already guaranteed the file is <= max_bytes by the time we get
+# here, so we can afford to scan a large prefix (1 MiB) instead of a tiny sample
+# — a binary whose first NUL byte appears late is no longer mistaken for text.
+_TEXT_SNIFF_BYTES = 1 << 20            # 1 MiB
+_RATIO_SAMPLE = 1 << 16                # cap the per-byte control-ratio scan at 64 KiB
+_MAX_CONTROL_RATIO = 0.10              # >10% control bytes (non-UTF-8) => treat as binary
+
+# UTF-16/UTF-32 text starts with a BOM and *does* contain NUL bytes, so it must be
+# detected before the NUL test or it would be misread as binary.
+_TEXT_BOMS = (
+    b"\x00\x00\xfe\xff",  # UTF-32 BE
+    b"\xff\xfe\x00\x00",  # UTF-32 LE
+    b"\xfe\xff",          # UTF-16 BE
+    b"\xff\xfe",          # UTF-16 LE
+    b"\xef\xbb\xbf",      # UTF-8 with BOM
+)
+
+# Control bytes that real text almost never contains: everything below 0x20
+# except the usual whitespace (tab, LF, VT, FF, CR), plus DEL (0x7F).
+_TEXT_WHITESPACE = frozenset({0x09, 0x0A, 0x0B, 0x0C, 0x0D})
 
 try:
     import pathspec  # type: ignore
@@ -65,10 +84,31 @@ class FileFilter:
 
     @staticmethod
     def _is_text(abspath: str) -> bool:
-        """Standard heuristic (like git): binary if there's a NUL byte near the start."""
+        """Heuristic for "a human reading this flat would find it makes sense".
+
+        Layered, from strongest signal to weakest (see §5 of DESIGN.md):
+          - empty file                -> text
+          - starts with a Unicode BOM -> text (UTF-8/16/32)
+          - contains a NUL byte       -> binary
+          - else: decide by the proportion of control bytes — real text (ASCII,
+            UTF-8, Latin-1, ...) has very few; binary/garbage has many. UTF-8
+            multibyte chars are bytes >= 0x80, not control bytes, so this keeps
+            accented/emoji/CJK text while rejecting control-byte spam.
+        """
         try:
             with open(abspath, "rb") as fh:
                 chunk = fh.read(_TEXT_SNIFF_BYTES)
         except OSError:
             return False
-        return b"\x00" not in chunk
+
+        if not chunk:
+            return True
+        if chunk.startswith(_TEXT_BOMS):
+            return True
+        if b"\x00" in chunk:
+            return False
+        sample = chunk[:_RATIO_SAMPLE]
+        control = sum(
+            1 for b in sample if (b < 0x20 and b not in _TEXT_WHITESPACE) or b == 0x7F
+        )
+        return control / len(sample) <= _MAX_CONTROL_RATIO

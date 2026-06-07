@@ -125,7 +125,7 @@ Since sealing every 6 h would leave up to 6 h of work off the remote, **autosnap
 
 **Criterion: only TEXT and < 1 MB is versioned automatically.** Everything else (binaries, large files) I manage **by hand**.
 
-- **"Text" detection** by content, not by extension: read the first ~8 KB and discard if there are NUL bytes / it isn't decodable (standard "binary" heuristic). It's more reliable than an extension list.
+- **"Text" detection** by content, not by extension (more reliable than an extension list). Since the size filter already guarantees the file is ≤ 1 MB, a large prefix is inspected (up to ~1 MB, not just a few KB) and classified in layers: empty → text; a Unicode **BOM** (UTF-8/16/32) → text; a **NUL** byte → binary; otherwise decide by the **proportion of control bytes** (those < 0x20 that aren't whitespace/tab/newlines, + DEL): very few → readable text (incl. UTF-8 with accents/emoji/CJK and Latin-1); many → binary. *(Limitation: UTF-16/32 **without** a BOM contains NUL bytes → treated as binary, same as git.)*
 - **Size:** discard if > 1 MB.
 - **Key implementation:** the filter lives in the **tool's `git add` logic** (it runs `git add` *only* on files that pass the filter; **never** `git add -A`).
   - Advantage: since I **don't** use `.gitignore` for this, if one day I want to add a binary or a large file, I just `git add <file>` by hand and commit — the tool doesn't stop me, it simply doesn't touch it on its own.

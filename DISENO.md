@@ -123,7 +123,7 @@ Como sellar cada 6 h dejaría hasta 6 h de trabajo fuera del remoto, **autosnap*
 
 **Criterio: se versiona automáticamente solo lo que sea TEXTO y < 1 MB.** Todo lo demás (binarios, ficheros grandes) lo gestiono **a mano**.
 
-- **Detección de "texto"** por contenido, no por extensión: leer los primeros ~8 KB y descartar si hay bytes NUL / no es decodificable (heurística estándar de "binario"). Es más fiable que una lista de extensiones.
+- **Detección de "texto"** por contenido, no por extensión (más fiable que una lista de extensiones). Como el filtro de tamaño ya garantiza que el fichero es ≤ 1 MB, se inspecciona un prefijo grande (hasta ~1 MB, no solo unos KB) y se clasifica por capas: vacío → texto; **BOM** Unicode (UTF‑8/16/32) → texto; un byte **NUL** → binario; si no, se decide por la **proporción de bytes de control** (los < 0x20 que no son espacios/tab/saltos, + DEL): muy pocos → texto legible (incluye UTF‑8 con acentos/emoji/CJK y Latin‑1); muchos → binario. *(Limitación: UTF‑16/32 **sin** BOM contiene NUL → se trata como binario, igual que git.)*
 - **Tamaño:** descartar si > 1 MB.
 - **Implementación clave:** el filtro vive en la **lógica de `git add` de la herramienta** (se hace `git add` *solo* de los ficheros que pasan el filtro; **nunca** `git add -A`).
   - Ventaja: como **no** uso `.gitignore` para esto, si algún día quiero meter un binario o un fichero grande, basta con `git add <fichero>` a mano y commitear — la herramienta no me lo impide, simplemente no lo toca por su cuenta.
