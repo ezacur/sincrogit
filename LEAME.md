@@ -17,6 +17,10 @@ ante fallo de disco) y "sella" commits con historial limpio cada 6 horas.
 - ✅ Snapshot inicial al arrancar (captura cambios previos, p. ej. tras un reinicio).
 - ✅ **Sellado** cada 6 h: convierte el WIP en commit permanente + crea un WIP nuevo.
 - ✅ **Filtro**: solo versiona automáticamente texto < 1 MB; binarios/grandes a mano.
+- ✅ **Versionado opcional de binarios** (`extra_includes`, p. ej. `**/*.docx`): versiona
+  también los binarios que elijas — con **diff legible para documentos Word** vía un driver
+  textconv de pandoc (sin `git config` por máquina), así los mensajes de IA y la
+  time-machine muestran *qué cambió en el documento*.
 - ✅ Mensaje de commit de *fallback* (determinista) al sellar.
 - ✅ Apagado limpio con snapshot local final.
 - ✅ Logging a fichero rotativo + consola.
@@ -122,6 +126,27 @@ pip install -r requirements.txt
   Con `cloud_send_content: false` (por defecto) a Gemini solo le llegan nombres de
   fichero y `--stat`, no el contenido.
 - Si no configuras ninguno, se usa un **mensaje de fallback** determinista.
+
+### Versionar documentos Word (.docx)
+
+Por defecto los binarios no se versionan solos. Para seguir un `.docx` (sincronizado +
+restaurable) con **diff legible**:
+
+1. Instala [pandoc](https://pandoc.org); si no está en el PATH, pon `pandoc_path` en la
+   config (p. ej. `pandoc_path: C:/tools/pandoc.exe`).
+2. Añade el patrón a los includes del repo:
+   ```yaml
+   defaults:
+     extra_includes:
+       - "**/*.docx"
+   ```
+
+SincroGit versiona el `.docx` y lo mapea a un driver de diff de pandoc en `.gitattributes`
+(versionado, así viaja), pasando el textconv **en línea en cada llamada — sin `git config`
+en ninguna máquina**. Entonces `git diff`, los mensajes de IA y la time-machine muestran
+los cambios del documento como markdown. El `.docx` sigue siendo la fuente de verdad; la
+vista markdown es *lossy* (sin formato/imágenes), y sin pandoc degrada a versionar el
+fichero como blob opaco.
 
 ### Restaurar una versión pasada (máquina del tiempo)
 
@@ -267,3 +292,6 @@ sobreescribibles por repo):
 | `autosnap_interval_min` | 30 | Cada cuánto se hace force-push del espejo (solo si cambió) |
 | `max_file_bytes` | 1048576 | Tamaño máximo de fichero a versionar (1 MB) |
 | `extra_excludes` | — | Patrones estilo `.gitignore` a excluir |
+| `extra_includes` | — | patrones versionados aunque sean binarios (p. ej. `**/*.docx`) |
+| `max_include_bytes` | 26214400 | tope de tamaño (25 MB) para `extra_includes` |
+| `pandoc_path` | `pandoc` | **(top-level)** ruta a pandoc para diffs legibles de `.docx` |

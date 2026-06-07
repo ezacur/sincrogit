@@ -23,6 +23,8 @@ _INHERITABLE = [
     "git_timeout_sec",
     "autosnap",
     "autosnap_interval_min",
+    "extra_includes",
+    "max_include_bytes",
 ]
 
 
@@ -40,6 +42,9 @@ class RepoConfig:
     pull_interval_min: int = 10
     max_file_bytes: int = 1_048_576       # 1 MB
     extra_excludes: list = field(default_factory=list)
+    extra_includes: list = field(default_factory=list)  # glob patterns versioned even
+                                          # if binary (e.g. "**/*.docx"); opt-in
+    max_include_bytes: int = 26_214_400   # 25 MB size cap for extra_includes
     push: bool = True                     # push sealed commits to the remote
     pull: bool = True                     # periodic pull from the remote
     git_timeout_sec: int = 60             # limit for network operations (fetch/push)
@@ -85,6 +90,10 @@ class Config:
     repos: list
     log: LogConfig
     ai: AiConfig
+    # Path to the `pandoc` executable (machine-specific). Used to show readable
+    # diffs of .docx and similar via a git textconv driver. "pandoc" assumes it's
+    # on PATH; set a full path if not (forward slashes are fine on Windows).
+    pandoc_path: str = "pandoc"
 
 
 def load_config(path: str) -> Config:
@@ -138,7 +147,9 @@ def load_config(path: str) -> Config:
         **{k: v for k, v in ai_raw.items() if k in AiConfig.__dataclass_fields__}
     )
 
-    return Config(repos=repos, log=log_cfg, ai=ai_cfg)
+    pandoc_path = raw.get("pandoc_path", "pandoc")
+
+    return Config(repos=repos, log=log_cfg, ai=ai_cfg, pandoc_path=pandoc_path)
 
 
 def append_repo(config_path: str, repo_entry: dict) -> None:

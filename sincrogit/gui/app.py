@@ -318,6 +318,14 @@ class TrayApp:
     def file_content_at(self, name, relpath, sha):
         return self.engine.file_content_at(name, relpath, sha)
 
+    def file_text_at(self, name, relpath, sha):
+        """Readable text of a version (markdown for .docx) — for the history diff."""
+        return self.engine.file_text_at(name, relpath, sha)
+
+    def current_text(self, name, relpath):
+        """Readable text of the current working-tree file (markdown for .docx)."""
+        return self.engine.worktree_text(name, relpath)
+
     def restore_file(self, name, relpath, sha):
         return self.engine.restore_file(name, relpath, sha)
 

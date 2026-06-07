@@ -17,6 +17,10 @@ disk-failure recovery) and "seals" commits with a clean history every 6 hours.
 - ✅ Initial snapshot on startup (captures pre-existing changes, e.g. after a reboot).
 - ✅ **Sealing** every 6 h: turns the WIP into a permanent commit + creates a new WIP.
 - ✅ **Filter**: only text < 1 MB is versioned automatically; binaries/large files by hand.
+- ✅ **Opt-in binary versioning** (`extra_includes`, e.g. `**/*.docx`): version chosen
+  binaries too — with **readable diffs for Word docs** via a pandoc textconv driver
+  (no per-machine `git config` needed), so the AI seal/Smart Commit messages and the
+  time-machine show *what changed in the document*.
 - ✅ Deterministic *fallback* commit message when sealing.
 - ✅ Clean shutdown with a final local snapshot.
 - ✅ Logging to a rotating file + console.
@@ -115,6 +119,27 @@ pip install -r requirements.txt
   With `cloud_send_content: false` (the default), Gemini only receives file names
   and `--stat`, not the content.
 - If you configure neither, a deterministic **fallback message** is used.
+
+### Versioning Word documents (.docx)
+
+By default binaries aren't auto-versioned. To track `.docx` (synced + restorable) with
+**readable diffs**:
+
+1. Install [pandoc](https://pandoc.org); if it's not on PATH, set `pandoc_path` in the
+   config (e.g. `pandoc_path: C:/tools/pandoc.exe`).
+2. Add the pattern to your repo's includes:
+   ```yaml
+   defaults:
+     extra_includes:
+       - "**/*.docx"
+   ```
+
+SincroGit versions the `.docx` itself and maps it to a pandoc diff driver in
+`.gitattributes` (committed, so it travels), passing the textconv command **inline per
+call — no `git config` on any machine**. Then `git diff`, the AI seal messages, and the
+time-machine show the document's changes as markdown. The `.docx` stays the source of
+truth; the markdown view is lossy (no formatting/images), and without pandoc it degrades
+to versioning the file as an opaque blob.
 
 ### Restore a past version (time machine)
 
@@ -249,3 +274,6 @@ overridable per repo):
 | `autosnap_interval_min` | 30 | How often the mirror is force-pushed (only if it changed) |
 | `max_file_bytes` | 1048576 | Maximum file size to version (1 MB) |
 | `extra_excludes` | — | `.gitignore`-style patterns to exclude |
+| `extra_includes` | — | patterns versioned even if binary (e.g. `**/*.docx`) |
+| `max_include_bytes` | 26214400 | size cap (25 MB) for `extra_includes` |
+| `pandoc_path` | `pandoc` | **(top-level)** path to pandoc for readable `.docx` diffs |

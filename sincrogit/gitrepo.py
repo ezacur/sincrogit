@@ -12,8 +12,10 @@ Two-tier model (see §2 of DESIGN.md):
 import logging
 import os
 import re
+import shutil
 import socket
 import subprocess
+import tempfile
 
 log = logging.getLogger("sincrogit.git")
 
@@ -27,6 +29,30 @@ def autosnap_host() -> str:
     name = socket.gethostname() or "host"
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name).strip("._-")
     return name or "host"
+
+
+def resolve_pandoc(pandoc_path: str | None) -> str | None:
+    """Return a working pandoc command (forward-slashed) or None if unavailable.
+
+    Tries the configured path/command, then PATH. Used to render readable diffs of
+    binary documents (.docx, ...) via a git textconv driver. Forward slashes so the
+    path survives git's internal shell on Windows.
+    """
+    if not pandoc_path:
+        return None
+    for cand in (pandoc_path, shutil.which(pandoc_path)):
+        if not cand:
+            continue
+        try:
+            res = subprocess.run(
+                [cand, "--version"], capture_output=True, text=True,
+                timeout=10, creationflags=_NO_WINDOW,
+            )
+            if res.returncode == 0:
+                return cand.replace("\\", "/")
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return None
 
 # On Windows, a windowed (--noconsole) app spawns a console window for every
 # child process. CREATE_NO_WINDOW suppresses that flash for each git call.
@@ -42,8 +68,11 @@ class GitRepo:
     # Message prefix that identifies a (transient) WIP commit.
     WIP_MESSAGE = "WIP: autosnapshot"
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, pandoc: str | None = None):
         self.path = path
+        # Resolved pandoc command (or None). If set, git diffs get a textconv
+        # driver named 'pandoc' so .docx (mapped via .gitattributes) diff readably.
+        self._pandoc = pandoc
 
     # ----------------------------------------------------------------- core
     def _run(
@@ -58,8 +87,15 @@ class GitRepo:
             "-c", "core.quotepath=false",        # don't octal-escape non-ASCII paths
             "-c", "i18n.logOutputEncoding=utf-8",  # read log/diff output as UTF-8...
             "-c", "i18n.commitEncoding=utf-8",     # ...regardless of repo locale
-            *args,
         ]
+        if self._pandoc:
+            # Provide the textconv command inline (per-call) so no persistent
+            # `git config` is needed on any machine. Only takes effect for paths
+            # mapped to `diff=pandoc` in .gitattributes (e.g. *.docx). The path is
+            # quoted in case it contains spaces (git runs textconv via its shell).
+            cmd += ["-c", f'diff.pandoc.textconv="{self._pandoc}" '
+                          f'--from=docx --to=markdown --wrap=none']
+        cmd += list(args)
         env = {
             **os.environ,
             # If credentials are missing, git fails fast instead of waiting for
@@ -158,30 +194,39 @@ class GitRepo:
         return any(os.path.exists(os.path.join(gd, m)) for m in markers)
 
     # ------------------------------------------------------------ mutations
-    def ensure_gitattributes(self) -> bool:
-        """Create a .gitattributes with '* text=auto' if none exists.
+    def ensure_gitattributes(self, lines=("* text=auto",)) -> list:
+        """Ensure each given line is present in .gitattributes (append the missing
+        ones, creating the file if needed). Existing content/comments are kept.
+        Returns the lines actually added (empty list if all were already there).
 
-        This normalizes line endings inside the repo (text blobs stored as LF)
-        regardless of each machine's core.autocrlf, so a CRLF/LF-only change is
-        never seen as an edit and machines don't fight over line endings. Written
-        with LF itself. Returns True if it created the file. (The next snapshot
-        commits it; on a repo whose blobs were CRLF this triggers a one-time,
-        intended renormalization.)
+        Used for: '* text=auto' (normalize line endings so a CRLF/LF-only change
+        isn't seen as an edit across machines) and '*.docx -text diff=pandoc' (map
+        Word docs to the pandoc textconv diff driver and keep them out of EOL
+        normalization). Written with LF.
         """
         path = os.path.join(self.path, ".gitattributes")
+        raw = ""
         if os.path.exists(path):
-            return False
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    raw = fh.read()
+            except OSError:
+                return []
+        present = {ln.strip() for ln in raw.splitlines()}
+        to_add = [ln for ln in lines if ln.strip() and ln.strip() not in present]
+        if not to_add:
+            return []
         try:
-            with open(path, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(
-                    "# Added by SincroGit: normalize line endings (store text blobs as\n"
-                    "# LF regardless of each machine's core.autocrlf), so a CRLF/LF-only\n"
-                    "# change is never an edit and machines don't fight over endings.\n"
-                    "* text=auto\n"
-                )
-            return True
+            with open(path, "a", encoding="utf-8", newline="\n") as fh:
+                if not raw:
+                    fh.write("# Added by SincroGit.\n")
+                elif not raw.endswith("\n"):
+                    fh.write("\n")
+                for ln in to_add:
+                    fh.write(ln + "\n")
+            return to_add
         except OSError:
-            return False
+            return []
 
     def ensure_wip(self) -> bool:
         """Ensure HEAD is a WIP commit. Returns True if it created one."""
@@ -602,6 +647,63 @@ class GitRepo:
         if res.returncode != 0:
             return None
         return res.stdout[:max_bytes]
+
+    # --------------------------------------------------- readable text (docx, ...)
+    def file_text_at(self, relpath: str, sha: str, max_bytes: int = 400_000) -> str | None:
+        """Readable text of a file version. For .docx (with pandoc) it's the
+        markdown rendering; otherwise the raw content (file_content_at)."""
+        rel = relpath.replace("\\", "/")
+        if self._pandoc and rel.lower().endswith(".docx"):
+            res = subprocess.run(
+                ["git", "-C", self.path, "show", f"{sha}:{rel}"],
+                capture_output=True, creationflags=_NO_WINDOW,
+            )  # binary blob (no text decode)
+            if res.returncode == 0:
+                md = self._docx_bytes_to_md(res.stdout)
+                if md is not None:
+                    return md[:max_bytes]
+        return self.file_content_at(rel, sha, max_bytes)
+
+    def worktree_text(self, relpath: str, max_bytes: int = 400_000) -> str:
+        """The working-tree file as readable text (markdown for .docx). '' if missing."""
+        rel = relpath.replace("\\", "/")
+        full = os.path.join(self.path, rel.replace("/", os.sep))
+        if self._pandoc and rel.lower().endswith(".docx"):
+            try:
+                with open(full, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                return ""
+            return (self._docx_bytes_to_md(data) or "")[:max_bytes]
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                return fh.read(max_bytes)
+        except OSError:
+            return ""
+
+    def _docx_bytes_to_md(self, data: bytes) -> str | None:
+        """Convert .docx bytes to markdown via pandoc (through a temp file, the
+        most reliable way for binary formats). None on failure."""
+        if not data:
+            return ""
+        fd, tmp = tempfile.mkstemp(suffix=".docx")
+        try:
+            os.write(fd, data)
+            os.close(fd)
+            res = subprocess.run(
+                [self._pandoc, "--from=docx", "--to=markdown", "--wrap=none", tmp],
+                capture_output=True, timeout=30, creationflags=_NO_WINDOW,
+            )
+            if res.returncode != 0:
+                return None
+            return res.stdout.decode("utf-8", errors="replace")
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     def restore_file(self, relpath: str, sha: str):
         """Write the file's version at `sha` into the working tree (and index).

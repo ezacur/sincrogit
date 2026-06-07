@@ -128,6 +128,7 @@ Como sellar cada 6 h dejaría hasta 6 h de trabajo fuera del remoto, **autosnap*
 - **Implementación clave:** el filtro vive en la **lógica de `git add` de la herramienta** (se hace `git add` *solo* de los ficheros que pasan el filtro; **nunca** `git add -A`).
   - Ventaja: como **no** uso `.gitignore` para esto, si algún día quiero meter un binario o un fichero grande, basta con `git add <fichero>` a mano y commitear — la herramienta no me lo impide, simplemente no lo toca por su cuenta.
 - Configurable: tamaño máximo y patrones de exclusión extra (p. ej. `node_modules/`, `.venv/`, `dist/`).
+- **Lista de inclusión (`extra_includes`)**: patrones que se versionan **aunque sean binarios** (p. ej. `**/*.docx`), bajo un tope de tamaño aparte (`max_include_bytes`, 25 MB). Para `.docx` y similares, SincroGit mapea el fichero a un **driver de diff `textconv` con pandoc** en `.gitattributes` (versionado, viaja) e inyecta el comando textconv **en línea** (`git -c diff.pandoc.textconv=…`) en cada diff → diffs legibles (markdown) sin `git config` por máquina; alimenta los mensajes de IA y la time-machine. El `.docx` es la fuente de verdad; el markdown es una vista *lossy*. La ruta de pandoc es configurable (`pandoc_path`, por máquina); sin pandoc, degrada a versionar el blob opaco.
 
 ---
 

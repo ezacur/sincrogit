@@ -8,7 +8,8 @@ that file or the whole repository, to the chosen version.
 Talks to the app through the `controller`:
   repo_list() -> [(name, path), ...]
   file_history(name, relpath) -> [ {sha, epoch, source, subject}, ... ]
-  file_content_at(name, relpath, sha) -> str | None
+  file_text_at(name, relpath, sha) -> str | None   (markdown for .docx)
+  current_text(name, relpath) -> str               (working-tree text; md for .docx)
   restore_file(name, relpath, sha) -> (ok, message)
   restore_repo(name, sha) -> (ok, message)
   fetch_autosnaps(name) -> [ {host, branch, epoch, sha, ...}, ... ]
@@ -187,16 +188,12 @@ class HistoryDialog(QDialog):
         return self.ed_file.text().strip().replace("\\", "/")
 
     def _current_content(self) -> str:
-        """The file's current content on disk (working tree), or '' if missing."""
-        base, rel = self._repo_path(), self._relpath()
-        if not base or not rel:
+        """The file's current content as readable text (markdown for .docx), or ''
+        if missing. Routed through the controller so .docx is converted via pandoc."""
+        rel = self._relpath()
+        if not rel:
             return ""
-        full = os.path.join(base, rel.replace("/", os.sep))
-        try:
-            with open(full, "r", encoding="utf-8", errors="replace") as fh:
-                return fh.read(400_000)
-        except (OSError, ValueError):
-            return ""  # missing/unreadable -> treat as empty (e.g. file was deleted)
+        return self.c.current_text(self._repo_name(), rel)
 
     def _browse(self):
         base = self._repo_path()
@@ -249,7 +246,7 @@ class HistoryDialog(QDialog):
         if not ver:
             self.preview.clear()
             return
-        content = self.c.file_content_at(self._repo_name(), self._relpath(), ver["sha"])
+        content = self.c.file_text_at(self._repo_name(), self._relpath(), ver["sha"])
         if content is None:
             self.preview.setPlainText("(binary or unavailable)")
             return

@@ -84,6 +84,9 @@ Solo tienes que recordar cuatro cosas:
 1. **Archivos gigantes y fotos:** SincroGit ignora imágenes pesadas y binarios (solo
    versiona texto de menos de 1 MB). Si quieres subir una imagen, un `git add foto.jpg` a
    mano y listo; él dirá "ah, vale" y la incluirá en el siguiente paquete.
+   *(¿Documentos Word? Sí se pueden versionar con diff legible: añade `**/*.docx` a
+   `extra_includes` en la config — necesita [pandoc](https://pandoc.org). Ver el
+   [README](README.md).)*
 2. **Conflictos ("me he pisado a mí mismo"):** si trabajaste en las dos máquinas sin
    sincronizar, SincroGit no adivina qué versión gana. Como **nunca** es destructivo, se
    pausa (icono rojo) y te pide ayuda. Lo arreglas en tu editor y le das a **"Reanudar"**.

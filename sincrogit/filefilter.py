@@ -41,20 +41,26 @@ except ImportError:  # pragma: no cover
 class FileFilter:
     """Decides whether a file should be included in the automatic commit."""
 
-    def __init__(self, max_bytes: int, excludes: list):
+    def __init__(self, max_bytes: int, excludes: list,
+                 includes: list | None = None, max_include_bytes: int | None = None):
         self.max_bytes = max_bytes
         self.excludes = excludes or []
-        self._spec = None
-        if self.excludes:
-            if pathspec is not None:
-                self._spec = pathspec.PathSpec.from_lines(
-                    "gitwildmatch", self.excludes
-                )
-            else:
-                log.warning(
-                    "There are 'extra_excludes' in the config but the 'pathspec' "
-                    "package is not installed; exclusions will be ignored."
-                )
+        self.includes = includes or []
+        self.max_include_bytes = max_include_bytes or max_bytes
+        self._spec = self._compile(self.excludes, "extra_excludes")
+        self._include_spec = self._compile(self.includes, "extra_includes")
+
+    @staticmethod
+    def _compile(patterns: list, label: str):
+        if not patterns:
+            return None
+        if pathspec is None:
+            log.warning(
+                "There are '%s' in the config but the 'pathspec' package is not "
+                "installed; they will be ignored.", label,
+            )
+            return None
+        return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
     def accept(self, abspath: str, relpath: str) -> bool:
         return self.reason_to_skip(abspath, relpath) is None
@@ -75,6 +81,15 @@ class FileFilter:
             size = os.path.getsize(abspath)
         except OSError:
             return "unreadable"
+
+        # Explicitly-included patterns (e.g. "**/*.docx") are versioned even if
+        # binary, under a separate (larger) size cap. Excludes still win (checked
+        # above), so an included file inside an excluded folder stays excluded.
+        if self._include_spec is not None and self._include_spec.match_file(rel):
+            if size > self.max_include_bytes:
+                return f"too large ({size} > {self.max_include_bytes} bytes)"
+            return None
+
         if size > self.max_bytes:
             return f"too large ({size} > {self.max_bytes} bytes)"
 

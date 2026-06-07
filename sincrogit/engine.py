@@ -27,7 +27,7 @@ import threading
 import time
 
 from .ai import generate_commit_message
-from .gitrepo import GitError, GitRepo, autosnap_host
+from .gitrepo import GitError, GitRepo, autosnap_host, resolve_pandoc
 from .filefilter import FileFilter
 from .messages import build_fallback_message
 from .notify import notify
@@ -101,6 +101,10 @@ class Engine:
         self._emit_event = emit_event
         # This machine's name for the per-host autosnap ref (computed once).
         self._autosnap_host = autosnap_host()
+        # Resolve pandoc once (for readable .docx diffs via textconv); None if absent.
+        self._pandoc = resolve_pandoc(getattr(self.config, "pandoc_path", "pandoc"))
+        if self._pandoc:
+            log.info("pandoc found (%s): .docx diffs will be readable", self._pandoc)
 
     # --------------------------------------------------------------- events
     _LEVELS = {"INFO": logging.INFO, "WARNING": logging.WARNING, "ERROR": logging.ERROR}
@@ -175,6 +179,18 @@ class Engine:
             sealed = st.repo.last_sealed_time()
             st.last_seal_epoch = float(sealed) if sealed else time.time()
             self._emit(st.cfg.name, "info", "external commit detected; seal clock reset")
+
+    def _ensure_docx_attributes(self, st: "RepoState"):
+        """If the repo versions .docx (via extra_includes), map it to the pandoc
+        diff driver in .gitattributes and keep it out of EOL normalization."""
+        if not any("docx" in p.lower() for p in (st.cfg.extra_includes or [])):
+            return
+        try:
+            if st.repo.ensure_gitattributes(["*.docx -text diff=pandoc"]):
+                self._emit(st.cfg.name, "info",
+                           ".gitattributes: mapped *.docx to the pandoc diff driver")
+        except Exception:  # noqa: BLE001 — best-effort convenience
+            pass
 
     def _stage(self, st: "RepoState") -> bool:
         """Stage the filtered changes, warning once about any tracked file that
@@ -292,12 +308,13 @@ class Engine:
             self._watch_ready = True
 
         for rc in self.config.repos:
-            repo = GitRepo(rc.path)
+            repo = GitRepo(rc.path, pandoc=self._pandoc)
             if not repo.is_git_repo():
                 log.error("Not a git repo (skipping): %s", rc.path)
                 continue
 
-            ff = FileFilter(rc.max_file_bytes, rc.extra_excludes)
+            ff = FileFilter(rc.max_file_bytes, rc.extra_excludes,
+                            rc.extra_includes, rc.max_include_bytes)
             st = RepoState(repo, rc, ff)
 
             try:
@@ -324,6 +341,7 @@ class Engine:
                     "until you switch to it",
                     rc.name, branch, rc.branch,
                 )
+            self._ensure_docx_attributes(st)
             self._emit(rc.name, "startup", f"watching '{rc.path}' (branch {branch})")
 
     # ---------------------------------------------------------- loop / life
@@ -688,7 +706,7 @@ class Engine:
     def add_repo(self, rc) -> tuple:
         """Add a repo to the running engine (no restart). `rc` is a RepoConfig
         already merged with defaults. Returns (ok, message)."""
-        repo = GitRepo(rc.path)
+        repo = GitRepo(rc.path, pandoc=self._pandoc)
         if not repo.is_git_repo():
             return False, "not a git repository"
         with self._states_lock:
@@ -696,7 +714,8 @@ class Engine:
                 return False, "repo already added"
         # The new repo isn't shared yet (not in `states`, no watcher), so this
         # git work needs no lock.
-        st = RepoState(repo, rc, FileFilter(rc.max_file_bytes, rc.extra_excludes))
+        st = RepoState(repo, rc, FileFilter(rc.max_file_bytes, rc.extra_excludes,
+                                            rc.extra_includes, rc.max_include_bytes))
         try:
             repo.ensure_wip()
         except GitError as e:
@@ -711,6 +730,7 @@ class Engine:
                 self.watch.watch(rc.path, st.mark_dirty)
             except Exception:  # noqa: BLE001 — watching is best-effort
                 log.warning("[%s] could not start the watcher", rc.name)
+        self._ensure_docx_attributes(st)
         self._emit(rc.name, "startup", f"repo added: '{rc.path}' (branch {st.branch})")
         return True, "added"
 
@@ -838,6 +858,16 @@ class Engine:
         if not st:
             return None
         return st.repo.file_content_at(relpath, sha)
+
+    def file_text_at(self, repo_name: str, relpath: str, sha: str):
+        """Readable text of a past version (markdown for .docx). For the GUI diff."""
+        st = self.repo_state_by_name(repo_name)
+        return st.repo.file_text_at(relpath, sha) if st else None
+
+    def worktree_text(self, repo_name: str, relpath: str):
+        """Readable text of the current working-tree file (markdown for .docx)."""
+        st = self.repo_state_by_name(repo_name)
+        return st.repo.worktree_text(relpath) if st else ""
 
     def restore_file(self, repo_name: str, relpath: str, sha: str):
         """Restore a file to a past version. Returns (ok, message)."""

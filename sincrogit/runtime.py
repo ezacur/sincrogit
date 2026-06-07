@@ -45,6 +45,15 @@ defaults:
     - "**/__pycache__/**"
     - "**/dist/**"
     - "**/build/**"
+  # Version these binary files too (opt-in). With pandoc (see pandoc_path) their
+  # diffs are shown readably (e.g. Word docs). Uncomment to enable:
+  extra_includes: []
+  #   - "**/*.docx"
+  max_include_bytes: 26214400     # 25 MB cap for extra_includes
+
+# Path to pandoc, for readable diffs of .docx and similar (machine-specific).
+# "pandoc" if it's on PATH; otherwise a full path, e.g. C:/tools/pandoc.exe
+pandoc_path: pandoc
 
 ai:
   mode: hybrid                    # hybrid | local | cloud | none
