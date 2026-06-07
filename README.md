@@ -150,6 +150,26 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new)
   Intermediate states of the window are in `git reflog`.
 - **Go back to yesterday**: `git checkout`/`restore` from the matching sealed commit.
 
+## Design notes & trade-offs
+
+SincroGit is intentionally not "pure" Git. Git assumes each commit is a curated
+logical change; SincroGit instead optimizes for a single developer who forgets to
+commit and moves between machines. The deliberate trade-offs:
+
+- **Time-boxed seals, not logical commits.** Automatic seals (`sincro:`) bundle
+  whatever changed in a ~6 h window — a timeline, not atomic units. When you want a
+  curated commit, use **Smart Commit** (AI-proposed Conventional Commits message).
+  The `sincro:` prefix keeps machine commits and yours easy to tell apart.
+- **The WIP is a continuous "save button".** One commit is amended every ~5 min, so a
+  power cut loses nothing; intra-window states stay in the reflog.
+- **Backup is decoupled from history.** `autosnap` force-pushes the live state to a
+  per-machine side ref every ~30 min for disk-failure recovery, while `main` stays
+  clean (only sealed commits) → the other machine's pull is always a clean fast-forward.
+
+The cost we accept: history reads as time-buckets rather than perfectly atomic
+commits, and a total disk failure can lose up to ~30 min — in exchange for effortless
+versioned backup and sequential multi-machine sync.
+
 ## Building a standalone .exe
 
 A single self-contained `SincroGit.exe` (GUI + CLI, no Python needed) is built

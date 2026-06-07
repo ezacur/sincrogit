@@ -163,6 +163,28 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo)
 - **Volver a ayer**: `git checkout`/`restore` desde el commit sellado correspondiente.
 - **Fallo total de disco**: recupera en otra máquina desde el ref `autosnap` (≤30 min).
 
+## Notas de diseño y compromisos
+
+SincroGit, a propósito, no es Git "puro". Git asume que cada commit es un cambio
+lógico curado; SincroGit, en cambio, optimiza para un único desarrollador que se
+olvida de commitear y cambia de máquina. Los compromisos deliberados:
+
+- **Sellados por tiempo, no por unidad lógica.** Los sellados automáticos (`sincro:`)
+  agrupan lo que haya cambiado en una ventana de ~6 h — una línea temporal, no commits
+  atómicos. Cuando quieras un commit curado, usa **Smart Commit** (mensaje Conventional
+  Commits propuesto por IA). El prefijo `sincro:` distingue los commits de la máquina de
+  los tuyos.
+- **El WIP es un "botón de guardar" continuo.** Un único commit se amendea cada ~5 min,
+  así que un corte de luz no pierde nada; los estados intra-ventana quedan en el reflog.
+- **El backup está desacoplado del historial.** `autosnap` hace force-push del estado
+  vivo a un ref lateral por máquina cada ~30 min para recuperación ante fallo de disco,
+  mientras `main` se mantiene limpia (solo sellados) → el pull de la otra máquina es
+  siempre un fast-forward limpio.
+
+El coste que aceptamos: el historial se lee como bloques de tiempo en vez de commits
+perfectamente atómicos, y un fallo total de disco puede perder hasta ~30 min — a cambio
+de backup versionado sin esfuerzo y sincronización secuencial entre máquinas.
+
 ## Compilar un .exe autónomo
 
 Un único `SincroGit.exe` autocontenido (GUI + CLI, sin necesidad de Python) se
