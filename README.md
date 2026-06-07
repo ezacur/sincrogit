@@ -100,6 +100,7 @@ pip install -r requirements.txt
 | `--snapshot-once` / `--seal-once` / `--sync-once` | CLI one-shot and exit |
 | `--history FILE [--pick N]` | browse/restore a file's versions |
 | `--autosnaps` | fetch & list autosnap recovery points (per machine) |
+| `--commit REPO [-m MSG \| -y]` | manual commit of REPO: edit the AI-proposed message in `$EDITOR`, then seal+push |
 
 ### AI messages (optional)
 
@@ -129,6 +130,20 @@ python -m sincrogit -c config.yaml --history path\to\file.py --pick 3
 
 In the tray app, the same is available from the control panel:
 **Status → "File history…"** (browse, preview any version, and restore).
+
+### Manual commit (Smart Commit)
+
+Seal your current work now with a curated message instead of waiting for the 6 h
+automatic seal. SincroGit proposes a Conventional Commits message (covering your work
+since the last manual commit) and opens it in your editor:
+
+```powershell
+python -m sincrogit -c config.yaml --commit myrepo                  # edit the proposal in $EDITOR
+python -m sincrogit -c config.yaml --commit myrepo -y               # accept the proposal as-is
+python -m sincrogit -c config.yaml --commit myrepo -m "feat: add X" # use your own message
+```
+
+In the tray app, the per-repo **"Commit…"** button does the same.
 
 ### Test modes (one pass and exit)
 

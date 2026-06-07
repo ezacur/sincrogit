@@ -107,6 +107,7 @@ pip install -r requirements.txt
 | `--snapshot-once` / `--seal-once` / `--sync-once` | una pasada por CLI y salir |
 | `--history FICHERO [--pick N]` | explorar/restaurar versiones de un fichero |
 | `--autosnaps` | fetch + listado de puntos de recuperación autosnap (por máquina) |
+| `--commit REPO [-m MSG \| -y]` | commit manual de REPO: edita el mensaje propuesto por IA en `$EDITOR` y sella+pushea |
 
 ### Mensajes con IA (opcional)
 
@@ -141,6 +142,20 @@ python -m sincrogit -c config.yaml --autosnaps
 En la app de bandeja, lo mismo está en el panel de control:
 **Estado → "File history…"** (explorar, ver un diff de cualquier versión y restaurar
 un fichero o el repo entero).
+
+### Commit manual (Smart Commit)
+
+Sella tu trabajo actual ahora con un mensaje curado, en vez de esperar al sellado
+automático de 6 h. SincroGit propone un mensaje Conventional Commits (que cubre tu
+trabajo desde el último commit manual) y lo abre en tu editor:
+
+```powershell
+python -m sincrogit -c config.yaml --commit mirepo                    # edita la propuesta en $EDITOR
+python -m sincrogit -c config.yaml --commit mirepo -y                 # acepta la propuesta tal cual
+python -m sincrogit -c config.yaml --commit mirepo -m "feat: añade X" # tu propio mensaje
+```
+
+En la app de bandeja, el botón **"Commit…"** por repo hace lo mismo.
 
 ### Modos de prueba (una pasada y salir)
 

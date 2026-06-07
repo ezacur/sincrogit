@@ -7,6 +7,7 @@ Launch model:
   --snapshot-once|--seal-once|--sync-once   -> CLI one-shot and exit
   --history FILE [--pick N] -> browse/restore a file's version history
   --autosnaps               -> fetch & list autosnap recovery points (per machine)
+  --commit REPO [-m MSG|-y] -> manual commit of REPO (edit the proposed message, then seal+push)
 
 With no arguments the GUI launches; if an instance is already running, the new
 launch just asks the running one to show its panel and exits. Any argument is
@@ -16,7 +17,9 @@ treated as a command-line invocation (output goes to the launching terminal).
 import argparse
 import os
 import signal
+import subprocess
 import sys
+import tempfile
 from datetime import datetime
 
 from .config import load_config
@@ -129,6 +132,100 @@ def _autosnaps_command(engine) -> int:
     return 0
 
 
+def _resolve_editor() -> str:
+    """The editor command string, resolved git-style: GIT_EDITOR / VISUAL /
+    EDITOR / git's core.editor, else a platform default. It may include arguments
+    (e.g. 'code --wait'); we run it through the shell, like git does."""
+    for var in ("GIT_EDITOR", "VISUAL", "EDITOR"):
+        val = os.environ.get(var)
+        if val:
+            return val
+    try:
+        res = subprocess.run(["git", "config", "--get", "core.editor"],
+                             capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except OSError:
+        pass
+    return "notepad" if os.name == "nt" else "vi"
+
+
+def _edit_message_in_editor(initial: str, files_text: str):
+    """Open the user's editor with the proposed message (git-commit style).
+    Returns the edited text with '#' comment lines stripped, or None if aborted
+    or the editor could not be opened.
+    """
+    comment = "\n".join(f"#   {ln}" for ln in (files_text or "").splitlines())
+    template = (
+        f"{initial}\n\n"
+        "# Edit the commit message above. Lines starting with '#' are ignored;\n"
+        "# an empty message aborts the commit.\n"
+        "#\n"
+        "# Files in this commit:\n"
+        f"{comment}\n"
+    )
+    fd, path = tempfile.mkstemp(prefix="SINCROGIT_COMMIT_", suffix=".txt", text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(template)
+        editor = _resolve_editor()
+        # Run via the shell so editor strings with args/quoted paths (e.g.
+        # 'code --wait', '"C:\\Program Files\\...\\app.exe"') parse like in git.
+        try:
+            subprocess.run(f'{editor} "{path}"', shell=True, check=True)
+        except (OSError, subprocess.CalledProcessError) as e:
+            print(f"Could not open the editor ({editor}): {e}\n"
+                  f"Set $EDITOR or use --message.", file=sys.stderr)
+            return None
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    lines = [ln for ln in raw.splitlines() if not ln.lstrip().startswith("#")]
+    return "\n".join(lines).strip()
+
+
+def _commit_command(engine, repo_name: str, message, assume_yes: bool) -> int:
+    """Manual "smart commit" of one repo: propose a Conventional-Commits message,
+    let the user edit it in their editor, then seal+push. With --message, commit
+    that message directly; with --yes, accept the AI proposal without editing.
+    """
+    if not engine.repo_state_by_name(repo_name):
+        names = ", ".join(s.cfg.name for s in engine.states) or "(none configured)"
+        print(f"Repo '{repo_name}' not found. Configured repos: {names}", file=sys.stderr)
+        return 1
+
+    if message:
+        ok, msg = engine.seal_repo_now(repo_name, message=message)
+        print(msg if ok else f"Commit failed: {msg}", file=(sys.stdout if ok else sys.stderr))
+        return 0 if ok else 1
+
+    ok, title, body, files = engine.propose_seal_message(repo_name)
+    if not ok:
+        # On failure, `files` carries the reason (e.g. "nothing to commit").
+        print(files or "Nothing to commit.", file=sys.stderr)
+        return 1
+
+    proposed = title if not body else f"{title}\n\n{body}"
+    if assume_yes:
+        final = proposed
+    else:
+        final = _edit_message_in_editor(proposed, files)
+    if not final or not final.strip():
+        print("Aborted: empty commit message.", file=sys.stderr)
+        return 1
+
+    ok, msg = engine.seal_repo_now(repo_name, message=final)
+    if not ok:
+        print(f"Commit failed: {msg}", file=sys.stderr)
+        return 1
+    print(f"Committed '{repo_name}': {final.splitlines()[0]}")
+    return 0
+
+
 def _run_headless(config, logger) -> int:
     engine = Engine(config)
 
@@ -177,6 +274,13 @@ def main(argv=None) -> int:
     parser.add_argument("--autosnaps", action="store_true",
                         help="Fetch and list the autosnap recovery points (per machine) "
                              "for every configured repo.")
+    parser.add_argument("--commit", metavar="REPO",
+                        help="Manual commit of REPO now: propose a Conventional Commits "
+                             "message, edit it in your editor, then seal + push.")
+    parser.add_argument("--message", "-m", metavar="MSG",
+                        help="With --commit: use MSG directly (skip the AI proposal/editor).")
+    parser.add_argument("--yes", "-y", action="store_true",
+                        help="With --commit: accept the AI proposal without editing.")
     args = parser.parse_args(argv)
 
     if args.tray:
@@ -208,6 +312,11 @@ def main(argv=None) -> int:
         engine = Engine(config)
         engine.setup(with_watcher=False)
         return _autosnaps_command(engine)
+
+    if args.commit:
+        engine = Engine(config)
+        engine.setup(with_watcher=False)
+        return _commit_command(engine, args.commit, args.message, args.yes)
 
     if args.snapshot_once or args.seal_once or args.sync_once:
         engine = Engine(config)
