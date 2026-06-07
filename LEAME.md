@@ -148,6 +148,15 @@ los cambios del documento como markdown. El `.docx` sigue siendo la fuente de ve
 vista markdown es *lossy* (sin formato/imágenes), y sin pandoc degrada a versionar el
 fichero como blob opaco.
 
+**Qué cuenta como cambio.** Como la detección de cambios pasa por pandoc, un `.docx` se
+versiona/sincroniza **solo cuando cambia su markdown** — ediciones de texto y formato
+estructural (negrita, cursiva, encabezados, listas, tablas, enlaces) cuentan; la
+maquetación puramente visual (fuente, color, tamaño, alineación, layout) y el ruido
+interno de Word al reguardar (timestamps, IDs de revisión) **no**, así que no se versionan
+ni respaldan hasta que un cambio de contenido los arrastre. Tras una sesión de solo
+maquetar, fuerza una versión con un **Smart Commit** manual. (Sin pandoc, la detección
+vuelve a bytes y cada guardado es una versión.)
+
 ### Restaurar una versión pasada (máquina del tiempo)
 
 Explora y restaura versiones previas de un fichero, combinando commits sellados

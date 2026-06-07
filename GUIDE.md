@@ -85,7 +85,8 @@ Just four things to remember:
    it'll say "sure, fine" and include it in the next bundle.
    *(Word docs? Those you CAN version with a readable diff: add `**/*.docx` to
    `extra_includes` in the config — needs [pandoc](https://pandoc.org). See the
-   [README](README.md).)*
+   [README](README.md). Versioned when you change text or structure — purely visual
+   styling like font or color doesn't count.)*
 2. **Conflicts ("I stepped on myself"):** if you worked on both machines without syncing,
    SincroGit won't guess which version wins. Since it's **never** destructive, it pauses
    (red icon) and asks for help. Fix it in your editor and hit **"Resume"**.

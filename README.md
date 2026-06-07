@@ -141,6 +141,14 @@ time-machine show the document's changes as markdown. The `.docx` stays the sour
 truth; the markdown view is lossy (no formatting/images), and without pandoc it degrades
 to versioning the file as an opaque blob.
 
+**What counts as a change.** Because the change-detection runs through pandoc, a `.docx`
+is versioned/synced **only when its markdown content changes** — text edits and structural
+formatting (bold, italics, headings, lists, tables, links) count; purely visual styling
+(font, color, size, alignment, layout) and Word's internal resave churn (timestamps,
+revision IDs) do **not**, so they aren't versioned or backed up until a content edit
+includes them. After a styling-only session, force a version with a manual **Smart
+Commit**. (Without pandoc, detection falls back to bytes, so every save is a version.)
+
 ### Restore a past version (time machine)
 
 Browse and restore previous versions of a file, combining sealed commits

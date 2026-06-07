@@ -86,7 +86,8 @@ Solo tienes que recordar cuatro cosas:
    mano y listo; él dirá "ah, vale" y la incluirá en el siguiente paquete.
    *(¿Documentos Word? Sí se pueden versionar con diff legible: añade `**/*.docx` a
    `extra_includes` en la config — necesita [pandoc](https://pandoc.org). Ver el
-   [README](README.md).)*
+   [README](README.md). Se versiona cuando cambias texto o estructura — la maquetación
+   puramente visual, como fuente o color, no cuenta.)*
 2. **Conflictos ("me he pisado a mí mismo"):** si trabajaste en las dos máquinas sin
    sincronizar, SincroGit no adivina qué versión gana. Como **nunca** es destructivo, se
    pausa (icono rojo) y te pide ayuda. Lo arreglas en tu editor y le das a **"Reanudar"**.
