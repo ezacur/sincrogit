@@ -325,6 +325,17 @@ repos:
   paths matching the repo's excludes (`FileFilter.is_excluded`, a cheap pathspec check, no
   disk I/O) — so a burst like `npm install` under `node_modules/` never wakes the engine.
   Complements *Smart Ignore* (which suggests adding such folders to `extra_excludes`).
+- **No orphaned git processes on timeout.** `_run` uses `Popen` + `communicate(timeout=)`,
+  and on a timeout kills the **whole process tree** (`taskkill /F /T` on Windows), not just
+  `git.exe` — otherwise its children (`ssh.exe`, `git-remote-https.exe`) would linger as
+  orphans holding the connection/locks. stdin is always a closed pipe, so a hung credential
+  prompt gets EOF (with `GIT_TERMINAL_PROMPT=0`) instead of blocking.
+- **No secrets in logs.** The cloud API key is sent in the `x-goog-api-key` header, never in
+  the URL (a urllib error often stringifies the URL); the AI failure log also redacts the
+  key value defensively.
+- **Graceful without `watchdog`.** If the watcher library is missing, the daemon keeps
+  running (GUI, manual snapshot/commit, sync, time machine) with a clear warning instead of
+  crashing — only automatic change-detection is off.
 - **Never `--force`** in the automatic flow.
 - **Git output language** forced to English (`LC_ALL=C`) for consistent logs (our parsing uses locale-independent porcelain/plumbing commands).
 - **Maintenance:** `git gc --auto` after each seal **and at least once a day**

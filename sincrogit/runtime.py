@@ -15,10 +15,13 @@ import sys
 APP_NAME = "SincroGit"
 CONFIG_NAME = "sincrogit.config.yaml"
 _LOCK_HOST = "127.0.0.1"
-_LOCK_PORT = 49677  # high port used as the single-instance lock + activation channel
-# Tiny handshake so we can tell a real SincroGit from an unrelated app that
-# happens to hold the port (it sits in Windows' ephemeral range, so a transient
-# squatter is possible). Only a peer that replies with the ACK counts as "us".
+# Activation channel ("show the running panel"). Single-instance safety is the named
+# mutex (acquire_instance_mutex), not this port. Deliberately BELOW Windows' ephemeral
+# range (49152-65535) so the OS won't randomly hand it to some app's outbound socket.
+_LOCK_PORT = 29677
+# Tiny handshake so we can tell a real SincroGit from an unrelated app that happens
+# to hold the port (still possible, just unlikely now). Only a peer that replies with
+# the ACK counts as "us".
 _HANDSHAKE_REQ = b"SINCROGIT:show"
 _HANDSHAKE_ACK = b"SINCROGIT:ok"
 

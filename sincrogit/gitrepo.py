@@ -15,9 +15,31 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 
 log = logging.getLogger("sincrogit.git")
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Kill a child process AND its descendants. `proc.kill()` alone kills only the
+    direct child (git.exe); on Windows its children (ssh.exe, git-remote-https.exe)
+    would survive as orphans, so use `taskkill /T` to take down the whole tree.
+    Best-effort — never raises."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        else:
+            proc.kill()
+    except Exception:  # noqa: BLE001 — cleanup must never raise
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def autosnap_host() -> str:
@@ -122,23 +144,32 @@ class GitRepo:
             "LC_ALL": "C",
             "LANG": "C",
         }
+        # Popen (not subprocess.run) so a timeout can kill the WHOLE process tree:
+        # subprocess.run only kills the direct child (git.exe), and on Windows its
+        # children (ssh.exe, git-remote-https.exe) would linger as orphans holding
+        # the network connection (and potentially a lock). See §11 of DESIGN.md.
+        proc = subprocess.Popen(
+            cmd,
+            cwd=self.path,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            creationflags=_NO_WINDOW,  # no console flash on Windows
+        )
         try:
-            res = subprocess.run(
-                cmd,
-                cwd=self.path,
-                input=stdin_data,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                env=env,
-                creationflags=_NO_WINDOW,  # no console flash on Windows
-            )
+            out, err = proc.communicate(input=stdin_data, timeout=timeout)
         except subprocess.TimeoutExpired:
-            raise GitError(
-                f"`git {' '.join(args)}` timed out ({timeout}s)"
-            )
+            _kill_process_tree(proc)
+            try:
+                proc.communicate(timeout=10)  # reap once the tree is gone
+            except subprocess.TimeoutExpired:
+                pass
+            raise GitError(f"`git {' '.join(args)}` timed out ({timeout}s)")
+        res = subprocess.CompletedProcess(cmd, proc.returncode, out, err)
         if check and res.returncode != 0:
             raise GitError(
                 f"`git {' '.join(args)}` failed (code {res.returncode}): "

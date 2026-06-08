@@ -322,6 +322,17 @@ repos:
   pathspec barato, sin tocar disco) — así una ráfaga tipo `npm install` bajo `node_modules/`
   nunca despierta al motor. Complementa a *Smart Ignore* (que sugiere añadir esas carpetas a
   `extra_excludes`).
+- **Sin procesos git huérfanos en timeout.** `_run` usa `Popen` + `communicate(timeout=)`, y
+  ante un timeout mata el **árbol de procesos entero** (`taskkill /F /T` en Windows), no solo
+  `git.exe` — si no, sus hijos (`ssh.exe`, `git-remote-https.exe`) quedarían huérfanos
+  reteniendo la conexión/locks. El stdin es siempre una tubería cerrada, así que un prompt de
+  credenciales colgado recibe EOF (con `GIT_TERMINAL_PROMPT=0`) en vez de bloquear.
+- **Sin secretos en los logs.** La API key de la nube va en el header `x-goog-api-key`, nunca
+  en la URL (un error de urllib suele serializar la URL); además el log de fallo de IA redacta
+  el valor de la key por defensa en profundidad.
+- **Degradación elegante sin `watchdog`.** Si falta la librería del watcher, el demonio sigue
+  corriendo (GUI, snapshot/commit manual, sync, máquina del tiempo) con un aviso claro en vez
+  de crashear — solo se apaga la detección automática de cambios.
 - **Nunca `--force`** en el flujo automático.
 - **Mantenimiento:** `git gc --auto` tras cada sello **y al menos una vez al día**
   (`Engine.GC_INTERVAL_SEC`, en un worker en segundo plano), para empaquetar los objetos

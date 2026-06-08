@@ -421,8 +421,21 @@ class Engine:
     # ------------------------------------------------------------- startup
     def setup(self, with_watcher: bool = False):
         if with_watcher:
-            self.watch = WatchManager()
-            self._watch_ready = True
+            # Degrade gracefully if watchdog isn't installed: keep running (the GUI,
+            # manual snapshot/commit, sync, the time machine all still work) instead
+            # of crashing — just without automatic change detection.
+            try:
+                self.watch = WatchManager()
+                self._watch_ready = True
+            except Exception as e:  # noqa: BLE001 — watchdog missing/broken
+                self.watch = None
+                self._watch_ready = False
+                self._emit(
+                    "", "startup",
+                    f"file watcher unavailable ({e}); automatic snapshots are OFF — "
+                    f"install 'watchdog' for change detection. Manual commits still work.",
+                    "WARNING",
+                )
 
         for rc in self.config.repos:
             # Hand the repo a lazy pandoc resolver (only for .docx repos): it stays
@@ -477,7 +490,8 @@ class Engine:
         if not self.states:
             log.warning("No valid repos yet. Waiting (add some from the GUI).")
 
-        self.watch.start()
+        if self._watch_ready:
+            self.watch.start()
         log.info("SincroGit running (%d repo[s]).", len(self.states))
         # Initial snapshot: captures pre-existing unsaved changes (e.g. after a
         # reboot) without waiting for a watcher event.
