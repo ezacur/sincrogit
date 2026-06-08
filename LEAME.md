@@ -42,9 +42,13 @@ ante fallo de disco) y "sella" commits con historial limpio cada 6 horas.
 - ✅ **Conflictos**: el rebase se aborta, el repo se pausa y se notifica. Nunca force,
   nunca pérdida de datos.
 - ✅ **Autosnap** (espejo en vivo, cada 30 min, solo si hubo cambios): hace `push --force`
-  de `HEAD` (incl. el WIP) a un ref lateral por máquina `refs/autosnap/<host>/<rama>`, de
-  modo que un fallo total de disco pierde como mucho ~30 min. No toca la rama limpia;
+  de `HEAD` (incl. el WIP) a un ref lateral por usuario/máquina `refs/autosnap/<user>/<host>/<rama>`,
+  de modo que un fallo total de disco pierde como mucho ~30 min. No toca la rama limpia;
   recuperación entre máquinas desde la CLI (`--autosnaps`) y el panel de control.
+- ✅ **Relevo entre máquinas** (WIP vivo, desacoplado del sellado): cada sync recoge el
+  trabajo vivo de tu *otra* máquina y hace fast-forward si es sin pérdida; ante divergencia
+  nunca auto-fusiona — avisa y deja ambos estados intactos. Ver
+  [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo). Interruptor: `live_handoff`.
 - ✅ **Guarda de rama**: si haces `git checkout` a otra rama, SincroGit se inhibe en ese
   repo (no snapshot/seal/push en la rama equivocada) hasta que vuelvas.
 
@@ -255,12 +259,50 @@ seguridad por debajo:
   perder nada. Es "Git casi puro" con una red de seguridad invisible — un historial
   presentable incluso junto a un equipo.
 
-  > **Letra pequeña honesta:** con el auto-seal apagado, el relevo rutinario entre
-  > máquinas pasa a ser **manual** — tu trabajo llega a la otra máquina cuando *tú* haces
-  > Smart Commit (o vía la recuperación manual de *autosnap*), no automáticamente cada
-  > 6 h. La garantía de "cero pérdida" se mantiene; el relevo automático no. (Está
-  > previsto un WIP vivo por usuario que recupere ese relevo automático manteniendo
-  > `main` limpia.)
+  > **Nota:** incluso en modo purista sigues teniendo continuidad automática entre
+  > máquinas, porque el **[relevo en vivo](#relevo-entre-máquinas-wip-vivo)** funciona sobre
+  > el WIP, no sobre el sello. Así la rama queda inmaculada *y* tu portátil sigue recogiendo
+  > solo el último trabajo del sobremesa.
+
+### Relevo entre máquinas (WIP vivo)
+
+Tus máquinas se pasan el trabajo **automáticamente**, desacoplado del sellado: cada una
+sube su WIP vivo a un ref lateral personal `refs/autosnap/<tú>/<host>/<rama>` (el `<tú>`
+sale de tu `git config user.email`, así una máquina reconoce a sus *propias* otras máquinas
+frente a las de un compañero). En cada sync, SincroGit baja los espejos de tus otras
+máquinas y:
+
+- **Fast-forward seguro → se aplica solo.** Si el trabajo de la otra máquina *contiene todo
+  el tuyo* (típico: aquí no tocaste nada desde que te fuiste), SincroGit adelanta tu working
+  tree hasta él — te sientas y sigues. Es demostrablemente sin pérdida (solo descarta un WIP
+  vacío), reversible vía el reflog, y se **omite** si fuera a sobrescribir un fichero
+  untracked (en su lugar te avisa).
+- **Divergencia → decides tú (sin auto-merge).** Si *las dos* máquinas cambiaron trabajo que
+  la otra no tiene, SincroGit **no las fusiona**. Es deliberado: fusionar en 3-way y en
+  silencio dos montones de trabajo en curso sin revisar es justo cómo acabarías con un árbol
+  sutilmente roto. Te avisa (una vez) y deja **ambos** estados intactos.
+
+> ⚠️ **Lo que falta a propósito: el merge automático.** Ante divergencia, lo resuelves tú,
+> a tu manera:
+>
+> **Lo más fácil (recomendado) — sella un lado y deja que el otro rebase:**
+> 1. En la máquina cuyo trabajo quieres como base, haz un **Smart Commit** (convierte su WIP
+>    en un commit de verdad y lo sube).
+> 2. El pull normal de la otra máquina rebasa tu WIP encima. Sin solape → limpio y
+>    automático; con solape → conflicto de rebase normal (SincroGit se pausa; lo resuelves en
+>    tu editor y pulsas **Reanudar**).
+>
+> **Control total — inspeccionar/fusionar a mano** (el estado vivo del peer está en el ref
+> lateral; los nombres exactos, en *Fetch autosnaps* del panel o `--autosnaps`):
+> ```bash
+> git log  --oneline  refs/autosnap/<tú>/<otro-host>/<rama>   # qué tienen
+> git diff HEAD       refs/autosnap/<tú>/<otro-host>/<rama>   # comparar
+> git reset --hard    refs/autosnap/<tú>/<otro-host>/<rama>   # quedarte con lo suyo (lo tuyo -> reflog)
+> git merge           refs/autosnap/<tú>/<otro-host>/<rama>   # o fusionar ambos, resolver conflictos
+> ```
+
+Se apaga por repo con `live_handoff: false` (entonces el relevo es manual, como arriba).
+Necesita `autosnap` activo (es lo que publica el espejo que lee tu otra máquina).
 
 ## Limitaciones
 
@@ -324,8 +366,9 @@ sobreescribibles por repo):
 | `snapshot_interval_sec` | 300 | Cada cuánto se amendea el WIP (5 min) |
 | `debounce_sec` | 25 | Espera tras el último cambio antes del snapshot |
 | `seal_interval_min` | 360 | Cada cuánto se sella un commit permanente (6 h) |
-| `autosnap` | true | Espejo en vivo de HEAD a `refs/autosnap/<host>/<rama>` (recuperación ante fallo de disco) |
+| `autosnap` | true | Espejo en vivo de HEAD a `refs/autosnap/<user>/<host>/<rama>` (recuperación ante fallo de disco + relevo) |
 | `autosnap_interval_min` | 30 | Cada cuánto se hace force-push del espejo (solo si cambió) |
+| `live_handoff` | true | Recoger solo el WIP vivo de tu otra máquina (solo fast-forward; aviso ante divergencia). Ver [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo) |
 | `max_file_bytes` | 1048576 | Tamaño máximo de fichero a versionar (1 MB) |
 | `extra_excludes` | — | Patrones estilo `.gitignore` a excluir |
 | `extra_includes` | — | patrones versionados aunque sean binarios (p. ej. `**/*.docx`) |

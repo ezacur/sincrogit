@@ -40,8 +40,10 @@ defaults:
   push: true
   pull: true
   git_timeout_sec: 60
-  autosnap: true                  # mirror HEAD (incl. WIP) to refs/autosnap/<host>/<branch>
+  autosnap: true                  # mirror HEAD (incl. WIP) to refs/autosnap/<user>/<host>/<branch>
   autosnap_interval_min: 30       # force-push the live mirror every 30 min (only if changed)
+  live_handoff: true              # auto-pick up your other machine's live WIP (fast-forward
+                                  # only; notify on divergence). Needs autosnap on.
   extra_excludes:
     - "**/node_modules/**"
     - "**/.venv/**"

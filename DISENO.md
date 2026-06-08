@@ -117,6 +117,43 @@ Como sellar cada 6 h dejaría hasta 6 h de trabajo fuera del remoto, **autosnap*
 - **Coste:** hasta ~48 push/día/repo en trabajo activo (force-push barato; **nada** en repos inactivos, porque solo sube si HEAD cambió). Objetos huérfanos en el remoto hasta su GC.
 - **Corte de luz / crash de SO** sigue cubierto por el snapshot local de cada 5 min (`HEAD` en disco) y el `reflog`.
 
+### 4.2 Relevo entre máquinas (WIP vivo)
+
+El espejo autosnap es también el sustrato del **relevo automático entre máquinas**,
+desacoplado del sellado (así funciona también en modo purista, donde el sello no se
+dispara). Dos puntos de diseño:
+
+- **Namespace `refs/autosnap/<user>/<host>/<rama>`.** El `<host>` mantiene a cada máquina
+  como *único escritor* de su propio ref (un `--force` plano es seguro, sin pisado). El
+  `<user>` (`git config user.email` saneado) permite que una máquina reconozca a sus
+  *propias* otras máquinas frente a las de un compañero, así el relevo solo baja
+  `refs/autosnap/<user>/*` — barato y *team-safe* (nunca toca `main`/feature, solo refs
+  laterales personales).
+- **Comparar por CONTENIDO de trabajo, no por ancestría.** Sutileza clave: el WIP se
+  *amenda* continuamente, así que en cuanto una máquina adopta el WIP de otra y edita, su
+  nuevo WIP es *hermano* del del peer (mismo padre = el sello base), nunca descendiente — la
+  ancestría reportaría divergencia constantemente. En su lugar
+  `GitRepo.work_relationship(mine, theirs)` compara, respecto al merge base, las *rutas que
+  cambió cada lado*: si `theirs` coincide con `mine` en toda ruta que yo cambié (y tiene
+  más) es `theirs_contains` → seguro adoptar; si no, se clasifica `equal` / `mine_contains`
+  / `diverged`.
+
+Comportamiento (`live_handoff`, on por defecto):
+- **`theirs_contains` → fast-forward automático (nivel b).** `git reset --hard` al peer.
+  Es demostrablemente sin pérdida (el peer tiene todo mi contenido de las rutas que cambié;
+  solo se descarta un WIP vacío), reversible vía reflog, y se **rechaza** si pisara un
+  fichero untracked (`untracked_collisions`) — en su lugar avisa.
+- **`diverged` → avisar, nunca auto-merge (nivel a).** A propósito sin merge 3-way
+  automático de dos montones de trabajo en curso sin revisar (un árbol roto en silencio es
+  el peor desenlace). Avisa **una vez** por estado distinto del peer y deja ambos intactos;
+  el usuario resuelve **sellando un lado con Smart Commit y luego sincronizando** (rebase
+  normal, con su pausa-conflicto habitual), o inspeccionando/fusionando el ref lateral a
+  mano. Ver el README.
+
+Corre al final del ciclo de sync (necesita `pull` o `push` activo) y dentro del `op_lock`
+del repo. Niveles (a)+(b) de la Fase 2; un modo de auto-merge real queda fuera de alcance a
+propósito.
+
 ---
 
 ## 5. Filtro de ficheros: solo código

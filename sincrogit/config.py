@@ -52,6 +52,7 @@ _INHERITABLE = [
     "git_timeout_sec",
     "autosnap",
     "autosnap_interval_min",
+    "live_handoff",
     "extra_includes",
     "max_include_bytes",
 ]
@@ -80,6 +81,9 @@ class RepoConfig:
     autosnap: bool = True                 # mirror HEAD (incl. WIP) to a side ref on the
                                           # remote -> disk-failure RPO ~= autosnap_interval
     autosnap_interval_min: int = 30       # how often the live mirror is force-pushed
+    live_handoff: bool = True             # auto-pick up your OTHER machine's live WIP
+                                          # (fast-forward only; notify on divergence).
+                                          # Needs autosnap on to be discoverable.
 
     def __post_init__(self):
         # Normalize disable sentinels (inf/off/none/never, None, False) to

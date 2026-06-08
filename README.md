@@ -40,9 +40,13 @@ disk-failure recovery) and "seals" commits with a clean history every 6 hours.
 - ✅ **Conflicts**: the rebase is aborted, the repo is paused and you are notified. Never
   force, never data loss.
 - ✅ **Autosnap** (live mirror, every 30 min, only if changed): force-pushes `HEAD`
-  (incl. the WIP) to a per-machine side ref `refs/autosnap/<host>/<branch>` so a total
-  disk failure loses at most ~30 min. Doesn't touch the clean branch; cross-machine
-  recovery from the CLI (`--autosnaps`) and the control panel.
+  (incl. the WIP) to a per-user/per-machine side ref `refs/autosnap/<user>/<host>/<branch>`
+  so a total disk failure loses at most ~30 min. Doesn't touch the clean branch;
+  cross-machine recovery from the CLI (`--autosnaps`) and the control panel.
+- ✅ **Cross-machine handoff** (live WIP, decoupled from sealing): each sync picks up your
+  *other* machine's live work and fast-forwards to it when that's loss-free; on divergence
+  it never auto-merges — it notifies and leaves both intact for you to resolve. See
+  [Cross-machine handoff](#cross-machine-handoff-live-wip). Toggle: `live_handoff`.
 - ✅ **Branch guard**: if you `git checkout` another branch, SincroGit yields that repo
   (no snapshot/seal/push on the wrong branch) until you switch back.
 
@@ -236,11 +240,49 @@ a clock so the forgetful get a clean-ish history for free — but you can flip i
   power cut or disk failure still loses nothing. This is "almost pure Git" with an
   invisible safety net — a history presentable even alongside a team.
 
-  > **Honest caveat:** with auto-seal off, routine machine-to-machine handoff becomes
-  > **manual** — your work reaches the other machine when *you* Smart-Commit (or via the
-  > manual *autosnap* recovery), not automatically every 6 h. The no-data-loss guarantee
-  > stays; the automatic relay does not. (A per-user live WIP that restores the automatic
-  > handoff while keeping `main` clean is planned.)
+  > **Note:** even in purist mode you still get automatic machine-to-machine continuity,
+  > because the **[live handoff](#cross-machine-handoff-live-wip)** works off the WIP, not
+  > the seal. So the branch stays immaculate *and* your laptop still picks up your
+  > desktop's latest work on its own.
+
+### Cross-machine handoff (live WIP)
+
+Your machines hand work off **automatically**, decoupled from sealing: each pushes its
+live WIP to a personal side ref `refs/autosnap/<you>/<host>/<branch>` (the `<you>` comes
+from your `git config user.email`, so a machine recognizes its *own* other machines vs. a
+teammate's). On every sync, SincroGit fetches your other machines' mirrors and:
+
+- **Safe fast-forward → applied automatically.** If the other machine's work *contains all
+  of yours* (typically: you did nothing here since you left), SincroGit fast-forwards your
+  working tree to it — you just sit down and continue. This is provably loss-free (it only
+  ever discards an empty WIP), reversible via the reflog, and it's **skipped** if it would
+  overwrite an untracked file (you're warned instead).
+- **Divergence → you decide (no auto-merge).** If *both* machines changed work the other
+  doesn't have, SincroGit **does not merge** them. This is deliberate: silently 3-way
+  merging two piles of unreviewed in-progress work is exactly how you'd get a subtly broken
+  tree. It notifies you (once) and leaves **both** states intact.
+
+> ⚠️ **What's intentionally missing: automatic merging.** On divergence you resolve it,
+> your way:
+>
+> **Easiest (recommended) — seal one side, let the other rebase:**
+> 1. On the machine whose work you want as the base, do a **Smart Commit** (turns its WIP
+>    into a real commit and pushes it).
+> 2. The other machine's normal pull rebases your WIP onto it. Non-overlapping → clean and
+>    automatic; overlapping → a normal rebase conflict (SincroGit pauses; you resolve in
+>    your editor and hit **Resume**).
+>
+> **Full control — inspect/merge by hand** (the peer's live state is at the side ref; find
+> exact names in the panel's *Fetch autosnaps* or `--autosnaps`):
+> ```bash
+> git log  --oneline  refs/autosnap/<you>/<other-host>/<branch>   # what they have
+> git diff HEAD       refs/autosnap/<you>/<other-host>/<branch>   # compare
+> git reset --hard    refs/autosnap/<you>/<other-host>/<branch>   # take theirs (yours -> reflog)
+> git merge           refs/autosnap/<you>/<other-host>/<branch>   # or merge both, resolve conflicts
+> ```
+
+Turn it off per repo with `live_handoff: false` (then handoff is manual, as above). It
+needs `autosnap` on (that's what publishes the mirror your other machine reads).
 
 ## Limitations
 
@@ -301,8 +343,9 @@ overridable per repo):
 | `snapshot_interval_sec` | 300 | How often the WIP is amended (5 min) |
 | `debounce_sec` | 25 | Wait after the last change before snapshotting |
 | `seal_interval_min` | 360 | How often a permanent commit is sealed (6 h) |
-| `autosnap` | true | Live mirror of HEAD to `refs/autosnap/<host>/<branch>` (disk-failure recovery) |
+| `autosnap` | true | Live mirror of HEAD to `refs/autosnap/<user>/<host>/<branch>` (disk-failure recovery + handoff) |
 | `autosnap_interval_min` | 30 | How often the mirror is force-pushed (only if it changed) |
+| `live_handoff` | true | Auto-pick up your other machine's live WIP (fast-forward only; notify on divergence). See [Cross-machine handoff](#cross-machine-handoff-live-wip) |
 | `max_file_bytes` | 1048576 | Maximum file size to version (1 MB) |
 | `extra_excludes` | — | `.gitignore`-style patterns to exclude |
 | `extra_includes` | — | patterns versioned even if binary (e.g. `**/*.docx`) |

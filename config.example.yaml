@@ -19,6 +19,9 @@ defaults:
   autosnap: true                  # live mirror of HEAD (incl. WIP) to a side ref on the
                                   # remote -> disk-failure recovery within autosnap_interval
   autosnap_interval_min: 30       # force-push the mirror every 30 min (only if it changed)
+  live_handoff: true              # auto-pick up your OTHER machine's live WIP (fast-forward
+                                  # only; notify on divergence, never auto-merge). Needs
+                                  # autosnap on. See the README's handoff section.
   extra_excludes:                 # in addition to the text/size filter (.gitignore style)
     - "**/node_modules/**"
     - "**/.venv/**"

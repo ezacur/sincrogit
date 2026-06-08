@@ -60,6 +60,8 @@ class RepoState:
         self.off_branch = False   # HEAD is on a branch other than cfg.branch -> yield
         self._branch_cache = None      # last branch-check result (rate-limited, see below)
         self._branch_checked_mono = 0.0
+        self.user = ""            # "same person across machines" id for handoff (git email)
+        self._handoff_warned_sha = None  # last diverging peer WIP we warned about (throttle)
 
         # For the control panel (wall-clock time, not monotonic):
         self.branch = None
@@ -376,6 +378,7 @@ class Engine:
 
             sealed = repo.last_sealed_time()
             st.last_seal_epoch = float(sealed) if sealed else time.time()
+            st.user = repo.sincro_user()
 
             with self._states_lock:
                 self.states.append(st)
@@ -637,9 +640,9 @@ class Engine:
         _dispatch_network worker). Clears the pending flag only on success."""
         repo, cfg = st.repo, st.cfg
         ok, msg = repo.push_autosnap(
-            cfg.remote, cfg.branch, self._autosnap_host, timeout=cfg.git_timeout_sec
+            cfg.remote, cfg.branch, st.user, self._autosnap_host, timeout=cfg.git_timeout_sec
         )
-        ref = repo.autosnap_ref(self._autosnap_host, cfg.branch)
+        ref = repo.autosnap_ref(st.user, self._autosnap_host, cfg.branch)
         if ok:
             st.autosnap_pending = False
             self._mark_action(st, "autosnap")
@@ -715,6 +718,86 @@ class Engine:
         if cfg.push:
             if not remote_exists or repo.has_unpushed_sealed(cfg.remote, cfg.branch):
                 self._do_push(st)
+
+        # --- HANDOFF: pick up this user's newer live WIP from another machine ---
+        if cfg.live_handoff:
+            self._maybe_handoff(st)
+
+    def _maybe_handoff(self, st: RepoState):
+        """Cross-machine handoff (levels a + b). Pick up the latest live WIP that
+        YOU pushed from ANOTHER machine and, when it is a safe fast-forward (your
+        local WIP is an ancestor of it, nothing local diverges, no untracked file
+        would be clobbered), apply it automatically so you simply continue where you
+        left off (level b). On divergence it does NOT auto-merge (by design): it
+        notifies once and leaves both states intact for you to resolve by hand —
+        seal one side with Smart Commit, then sync (level a / see README).
+
+        Assumes st.op_lock (runs inside the sync worker). Needs autosnap enabled on
+        the other machine to be discoverable. Force is only ever a fast-forward that
+        provably contains all local work, and it's reversible via the reflog.
+        """
+        repo, cfg = st.repo, st.cfg
+        if not repo.has_remote(cfg.remote):
+            return
+        # Refresh only MY machines' mirrors (cheap; ignores teammates').
+        repo.fetch_autosnaps(cfg.remote, user=st.user, timeout=cfg.git_timeout_sec)
+        peer = repo.peer_wip(st.user, self._autosnap_host, cfg.branch)
+        if not peer:
+            return
+        head = repo.head_sha()
+        if not head or head == peer["sha"]:
+            return  # in sync (or no HEAD yet)
+
+        # Capture pending local edits first, so the comparison is honest: only then
+        # can we tell "I'm simply behind" from "I have my own new work".
+        self._ensure_wip(st)
+        if self._stage(st) and repo.has_staged_changes():
+            repo.amend_keep_message()
+        head = repo.head_sha()
+        if head == peer["sha"]:
+            return
+
+        # Compare actual WORK content (not commit ancestry — the amended WIPs of two
+        # machines are always siblings; see GitRepo.work_relationship).
+        rel = repo.work_relationship(head, peer["sha"])
+        if rel == "theirs_contains":
+            # SAFE: the peer matches my content on every path I changed, and has more
+            # (level b). A reset to it loses nothing of mine.
+            clashes = repo.untracked_collisions(peer["sha"])
+            if clashes:
+                self._warn_handoff_once(
+                    st, peer["sha"],
+                    f"newer work on '{peer['host']}' NOT applied: it would overwrite "
+                    f"untracked file(s): {', '.join(clashes[:5])}. Move/commit them first.")
+                return
+            repo.fast_forward_wip(peer["sha"])
+            sealed = repo.last_sealed_time()
+            st.last_seal_epoch = float(sealed) if sealed else st.last_seal_epoch
+            st.autosnap_pending = True       # my own ref should now track the new HEAD
+            st._handoff_warned_sha = None
+            self._mark_action(st, "handoff")
+            self._emit(cfg.name, "handoff",
+                       f"applied newer work from '{peer['host']}' — you're up to date")
+        elif rel in ("equal", "mine_contains"):
+            return  # in sync, or I'm ahead — nothing to adopt
+        else:  # "diverged"
+            # Both machines have unmerged work. No auto-merge (by design).
+            self._warn_handoff_once(
+                st, peer["sha"],
+                f"your work here and on '{peer['host']}' have DIVERGED (neither contains "
+                f"the other). Not auto-merged: seal one side with Smart Commit, then sync. "
+                f"See the README's handoff section.", notify_user=True)
+
+    def _warn_handoff_once(self, st: RepoState, peer_sha: str, message: str,
+                           notify_user: bool = False):
+        """Emit a handoff warning at most once per distinct peer state (so a stuck
+        divergence doesn't spam every sync cycle)."""
+        if st._handoff_warned_sha == peer_sha:
+            return
+        st._handoff_warned_sha = peer_sha
+        if notify_user:
+            notify("SincroGit: machines diverged", f"'{st.cfg.name}': {message}")
+        self._emit(st.cfg.name, "handoff", message, "WARNING")
 
     def _pull_after_fetch(self, st: RepoState, remote_exists: bool) -> bool:
         """Rebase the WIP onto new remote commits (assumes fetch already ran).
@@ -837,6 +920,7 @@ class Engine:
         sealed = repo.last_sealed_time()
         st.last_seal_epoch = float(sealed) if sealed else time.time()
         st.branch = repo.current_branch()
+        st.user = repo.sincro_user()
         with self._states_lock:
             self.states.append(st)
         if self._watch_ready and self.watch is not None:

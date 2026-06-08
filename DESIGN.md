@@ -119,6 +119,40 @@ Since sealing every 6 h would leave up to 6 h of work off the remote, **autosnap
 
 > *("Live mirror" variant discarded for now: it did force-with-lease of the WIP every minute to keep the remote <1 min behind. More traffic and complexity; re-evaluable if real-time remote backup ever becomes critical.)*
 
+### 4.2 Cross-machine handoff (live WIP)
+
+The autosnap mirror is also the substrate for **automatic machine-to-machine handoff**,
+decoupled from sealing (so it works in purist mode too, where the seal never fires). Two
+design points:
+
+- **Ref namespace `refs/autosnap/<user>/<host>/<branch>`.** The `<host>` keeps each machine
+  the *sole writer* of its own ref (a plain `--force` is safe, no clobber). The `<user>`
+  (sanitized `git config user.email`) lets a machine recognize its *own* other machines vs.
+  a teammate's, so handoff fetches only `refs/autosnap/<user>/*` — cheap, and team-safe (it
+  never touches `main`/feature branches, only personal side refs).
+- **Compare by WORK CONTENT, not ancestry.** Critical subtlety: the WIP is continuously
+  *amended*, so once a machine adopts a peer's WIP and edits, its new WIP is a *sibling* of
+  the peer's (same parent = the shared seal), never a descendant — ancestry checks would
+  report divergence constantly. Instead `GitRepo.work_relationship(mine, theirs)` compares,
+  relative to the merge base, the *paths each side changed*: if `theirs` matches `mine` on
+  every path I changed (and has more) it's `theirs_contains` → safe to adopt; the mirror is
+  classified `equal` / `mine_contains` / `diverged` otherwise.
+
+Behavior (`live_handoff`, default on):
+- **`theirs_contains` → auto fast-forward (level b).** `git reset --hard` to the peer. It's
+  provably loss-free (the peer holds all my changed-path content; only an empty WIP is
+  dropped), reversible via the reflog, and **refused** if it would clobber an untracked file
+  (`untracked_collisions`) — notify instead.
+- **`diverged` → notify, never auto-merge (level a).** Deliberately no 3-way auto-merge of
+  two piles of unreviewed in-progress work (a quiet, subtly-broken tree is the worst
+  outcome). SincroGit warns **once** per distinct peer state and leaves both intact; the
+  user resolves by **Smart-Committing one side then syncing** (normal rebase, with the usual
+  conflict-pause), or by inspecting/merging the side ref by hand. See the README.
+
+Runs at the end of the sync cycle (so it needs `pull` or `push` on to fire) and inside the
+repo's `op_lock`. Phase 2 levels (a)+(b); a true auto-merge mode is intentionally out of
+scope.
+
 ---
 
 ## 5. File filter: code only

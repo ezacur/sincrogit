@@ -37,14 +37,19 @@ portátil sin hacer `push`).
 2. Programas tres horas. Ni rastro de la consola.
 3. Te llaman a comer. Te levantas y te vas **sin tocar nada**.
 
-**Antes de cambiar de máquina (el único gesto que conviene recordar):**
-- Clic derecho en el icono → **"Seal now"** (o el botón **"Seal+Push"** del repo). Eso
-  sella tu trabajo más reciente y lo sube a la rama. Así el portátil arrancará con **todo**.
-- ¿Se te olvida? No pasa nada grave: el portátil arrancará con el **último punto de
-  control** (de hasta 6 h atrás), y tu trabajo más nuevo te espera intacto en el sobremesa.
+**Antes de cambiar de máquina:** sinceramente, **nada que recordar**. SincroGit sigue
+replicando tu trabajo vivo, y el portátil **lo recoge solo**. (Si te gusta un historial
+ordenado, un **Smart Commit** antes de irte queda bien — pero es opcional.)
 
 **Por la tarde, en el portátil:**
-- Lo abres, SincroGit baja lo que sellaste y **sigues donde lo dejaste**.
+- Lo abres. SincroGit detecta el trabajo más nuevo del sobremesa y **te adelanta hasta él
+  automáticamente** — sigues justo donde lo dejaste. Sin commit, sin pull, sin nada.
+
+> 🤝 **¿"Tus máquinas han divergido"?** Eso solo pasa si cambiaste cosas en **las dos**
+> máquinas sin sincronizar entre medias. SincroGit no adivina cómo mezclar dos montones de
+> trabajo a medias, así que deja **ambos** intactos y te pregunta. Lo más fácil: **Smart
+> Commit** en una máquina y la otra sincroniza normal (receta completa en el
+> [README](README.md#cross-machine-handoff-live-wip)).
 
 > 🔥 **¿Y si el sobremesa se muere de verdad?** Para eso está la copia en la nube: en el
 > portátil, *File History → "Fetch autosnaps"* recupera tu último estado (de hace ≤30 min).

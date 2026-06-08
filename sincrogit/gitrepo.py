@@ -524,37 +524,62 @@ class GitRepo:
         return res.returncode == 0, msg
 
     # --------------------------------------------------------- autosnap (mirror)
-    @staticmethod
-    def autosnap_ref(host: str, branch: str) -> str:
-        return f"refs/autosnap/{host}/{branch}"
+    def sincro_user(self) -> str:
+        """A stable identity for "the same person across machines", sanitized for a
+        git ref path. Uses this repo's `git config user.email` (the same on all your
+        machines) and falls back to the OS user. Lets a machine recognize its OWN
+        other machines' live mirrors (vs. a teammate's) for cross-machine handoff."""
+        res = self._run(["config", "user.email"], check=False)
+        raw = res.stdout.strip()
+        if not raw:
+            try:
+                import getpass
+                raw = getpass.getuser()
+            except Exception:  # noqa: BLE001
+                raw = "user"
+        return re.sub(r"[^A-Za-z0-9._-]", "_", raw).strip("._-") or "user"
 
-    def push_autosnap(self, remote: str, branch: str, host: str, timeout: float | None = None):
+    @staticmethod
+    def autosnap_ref(user: str, host: str, branch: str) -> str:
+        # Namespaced by user AND host: the user component lets your machines find
+        # each other's mirrors for handoff; the host component keeps two of your
+        # machines from clobbering the same ref (each is the sole writer of its own).
+        return f"refs/autosnap/{user}/{host}/{branch}"
+
+    def push_autosnap(self, remote: str, branch: str, user: str, host: str,
+                      timeout: float | None = None):
         """Force-push HEAD (sealed history + the live WIP) to this machine's
-        autosnap side ref, so the latest local state survives a total disk
-        failure. The ref is single-writer (only this host writes it), so a plain
-        --force is safe and it never touches the clean `branch`. Returns (ok, msg).
+        autosnap side ref, so the latest local state survives a total disk failure
+        AND your other machines can pick it up (handoff). The ref is single-writer
+        (only this host writes it), so a plain --force is safe and it never touches
+        the clean `branch`. Returns (ok, msg).
         """
-        ref = self.autosnap_ref(host, branch)
+        ref = self.autosnap_ref(user, host, branch)
         res = self._run(
             ["push", "--force", remote, f"HEAD:{ref}"], check=False, timeout=timeout
         )
         msg = (res.stderr.strip() or res.stdout.strip())
         return res.returncode == 0, msg
 
-    def fetch_autosnaps(self, remote: str, timeout: float | None = None) -> bool:
-        """Fetch every machine's autosnap refs into local refs/autosnap/* (for
-        cross-machine recovery). Returns True on success."""
+    def fetch_autosnaps(self, remote: str, user: str | None = None,
+                        timeout: float | None = None) -> bool:
+        """Fetch autosnap refs into local refs/autosnap/*. With `user`, fetch only
+        that user's machines (for handoff: cheap, and ignores teammates' mirrors);
+        without it, fetch everyone's (for cross-machine disaster recovery). True on
+        success."""
+        spec = (f"+refs/autosnap/{user}/*:refs/autosnap/{user}/*" if user
+                else "+refs/autosnap/*:refs/autosnap/*")
         res = self._run(
-            ["fetch", "--quiet", remote, "+refs/autosnap/*:refs/autosnap/*"],
-            check=False, timeout=timeout,
+            ["fetch", "--quiet", remote, spec], check=False, timeout=timeout,
         )
         if res.returncode != 0:
             log.warning("fetch of autosnap refs from '%s' failed: %s", remote, res.stderr.strip())
         return res.returncode == 0
 
     def list_autosnap_refs(self) -> list:
-        """Local refs/autosnap/* as dicts: ref, host, branch, sha, epoch, subject.
-        Newest first. Present only after fetch_autosnaps (or this host's own)."""
+        """Local refs/autosnap/* as dicts: ref, user, host, branch, sha, epoch,
+        subject. Newest first. Present only after fetch_autosnaps (or this host's
+        own)."""
         # NOTE: for-each-ref does NOT understand %x09 (that's git-log syntax); use a
         # literal tab as the field separator.
         fmt = "--format=%(refname)\t%(objectname)\t%(committerdate:unix)\t%(contents:subject)"
@@ -564,14 +589,97 @@ class GitRepo:
             ref, sha, ct, subj = (line.split("\t", 3) + ["", "", "", ""])[:4]
             if not ref or not sha:
                 continue
-            rest = ref[len("refs/autosnap/"):]
-            host, _, br = rest.partition("/")
+            # New layout: refs/autosnap/<user>/<host>/<branch> (branch may contain
+            # '/'). Legacy layout (no user): refs/autosnap/<host>/<branch>.
+            parts = ref[len("refs/autosnap/"):].split("/")
+            if len(parts) >= 3:
+                user, host, br = parts[0], parts[1], "/".join(parts[2:])
+            elif len(parts) == 2:
+                user, host, br = "", parts[0], parts[1]
+            else:
+                continue
             out.append({
-                "ref": ref, "host": host, "branch": br, "sha": sha,
+                "ref": ref, "user": user, "host": host, "branch": br, "sha": sha,
                 "epoch": int(ct) if ct.isdigit() else 0, "subject": subj,
             })
         out.sort(key=lambda e: e["epoch"], reverse=True)
         return out
+
+    # ------------------------------------------------------ cross-machine handoff
+    def head_sha(self) -> str | None:
+        res = self._run(["rev-parse", "HEAD"], check=False)
+        return res.stdout.strip() if res.returncode == 0 else None
+
+    def _names(self, args: list) -> list:
+        """`git <args>` (a --name-only -z diff) -> list of paths."""
+        out = self._run(args, check=False).stdout
+        return [p for p in out.split("\0") if p]
+
+    def work_relationship(self, mine: str, theirs: str) -> str:
+        """Classify two commits by WORK CONTENT, not commit ancestry. Ancestry is
+        useless across machines here: the WIP is continuously *amended*, so once a
+        machine adopts a peer's WIP and edits, its new WIP is a SIBLING of the peer's
+        (same parent = the shared seal), never a descendant. So instead we compare
+        the paths each side changed since their merge base:
+
+          'equal'           - same content
+          'theirs_contains' - theirs matches mine on every path I changed (+ maybe
+                              more) -> safe to adopt theirs, I lose nothing
+          'mine_contains'   - I have all of theirs (+ maybe more) -> I'm ahead
+          'diverged'        - each side changed a path the other doesn't match -> the
+                              user must resolve by hand (no auto-merge)
+        """
+        if mine == theirs:
+            return "equal"
+        mb = self._run(["merge-base", mine, theirs], check=False).stdout.strip()
+        if not mb:
+            return "diverged"   # unrelated histories: never auto-apply
+        mine_changed = self._names(["diff", "--name-only", "-z", mb, mine])
+        theirs_changed = self._names(["diff", "--name-only", "-z", mb, theirs])
+        # "theirs has all my work" iff theirs == mine on every path I changed.
+        theirs_has_mine = not (mine_changed and self._names(
+            ["diff", "--name-only", "-z", mine, theirs, "--", *mine_changed]))
+        mine_has_theirs = not (theirs_changed and self._names(
+            ["diff", "--name-only", "-z", mine, theirs, "--", *theirs_changed]))
+        if theirs_has_mine and mine_has_theirs:
+            return "equal"
+        if theirs_has_mine:
+            return "theirs_contains"
+        if mine_has_theirs:
+            return "mine_contains"
+        return "diverged"
+
+    def peer_wip(self, user: str, host: str, branch: str):
+        """The newest live mirror that is MINE (same user) on ANOTHER machine
+        (host != this one) for `branch`, from the locally-fetched refs. Returns the
+        ref dict (see list_autosnap_refs) or None. Call fetch_autosnaps(user=...)
+        first to refresh."""
+        for r in self.list_autosnap_refs():   # already newest-first
+            if r["user"] == user and r["branch"] == branch and r["host"] != host:
+                return r
+        return None
+
+    def untracked_collisions(self, sha: str) -> list:
+        """Untracked working-tree files that a hard reset to `sha` would overwrite
+        (they exist on disk AND are tracked in `sha`'s tree). Used to refuse an
+        otherwise-safe fast-forward that would silently destroy unversioned files."""
+        untracked = self._run(
+            ["ls-files", "--others", "--exclude-standard", "-z"], check=False
+        ).stdout.split("\0")
+        untracked = {p for p in untracked if p}
+        if not untracked:
+            return []
+        in_tree = self._run(
+            ["ls-tree", "-r", "--name-only", "-z", sha], check=False
+        ).stdout.split("\0")
+        return sorted(untracked.intersection(p for p in in_tree if p))
+
+    def fast_forward_wip(self, sha: str):
+        """Move the current branch (and working tree) to `sha`. Caller MUST have
+        verified this is loss-free — work_relationship(HEAD, sha) == 'theirs_contains',
+        so `sha` matches my content on every path I changed — and that there are no
+        untracked_collisions. Reversible via the reflog. Raises GitError."""
+        self._run(["reset", "--hard", sha])
 
     def restore_tree(self, sha: str):
         """Make the working tree (and index) match the tree at `sha`, INCLUDING

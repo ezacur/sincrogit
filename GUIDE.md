@@ -37,14 +37,19 @@ laptop lid without `push`ing).
 2. You code for three hours. No sign of the console.
 3. Lunch break. You get up and leave **without touching anything**.
 
-**Before switching machines (the one gesture worth remembering):**
-- Right-click the tray icon → **"Seal now"** (or the repo's **"Seal+Push"** button). That
-  seals your latest work and pushes it to the branch, so the laptop starts with **everything**.
-- Forgot? No big deal: the laptop starts from the **last checkpoint** (up to 6 h old), and
-  your newest work waits untouched on the desktop.
+**Before switching machines:** honestly, **nothing to remember**. SincroGit keeps mirroring
+your live work, and the laptop **picks it up by itself**. (If you like a tidy history, a
+**Smart Commit** before you leave is a nice touch — but it's optional.)
 
 **In the afternoon, on the laptop:**
-- You open it, SincroGit pulls what you sealed, and you **carry on where you left off**.
+- You open it. SincroGit spots your desktop's newer work and **fast-forwards you to it
+  automatically** — you carry on exactly where you left off. No commit, no pull, nothing.
+
+> 🤝 **"Your machines diverged"?** That only happens if you changed things on **both**
+> machines without syncing in between. SincroGit won't guess how to blend two piles of
+> half-finished work, so it leaves **both** intact and asks you. Easiest fix: **Smart
+> Commit** on one machine, then the other syncs normally (full recipe in the
+> [README](README.md#cross-machine-handoff-live-wip)).
 
 > 🔥 **What if the desktop actually dies?** That's what the cloud copy is for: on the
 > laptop, *File History → "Fetch autosnaps"* recovers your latest state (up to ~30 min old).
