@@ -68,11 +68,26 @@ class GitRepo:
     # Message prefix that identifies a (transient) WIP commit.
     WIP_MESSAGE = "WIP: autosnapshot"
 
-    def __init__(self, path: str, pandoc: str | None = None):
+    def __init__(self, path: str, pandoc: str | None = None, pandoc_provider=None):
         self.path = path
         # Resolved pandoc command (or None). If set, git diffs get a textconv
         # driver named 'pandoc' so .docx (mapped via .gitattributes) diff readably.
         self._pandoc = pandoc
+        # Lazy resolver: a callable () -> (path | None), invoked the FIRST time this
+        # repo actually handles a .docx. So a repo never runs `pandoc --version`
+        # unless/until a .docx shows up; after that the result is fixed.
+        self._pandoc_provider = pandoc_provider
+        self._pandoc_resolved = pandoc is not None  # an explicit value is "resolved"
+
+    def _ensure_pandoc(self):
+        """Resolve pandoc on first actual .docx use (lazy, once). After this call
+        self._pandoc is fixed — the command, or None if pandoc isn't available —
+        and is never re-resolved (so we don't re-probe on every snapshot)."""
+        if self._pandoc_resolved:
+            return
+        self._pandoc_resolved = True
+        if self._pandoc_provider is not None:
+            self._pandoc = self._pandoc_provider()
 
     # ----------------------------------------------------------------- core
     def _run(
@@ -290,6 +305,13 @@ class GitRepo:
 
         if not to_stage:
             return False
+
+        # A .docx is about to be versioned -> make sure pandoc is resolved now, so
+        # the caller's md-gating diff (has_staged_changes) already uses textconv.
+        # This is the ONLY moment a .docx repo probes pandoc, and only if one shows
+        # up (a no-op once resolved). See Engine._pandoc_cmd.
+        if any(p.lower().endswith(".docx") for p in to_stage):
+            self._ensure_pandoc()
 
         # Pass the paths via stdin (NUL-separated) to avoid command-line length
         # limits on Windows with many files.
@@ -653,6 +675,8 @@ class GitRepo:
         """Readable text of a file version. For .docx (with pandoc) it's the
         markdown rendering; otherwise the raw content (file_content_at)."""
         rel = relpath.replace("\\", "/")
+        if rel.lower().endswith(".docx"):
+            self._ensure_pandoc()  # GUI may preview a .docx without one being staged
         if self._pandoc and rel.lower().endswith(".docx"):
             try:
                 res = subprocess.run(
@@ -671,6 +695,8 @@ class GitRepo:
         """The working-tree file as readable text (markdown for .docx). '' if missing."""
         rel = relpath.replace("\\", "/")
         full = os.path.join(self.path, rel.replace("/", os.sep))
+        if rel.lower().endswith(".docx"):
+            self._ensure_pandoc()  # GUI may preview a .docx without one being staged
         if self._pandoc and rel.lower().endswith(".docx"):
             try:
                 with open(full, "rb") as fh:

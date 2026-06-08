@@ -109,9 +109,11 @@ class Engine:
         self._emit_event = emit_event
         # This machine's name for the per-host autosnap ref (computed once).
         self._autosnap_host = autosnap_host()
-        # pandoc is resolved lazily, only the first time a repo that versions .docx
-        # is set up — so a config without .docx never even runs `pandoc --version`,
-        # and non-.docx repos never get the textconv `-c` on their git commands.
+        # pandoc is resolved lazily, only the first time a .docx is actually
+        # staged or previewed (each .docx repo gets _pandoc_cmd as its resolver).
+        # So a config without .docx — or a .docx repo where no .docx ever shows
+        # up — never even runs `pandoc --version`, and non-.docx repos never get
+        # the textconv `-c` on their git commands. See _pandoc_cmd / GitRepo.
         self._pandoc = None
         self._pandoc_resolved = False
 
@@ -346,8 +348,11 @@ class Engine:
             self._watch_ready = True
 
         for rc in self.config.repos:
-            pandoc = self._pandoc_cmd() if self._repo_versions_docx(rc) else None
-            repo = GitRepo(rc.path, pandoc=pandoc)
+            # Hand the repo a lazy pandoc resolver (only for .docx repos): it stays
+            # unresolved until a .docx actually shows up, so a repo that never sees
+            # a .docx never runs `pandoc --version`. See GitRepo._ensure_pandoc.
+            provider = self._pandoc_cmd if self._repo_versions_docx(rc) else None
+            repo = GitRepo(rc.path, pandoc_provider=provider)
             if not repo.is_git_repo():
                 log.error("Not a git repo (skipping): %s", rc.path)
                 continue
@@ -789,8 +794,8 @@ class Engine:
     def add_repo(self, rc) -> tuple:
         """Add a repo to the running engine (no restart). `rc` is a RepoConfig
         already merged with defaults. Returns (ok, message)."""
-        pandoc = self._pandoc_cmd() if self._repo_versions_docx(rc) else None
-        repo = GitRepo(rc.path, pandoc=pandoc)
+        provider = self._pandoc_cmd if self._repo_versions_docx(rc) else None
+        repo = GitRepo(rc.path, pandoc_provider=provider)
         if not repo.is_git_repo():
             return False, "not a git repository"
         with self._states_lock:
