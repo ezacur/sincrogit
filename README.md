@@ -110,6 +110,7 @@ pip install -r requirements.txt
 | `--history FILE [--pick N]` | browse/restore a file's versions |
 | `--autosnaps` | fetch & list autosnap recovery points (per machine) |
 | `--commit REPO [-m MSG \| -y]` | manual commit of REPO: edit the AI-proposed message in `$EDITOR`, then seal+push |
+| `--apply-handoff REPO` | apply your other machine's pending live work to REPO (cross-machine handoff) |
 
 ### AI messages (optional)
 
@@ -252,13 +253,20 @@ live WIP to a personal side ref `refs/autosnap/<you>/<host>/<branch>` (the `<you
 from your `git config user.email`, so a machine recognizes its *own* other machines vs. a
 teammate's). On every sync, SincroGit fetches your other machines' mirrors and:
 
-- **Safe fast-forward → applied automatically.** If the other machine's work *contains all
-  of yours* (typically: you did nothing here since you left), SincroGit fast-forwards your
-  working tree to it — you just sit down and continue. This is provably loss-free (it only
-  ever discards an empty WIP), reversible via the reflog, and it's **skipped** if it would
-  overwrite an untracked file (you're warned instead).
-- **Divergence → you decide (no auto-merge).** If *both* machines changed work the other
-  doesn't have, SincroGit **does not merge** them. This is deliberate: silently 3-way
+- **Safe fast-forward (the common case).** If the other machine's work *contains all of
+  yours* (typically: you did nothing here since you left), it's a loss-free fast-forward (it
+  only ever discards an empty WIP, reversible via the reflog) — and it's **skipped** if it
+  would overwrite an untracked file (you're warned instead). What happens then depends on
+  `live_handoff`:
+  - **`auto`** (default): applied automatically — you just sit down and continue. It is
+    **never silent**: you get a tray notification ("caught up to *Desktop-PC*"), so you
+    always know your files moved.
+  - **`ask`**: nothing is touched. You get a notification and the panel shows an **Apply
+    handoff** button (or run `--apply-handoff REPO`); it re-checks it's still safe, then
+    fast-forwards. Good if you'd rather confirm before your working tree changes.
+  - **`off`**/`false`: handoff is disabled (manual only, as below).
+- **Divergence → you decide (no auto-merge, any mode).** If *both* machines changed work the
+  other doesn't have, SincroGit **does not merge** them. This is deliberate: silently 3-way
   merging two piles of unreviewed in-progress work is exactly how you'd get a subtly broken
   tree. It notifies you (once) and leaves **both** states intact.
 
@@ -281,8 +289,8 @@ teammate's). On every sync, SincroGit fetches your other machines' mirrors and:
 > git merge           refs/autosnap/<you>/<other-host>/<branch>   # or merge both, resolve conflicts
 > ```
 
-Turn it off per repo with `live_handoff: false` (then handoff is manual, as above). It
-needs `autosnap` on (that's what publishes the mirror your other machine reads).
+Set `live_handoff` per repo to `auto` (default), `ask`, or `off`. It needs `autosnap` on
+(that's what publishes the mirror your other machine reads).
 
 ## Limitations
 
@@ -345,7 +353,7 @@ overridable per repo):
 | `seal_interval_min` | 360 | How often a permanent commit is sealed (6 h) |
 | `autosnap` | true | Live mirror of HEAD to `refs/autosnap/<user>/<host>/<branch>` (disk-failure recovery + handoff) |
 | `autosnap_interval_min` | 30 | How often the mirror is force-pushed (only if it changed) |
-| `live_handoff` | true | Auto-pick up your other machine's live WIP (fast-forward only; notify on divergence). See [Cross-machine handoff](#cross-machine-handoff-live-wip) |
+| `live_handoff` | auto | Pick up your other machine's live WIP: `auto` (fast-forward + notify), `ask` (one-click apply), `off`. See [Cross-machine handoff](#cross-machine-handoff-live-wip) |
 | `max_file_bytes` | 1048576 | Maximum file size to version (1 MB) |
 | `extra_excludes` | — | `.gitignore`-style patterns to exclude |
 | `extra_includes` | — | patterns versioned even if binary (e.g. `**/*.docx`) |

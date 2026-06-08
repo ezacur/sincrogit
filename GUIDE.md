@@ -44,6 +44,8 @@ your live work, and the laptop **picks it up by itself**. (If you like a tidy hi
 **In the afternoon, on the laptop:**
 - You open it. SincroGit spots your desktop's newer work and **fast-forwards you to it
   automatically** — you carry on exactly where you left off. No commit, no pull, nothing.
+  (You get a small heads-up notification, so it's never silent. Rather press a button
+  yourself before your files change? Set `live_handoff: ask`.)
 
 > 🤝 **"Your machines diverged"?** That only happens if you changed things on **both**
 > machines without syncing in between. SincroGit won't guess how to blend two piles of

@@ -8,8 +8,8 @@ Tabbed window:
 
 It talks to the app through a `controller` (duck-typed) that exposes:
   status(), events_all(), pause_all(), resume_all(), sync_now(), seal_now(),
-  resume_repo(name), save_config(text)->(ok,msg), restart(), config_path,
-  config_text(), app_state(), make_icon(state).
+  resume_repo(name), apply_handoff(name), save_config(text)->(ok,msg), restart(),
+  config_path, config_text(), app_state(), make_icon(state).
 """
 
 import time
@@ -178,11 +178,16 @@ class ControlPanel(QMainWindow):
             b_seal.clicked.connect(lambda _, n=name: self.c.seal_repo_now(n))
             b_pull = QPushButton("Fetch+Pull")
             b_pull.clicked.connect(lambda _, n=name: self.c.pull_repo_now(n))
-            for b in (b_pause, b_commit, b_seal, b_pull):
+            b_handoff = QPushButton("Apply handoff")
+            b_handoff.setToolTip("Apply newer work waiting from your other machine")
+            b_handoff.setStyleSheet("QPushButton { color: #1E6FD9; font-weight: bold; }")
+            b_handoff.clicked.connect(lambda _, n=name: self._apply_handoff(n))
+            b_handoff.setVisible(False)  # shown only when a handoff is pending (ask mode)
+            for b in (b_pause, b_commit, b_seal, b_pull, b_handoff):
                 b.setFixedHeight(24)
                 h.addWidget(b)
             self.tbl_repos.setCellWidget(i, 5, cell)
-            self._row_widgets[name] = {"pause": b_pause}
+            self._row_widgets[name] = {"pause": b_pause, "handoff": b_handoff}
 
     def _update_rows(self, repos, global_paused):
         for i, r in enumerate(repos):
@@ -194,6 +199,8 @@ class ControlPanel(QMainWindow):
                 state, color = "Paused", "#8a6d00"
             elif global_paused:
                 state, color = "Paused (all)", "#8a6d00"
+            elif r.get("pending_handoff"):
+                state, color = f"Handoff ready: {r['pending_handoff']}", "#1E6FD9"
             else:
                 state, color = "Active", None
             cells = [r["name"], r["branch"] or "—", state,
@@ -209,6 +216,7 @@ class ControlPanel(QMainWindow):
             if w:
                 paused = r["user_paused"] or r["conflict_paused"]
                 w["pause"].setText("Resume" if paused else "Pause")
+                w["handoff"].setVisible(bool(r.get("pending_handoff")))
 
     def _toggle_repo_pause(self, name):
         r = {x["name"]: x for x in self.c.status()["repos"]}.get(name)
@@ -218,6 +226,10 @@ class ControlPanel(QMainWindow):
             self.c.resume_repo(name)
         else:
             self.c.pause_repo(name)
+        self.refresh_status()
+
+    def _apply_handoff(self, name):
+        self.c.apply_handoff(name)
         self.refresh_status()
 
     def _toggle_pause(self):

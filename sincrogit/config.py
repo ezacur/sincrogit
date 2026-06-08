@@ -39,6 +39,21 @@ def _disabled_to_inf(value):
         return math.inf
     return value
 
+
+def _norm_handoff(value) -> str:
+    """Normalize live_handoff to 'auto' | 'ask' | 'off'. Accepts booleans
+    (true->auto, false->off) and the obvious word spellings."""
+    if value is True:
+        return "auto"
+    if value is False or value is None:
+        return "off"
+    s = str(value).strip().lower()
+    if s in ("ask", "prompt", "confirm", "notify"):
+        return "ask"
+    if s in ("off", "false", "none", "no", "0", "disabled", "never"):
+        return "off"
+    return "auto"  # true/auto/on/yes/anything else -> auto
+
 # Keys a repo can inherit from `defaults` or override.
 _INHERITABLE = [
     "snapshot_interval_sec",
@@ -81,9 +96,10 @@ class RepoConfig:
     autosnap: bool = True                 # mirror HEAD (incl. WIP) to a side ref on the
                                           # remote -> disk-failure RPO ~= autosnap_interval
     autosnap_interval_min: int = 30       # how often the live mirror is force-pushed
-    live_handoff: bool = True             # auto-pick up your OTHER machine's live WIP
-                                          # (fast-forward only; notify on divergence).
-                                          # Needs autosnap on to be discoverable.
+    live_handoff: object = "auto"         # pick up your OTHER machine's live WIP. 'auto'
+                                          # = fast-forward automatically (notify on apply);
+                                          # 'ask' = notify + one-click Apply (no silent
+                                          # reset); 'off'/false = manual. Needs autosnap on.
 
     def __post_init__(self):
         # Normalize disable sentinels (inf/off/none/never, None, False) to
@@ -92,6 +108,7 @@ class RepoConfig:
         # just work. See _disabled_to_inf.
         for f in _DISABLEABLE_FIELDS:
             setattr(self, f, _disabled_to_inf(getattr(self, f)))
+        self.live_handoff = _norm_handoff(self.live_handoff)
 
     @property
     def seal_interval_sec(self) -> float:

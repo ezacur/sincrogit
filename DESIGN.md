@@ -138,16 +138,22 @@ design points:
   every path I changed (and has more) it's `theirs_contains` → safe to adopt; the mirror is
   classified `equal` / `mine_contains` / `diverged` otherwise.
 
-Behavior (`live_handoff`, default on):
-- **`theirs_contains` → auto fast-forward (level b).** `git reset --hard` to the peer. It's
-  provably loss-free (the peer holds all my changed-path content; only an empty WIP is
-  dropped), reversible via the reflog, and **refused** if it would clobber an untracked file
-  (`untracked_collisions`) — notify instead.
-- **`diverged` → notify, never auto-merge (level a).** Deliberately no 3-way auto-merge of
-  two piles of unreviewed in-progress work (a quiet, subtly-broken tree is the worst
-  outcome). SincroGit warns **once** per distinct peer state and leaves both intact; the
-  user resolves by **Smart-Committing one side then syncing** (normal rebase, with the usual
-  conflict-pause), or by inspecting/merging the side ref by hand. See the README.
+Behavior — `live_handoff` is a 3-state knob (`auto` default | `ask` | `off`):
+- **`theirs_contains` → safe fast-forward** (`git reset --hard` to the peer): provably
+  loss-free (the peer holds all my changed-path content; only an empty WIP is dropped),
+  reversible via the reflog, and **refused** if it would clobber an untracked file
+  (`untracked_collisions`). In `auto` it's applied immediately **and a tray notification is
+  fired** (level b is never *silent* — the working tree changing under you is a surprise even
+  when nothing is lost). In `ask` it is NOT applied: the candidate is recorded
+  (`pending_handoff`, surfaced in `status()` and the panel), the user is notified, and a
+  one-click **Apply** (`Engine.apply_handoff` / `--apply-handoff`) re-validates from scratch
+  (re-fetch + re-classify + re-check collisions, since the peer may have moved) before the
+  fast-forward (level a / consent).
+- **`diverged` → notify, never auto-merge.** Deliberately no 3-way auto-merge of two piles of
+  unreviewed in-progress work (a quiet, subtly-broken tree is the worst outcome). SincroGit
+  warns **once** per distinct peer state and leaves both intact; the user resolves by
+  **Smart-Committing one side then syncing** (normal rebase, with the usual conflict-pause),
+  or by inspecting/merging the side ref by hand. See the README.
 
 Runs at the end of the sync cycle (so it needs `pull` or `push` on to fire) and inside the
 repo's `op_lock`. Phase 2 levels (a)+(b); a true auto-merge mode is intentionally out of

@@ -138,17 +138,22 @@ dispara). Dos puntos de diseño:
   más) es `theirs_contains` → seguro adoptar; si no, se clasifica `equal` / `mine_contains`
   / `diverged`.
 
-Comportamiento (`live_handoff`, on por defecto):
-- **`theirs_contains` → fast-forward automático (nivel b).** `git reset --hard` al peer.
-  Es demostrablemente sin pérdida (el peer tiene todo mi contenido de las rutas que cambié;
-  solo se descarta un WIP vacío), reversible vía reflog, y se **rechaza** si pisara un
-  fichero untracked (`untracked_collisions`) — en su lugar avisa.
-- **`diverged` → avisar, nunca auto-merge (nivel a).** A propósito sin merge 3-way
-  automático de dos montones de trabajo en curso sin revisar (un árbol roto en silencio es
-  el peor desenlace). Avisa **una vez** por estado distinto del peer y deja ambos intactos;
-  el usuario resuelve **sellando un lado con Smart Commit y luego sincronizando** (rebase
-  normal, con su pausa-conflicto habitual), o inspeccionando/fusionando el ref lateral a
-  mano. Ver el README.
+Comportamiento — `live_handoff` es un mando de 3 estados (`auto` por defecto | `ask` | `off`):
+- **`theirs_contains` → fast-forward seguro** (`git reset --hard` al peer): demostrablemente
+  sin pérdida (el peer tiene todo mi contenido de las rutas que cambié; solo se descarta un
+  WIP vacío), reversible vía reflog, y se **rechaza** si pisara un fichero untracked
+  (`untracked_collisions`). En `auto` se aplica al momento **y se lanza una notificación de
+  bandeja** (el nivel b nunca es *silencioso* — que el working tree cambie bajo tus pies
+  sorprende aunque no se pierda nada). En `ask` NO se aplica: se registra el candidato
+  (`pending_handoff`, expuesto en `status()` y el panel), se notifica, y un **Apply** de un
+  clic (`Engine.apply_handoff` / `--apply-handoff`) revalida desde cero (re-fetch +
+  re-clasificar + re-chequear colisiones, porque el peer pudo moverse) antes del
+  fast-forward (nivel a / consentimiento).
+- **`diverged` → avisar, nunca auto-merge.** A propósito sin merge 3-way automático de dos
+  montones de trabajo en curso sin revisar (un árbol roto en silencio es el peor desenlace).
+  Avisa **una vez** por estado distinto del peer y deja ambos intactos; el usuario resuelve
+  **sellando un lado con Smart Commit y luego sincronizando** (rebase normal, con su
+  pausa-conflicto habitual), o inspeccionando/fusionando el ref lateral a mano. Ver el README.
 
 Corre al final del ciclo de sync (necesita `pull` o `push` activo) y dentro del `op_lock`
 del repo. Niveles (a)+(b) de la Fase 2; un modo de auto-merge real queda fuera de alcance a

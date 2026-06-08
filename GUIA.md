@@ -44,6 +44,8 @@ ordenado, un **Smart Commit** antes de irte queda bien — pero es opcional.)
 **Por la tarde, en el portátil:**
 - Lo abres. SincroGit detecta el trabajo más nuevo del sobremesa y **te adelanta hasta él
   automáticamente** — sigues justo donde lo dejaste. Sin commit, sin pull, sin nada.
+  (Recibes un pequeño aviso, así que nunca es silencioso. ¿Prefieres pulsar un botón tú
+  antes de que cambien tus ficheros? Pon `live_handoff: ask`.)
 
 > 🤝 **¿"Tus máquinas han divergido"?** Eso solo pasa si cambiaste cosas en **las dos**
 > máquinas sin sincronizar entre medias. SincroGit no adivina cómo mezclar dos montones de

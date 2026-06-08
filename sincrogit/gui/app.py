@@ -263,6 +263,17 @@ class TrayApp:
     def pull_repo_now(self, name):
         self._run_async(lambda: self.engine.pull_repo_now(name), f"pull:{name}")
 
+    def apply_handoff(self, name):
+        """Apply a pending cross-machine handoff ('ask' mode, one click). Runs on a
+        thread (it fetches + git); success is notified by the engine, failures are
+        surfaced in the log."""
+        def worker():
+            ok, msg = self.engine.apply_handoff(name)
+            if not ok:
+                self.event_log.add(name, "handoff", f"apply failed: {msg}", "WARNING")
+            self._refresh_tray()
+        threading.Thread(target=worker, name=f"sincrogit-handoff-{name}", daemon=True).start()
+
     def add_repo(self, path, branch="main", push=True, pull=True, normalize_eol=True):
         """Validate, persist to the config file, and add the repo live. (ok, msg).
 

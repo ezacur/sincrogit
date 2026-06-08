@@ -62,6 +62,7 @@ class RepoState:
         self._branch_checked_mono = 0.0
         self.user = ""            # "same person across machines" id for handoff (git email)
         self._handoff_warned_sha = None  # last diverging peer WIP we warned about (throttle)
+        self.pending_handoff = None  # {sha, host} a safe FF awaiting the user (ask mode)
 
         # For the control panel (wall-clock time, not monotonic):
         self.branch = None
@@ -336,6 +337,7 @@ class Engine:
                 "conflict_paused": st.paused,
                 "user_paused": st.user_paused,
                 "off_branch": st.off_branch,
+                "pending_handoff": (st.pending_handoff or {}).get("host"),
                 "last_snapshot": st.last_snapshot_wall,
                 "last_seal": st.last_seal_epoch,
                 "last_action": st.last_action,
@@ -720,21 +722,22 @@ class Engine:
                 self._do_push(st)
 
         # --- HANDOFF: pick up this user's newer live WIP from another machine ---
-        if cfg.live_handoff:
+        if cfg.live_handoff != "off":
             self._maybe_handoff(st)
 
     def _maybe_handoff(self, st: RepoState):
-        """Cross-machine handoff (levels a + b). Pick up the latest live WIP that
-        YOU pushed from ANOTHER machine and, when it is a safe fast-forward (your
-        local WIP is an ancestor of it, nothing local diverges, no untracked file
-        would be clobbered), apply it automatically so you simply continue where you
-        left off (level b). On divergence it does NOT auto-merge (by design): it
-        notifies once and leaves both states intact for you to resolve by hand —
-        seal one side with Smart Commit, then sync (level a / see README).
+        """Cross-machine handoff (levels a + b). Pick up the latest live WIP that YOU
+        pushed from ANOTHER machine. When it's a safe fast-forward (the peer matches
+        your content on every path you changed, and has more — so a reset loses
+        nothing of yours, only an empty WIP), then:
+          - live_handoff == 'auto': apply it now (and notify so it's never silent);
+          - live_handoff == 'ask' : record it and notify, so you Apply with one click.
+        It is refused (notify) if it would clobber an untracked file. On divergence it
+        does NOT auto-merge (by design): it notifies once and leaves both states intact
+        for you to resolve by hand. See the README's handoff section.
 
-        Assumes st.op_lock (runs inside the sync worker). Needs autosnap enabled on
-        the other machine to be discoverable. Force is only ever a fast-forward that
-        provably contains all local work, and it's reversible via the reflog.
+        Assumes st.op_lock (runs inside the sync worker). Needs autosnap on the other
+        machine to be discoverable. Reversible via the reflog.
         """
         repo, cfg = st.repo, st.cfg
         if not repo.has_remote(cfg.remote):
@@ -743,9 +746,11 @@ class Engine:
         repo.fetch_autosnaps(cfg.remote, user=st.user, timeout=cfg.git_timeout_sec)
         peer = repo.peer_wip(st.user, self._autosnap_host, cfg.branch)
         if not peer:
+            st.pending_handoff = None
             return
         head = repo.head_sha()
         if not head or head == peer["sha"]:
+            st.pending_handoff = None
             return  # in sync (or no HEAD yet)
 
         # Capture pending local edits first, so the comparison is honest: only then
@@ -755,38 +760,94 @@ class Engine:
             repo.amend_keep_message()
         head = repo.head_sha()
         if head == peer["sha"]:
+            st.pending_handoff = None
             return
 
         # Compare actual WORK content (not commit ancestry — the amended WIPs of two
         # machines are always siblings; see GitRepo.work_relationship).
         rel = repo.work_relationship(head, peer["sha"])
         if rel == "theirs_contains":
-            # SAFE: the peer matches my content on every path I changed, and has more
-            # (level b). A reset to it loses nothing of mine.
-            clashes = repo.untracked_collisions(peer["sha"])
-            if clashes:
+            # SAFE fast-forward: loses nothing of mine. Refuse if it would clobber an
+            # untracked file (notify instead).
+            if repo.untracked_collisions(peer["sha"]):
+                st.pending_handoff = None
                 self._warn_handoff_once(
                     st, peer["sha"],
                     f"newer work on '{peer['host']}' NOT applied: it would overwrite "
-                    f"untracked file(s): {', '.join(clashes[:5])}. Move/commit them first.")
+                    f"untracked file(s). Move/commit them first.")
                 return
-            repo.fast_forward_wip(peer["sha"])
-            sealed = repo.last_sealed_time()
-            st.last_seal_epoch = float(sealed) if sealed else st.last_seal_epoch
-            st.autosnap_pending = True       # my own ref should now track the new HEAD
-            st._handoff_warned_sha = None
-            self._mark_action(st, "handoff")
-            self._emit(cfg.name, "handoff",
-                       f"applied newer work from '{peer['host']}' — you're up to date")
+            if cfg.live_handoff == "ask":
+                # Don't touch the working tree; record it + notify once for one-click Apply.
+                if not st.pending_handoff or st.pending_handoff.get("sha") != peer["sha"]:
+                    st.pending_handoff = {"sha": peer["sha"], "host": peer["host"]}
+                    notify("SincroGit: newer work available",
+                           f"'{cfg.name}': '{peer['host']}' has newer work ready. Open the "
+                           f"panel and click Apply (or run --apply-handoff).")
+                    self._emit(cfg.name, "handoff",
+                               f"newer work from '{peer['host']}' ready to apply (ask mode)")
+                return
+            self._apply_handoff(st, peer["sha"], peer["host"])  # auto
         elif rel in ("equal", "mine_contains"):
-            return  # in sync, or I'm ahead — nothing to adopt
+            st.pending_handoff = None  # in sync, or I'm ahead — nothing to adopt
         else:  # "diverged"
-            # Both machines have unmerged work. No auto-merge (by design).
+            st.pending_handoff = None
             self._warn_handoff_once(
                 st, peer["sha"],
                 f"your work here and on '{peer['host']}' have DIVERGED (neither contains "
                 f"the other). Not auto-merged: seal one side with Smart Commit, then sync. "
                 f"See the README's handoff section.", notify_user=True)
+
+    def _apply_handoff(self, st: RepoState, sha: str, host: str):
+        """Fast-forward the WIP to a peer's state. Caller MUST hold op_lock and have
+        verified work_relationship == 'theirs_contains' and no untracked_collisions."""
+        st.repo.fast_forward_wip(sha)
+        sealed = st.repo.last_sealed_time()
+        st.last_seal_epoch = float(sealed) if sealed else st.last_seal_epoch
+        st.autosnap_pending = True       # my own ref should now track the new HEAD
+        st._handoff_warned_sha = None
+        st.pending_handoff = None
+        self._mark_action(st, "handoff")
+        self._emit(st.cfg.name, "handoff", f"applied newer work from '{host}' — you're up to date")
+        notify("SincroGit: caught up",
+               f"'{st.cfg.name}': applied newer work from '{host}'. You're up to date.")
+
+    def apply_handoff(self, name: str) -> tuple:
+        """Apply a pending handoff (the 'ask'-mode one-click action / CLI). Re-validates
+        from scratch under the lock (the peer may have moved since the notification), so
+        it only ever fast-forwards when it's still provably safe. Returns (ok, msg)."""
+        st = self.repo_state_by_name(name)
+        if not st:
+            return False, "repo not found"
+        ok, cur = self._branch_ok(st)
+        if not ok:
+            return False, f"on branch '{cur}', not configured '{st.cfg.branch}'; switch back first"
+        repo = st.repo
+        with st.op_lock:
+            if repo.is_busy():
+                return False, "repo busy (merge/rebase in progress)"
+            if not repo.has_remote(st.cfg.remote):
+                return False, "no remote configured"
+            repo.fetch_autosnaps(st.cfg.remote, user=st.user, timeout=st.cfg.git_timeout_sec)
+            peer = repo.peer_wip(st.user, self._autosnap_host, st.cfg.branch)
+            if not peer:
+                st.pending_handoff = None
+                return False, "the other machine's work is no longer available"
+            # Snapshot local edits, then re-check the relationship from scratch.
+            self._ensure_wip(st)
+            if self._stage(st) and repo.has_staged_changes():
+                repo.amend_keep_message()
+            head = repo.head_sha()
+            if head == peer["sha"]:
+                st.pending_handoff = None
+                return True, "already up to date"
+            rel = repo.work_relationship(head, peer["sha"])
+            if rel != "theirs_contains":
+                st.pending_handoff = None
+                return False, f"can no longer fast-forward safely (now '{rel}'); resolve by hand"
+            if repo.untracked_collisions(peer["sha"]):
+                return False, "would overwrite untracked file(s); move them first"
+            self._apply_handoff(st, peer["sha"], peer["host"])
+        return True, f"applied '{peer['host']}'"
 
     def _warn_handoff_once(self, st: RepoState, peer_sha: str, message: str,
                            notify_user: bool = False):

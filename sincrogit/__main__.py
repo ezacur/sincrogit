@@ -8,6 +8,7 @@ Launch model:
   --history FILE [--pick N] -> browse/restore a file's version history
   --autosnaps               -> fetch & list autosnap recovery points (per machine)
   --commit REPO [-m MSG|-y] -> manual commit of REPO (edit the proposed message, then seal+push)
+  --apply-handoff REPO      -> apply your other machine's pending live work to REPO
 
 With no arguments the GUI launches; if an instance is already running, the new
 launch just asks the running one to show its panel and exits. Any argument is
@@ -130,6 +131,15 @@ def _autosnaps_command(engine) -> int:
     if not found:
         print("No autosnap states found on the remote(s).")
     return 0
+
+
+def _apply_handoff_command(engine, repo_name: str) -> int:
+    """Apply a pending cross-machine handoff for one repo (the 'ask'-mode action
+    from the CLI): fast-forward this checkout to your other machine's newer work,
+    if that's still safe. Re-validates before touching anything."""
+    ok, msg = engine.apply_handoff(repo_name)
+    print(("Handoff applied: " if ok else "Nothing applied: ") + msg)
+    return 0 if ok else 1
 
 
 def _resolve_editor() -> str:
@@ -281,6 +291,8 @@ def main(argv=None) -> int:
                         help="With --commit: use MSG directly (skip the AI proposal/editor).")
     parser.add_argument("--yes", "-y", action="store_true",
                         help="With --commit: accept the AI proposal without editing.")
+    parser.add_argument("--apply-handoff", metavar="REPO",
+                        help="Apply your other machine's pending live work to REPO (handoff).")
     args = parser.parse_args(argv)
 
     if args.tray:
@@ -317,6 +329,11 @@ def main(argv=None) -> int:
         engine = Engine(config)
         engine.setup(with_watcher=False)
         return _commit_command(engine, args.commit, args.message, args.yes)
+
+    if args.apply_handoff:
+        engine = Engine(config)
+        engine.setup(with_watcher=False)
+        return _apply_handoff_command(engine, args.apply_handoff)
 
     if args.snapshot_once or args.seal_once or args.sync_once:
         engine = Engine(config)

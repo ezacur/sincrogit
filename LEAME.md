@@ -117,6 +117,7 @@ pip install -r requirements.txt
 | `--history FICHERO [--pick N]` | explorar/restaurar versiones de un fichero |
 | `--autosnaps` | fetch + listado de puntos de recuperación autosnap (por máquina) |
 | `--commit REPO [-m MSG \| -y]` | commit manual de REPO: edita el mensaje propuesto por IA en `$EDITOR` y sella+pushea |
+| `--apply-handoff REPO` | aplica a REPO el trabajo vivo pendiente de tu otra máquina (relevo) |
 
 ### Mensajes con IA (opcional)
 
@@ -272,15 +273,22 @@ sale de tu `git config user.email`, así una máquina reconoce a sus *propias* o
 frente a las de un compañero). En cada sync, SincroGit baja los espejos de tus otras
 máquinas y:
 
-- **Fast-forward seguro → se aplica solo.** Si el trabajo de la otra máquina *contiene todo
-  el tuyo* (típico: aquí no tocaste nada desde que te fuiste), SincroGit adelanta tu working
-  tree hasta él — te sientas y sigues. Es demostrablemente sin pérdida (solo descarta un WIP
-  vacío), reversible vía el reflog, y se **omite** si fuera a sobrescribir un fichero
-  untracked (en su lugar te avisa).
-- **Divergencia → decides tú (sin auto-merge).** Si *las dos* máquinas cambiaron trabajo que
-  la otra no tiene, SincroGit **no las fusiona**. Es deliberado: fusionar en 3-way y en
-  silencio dos montones de trabajo en curso sin revisar es justo cómo acabarías con un árbol
-  sutilmente roto. Te avisa (una vez) y deja **ambos** estados intactos.
+- **Fast-forward seguro (el caso común).** Si el trabajo de la otra máquina *contiene todo
+  el tuyo* (típico: aquí no tocaste nada desde que te fuiste), es un fast-forward sin pérdida
+  (solo descarta un WIP vacío, reversible vía el reflog) — y se **omite** si fuera a
+  sobrescribir un fichero untracked (te avisa). Qué pasa entonces depende de `live_handoff`:
+  - **`auto`** (por defecto): se aplica solo — te sientas y sigues. **Nunca en silencio**:
+    recibes una notificación de bandeja ("te puse al día con *Desktop-PC*"), así siempre
+    sabes que tus ficheros se movieron.
+  - **`ask`**: no toca nada. Recibes una notificación y el panel muestra un botón **Apply
+    handoff** (o ejecutas `--apply-handoff REPO`); revalida que sigue siendo seguro y
+    entonces hace el fast-forward. Ideal si prefieres confirmar antes de que cambie tu
+    working tree.
+  - **`off`**/`false`: el relevo se desactiva (solo manual, como abajo).
+- **Divergencia → decides tú (sin auto-merge, en cualquier modo).** Si *las dos* máquinas
+  cambiaron trabajo que la otra no tiene, SincroGit **no las fusiona**. Es deliberado:
+  fusionar en 3-way y en silencio dos montones de trabajo en curso sin revisar es justo cómo
+  acabarías con un árbol sutilmente roto. Te avisa (una vez) y deja **ambos** estados intactos.
 
 > ⚠️ **Lo que falta a propósito: el merge automático.** Ante divergencia, lo resuelves tú,
 > a tu manera:
@@ -301,8 +309,8 @@ máquinas y:
 > git merge           refs/autosnap/<tú>/<otro-host>/<rama>   # o fusionar ambos, resolver conflictos
 > ```
 
-Se apaga por repo con `live_handoff: false` (entonces el relevo es manual, como arriba).
-Necesita `autosnap` activo (es lo que publica el espejo que lee tu otra máquina).
+Pon `live_handoff` por repo en `auto` (por defecto), `ask` u `off`. Necesita `autosnap`
+activo (es lo que publica el espejo que lee tu otra máquina).
 
 ## Limitaciones
 
@@ -368,7 +376,7 @@ sobreescribibles por repo):
 | `seal_interval_min` | 360 | Cada cuánto se sella un commit permanente (6 h) |
 | `autosnap` | true | Espejo en vivo de HEAD a `refs/autosnap/<user>/<host>/<rama>` (recuperación ante fallo de disco + relevo) |
 | `autosnap_interval_min` | 30 | Cada cuánto se hace force-push del espejo (solo si cambió) |
-| `live_handoff` | true | Recoger solo el WIP vivo de tu otra máquina (solo fast-forward; aviso ante divergencia). Ver [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo) |
+| `live_handoff` | auto | Recoger el WIP vivo de tu otra máquina: `auto` (fast-forward + notifica), `ask` (aplicar a un clic), `off`. Ver [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo) |
 | `max_file_bytes` | 1048576 | Tamaño máximo de fichero a versionar (1 MB) |
 | `extra_excludes` | — | Patrones estilo `.gitignore` a excluir |
 | `extra_includes` | — | patrones versionados aunque sean binarios (p. ej. `**/*.docx`) |
