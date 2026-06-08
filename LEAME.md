@@ -1,9 +1,28 @@
 # SincroGit
 
-Sincronización automática e instantánea, pero con **versionado robusto sobre Git**.
-Hace *snapshots* automáticos de tus repos cada pocos minutos (auto-backup ante cortes
-de luz), espeja el último estado al remoto cada ~30 min (**autosnap**, para recuperación
-ante fallo de disco) y "sella" commits con historial limpio cada 6 horas.
+SincroGit le da a cualquier repo una **máquina del tiempo** automática y versionada — sin
+que ejecutes `git` jamás. Cada pocos minutos fotografía tus ficheros **guardados**, cada
+~6 h "sella" un commit permanente limpio, y espeja tu último estado al remoto para que tu
+trabajo te siga entre máquinas con esfuerzo casi nulo.
+
+**Para qué sirve de verdad** (sin vender humo):
+
+- **Una máquina del tiempo para quien (o lo que) no va a commitear a mano.** ¿Rompiste o
+  borraste algo hace horas y te das cuenta ahora? Vuelve a cualquier estado *guardado*
+  anterior — sin disciplina, sin un solo `git add`. Ideal para el desarrollador
+  ocupado/olvidadizo/que está aprendiendo.
+- **Repos de prueba y experimentales.** Código que no merece un historial curado pero cuyo
+  *rastro* odiarías perder — spikes, pruebas, desechables. Historial recuperable completo,
+  cero ceremonia. (Posiblemente su punto más fuerte.)
+- **Continuidad multi-máquina de bajo esfuerzo.** Cambias entre el ordenador de la oficina
+  y el de casa y tu trabajo te sigue — *con un retardo de minutos, no instantáneo* (ver
+  [relevo](#relevo-entre-máquinas-wip-vivo)); un **Smart Commit** antes de irte hace el
+  relevo pronto.
+- **(Bonus raro) sobrevive a un disco muerto.** El espejo remoto recupera tu último estado
+  (de hace ≤~30 min) si la máquina entera muere. **No** rescata buffers no guardados del
+  editor, y un corte de luz con el disco intacto no pierde nada de todos modos — tus
+  ficheros guardados ya están en disco; el valor de SincroGit ahí es el *rollback*, no la
+  supervivencia.
 
 > Diseño completo y decisiones en **[DISENO.md](DISENO.md)**.
 > ¿No eres experto en Git? Empieza por la **[guía para humanos](GUIA.md)**.
@@ -213,8 +232,8 @@ cada 6h: el WIP se sella (mensaje descriptivo) y nace un WIP nuevo encima
 resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo)
 ```
 
-- **Recuperar trabajo reciente** (corte de luz): el último snapshot está en `HEAD`.
-  Estados intermedios de la ventana, en `git reflog`.
+- **Deshacer un error reciente**: el último snapshot está en `HEAD`; los estados guardados
+  anteriores de la ventana, en `git reflog` (resolución ≈5 min).
 - **Volver a ayer**: `git checkout`/`restore` desde el commit sellado correspondiente.
 - **Fallo total de disco**: recupera en otra máquina desde el ref `autosnap` (≤30 min).
 
@@ -229,16 +248,21 @@ olvida de commitear y cambia de máquina. Los compromisos deliberados:
   atómicos. Cuando quieras un commit curado, usa **Smart Commit** (mensaje Conventional
   Commits propuesto por IA). El prefijo `sincro:` distingue los commits de la máquina de
   los tuyos.
-- **El WIP es un "botón de guardar" continuo.** Un único commit se amendea cada ~5 min,
-  así que un corte de luz no pierde nada; los estados intra-ventana quedan en el reflog.
-- **El backup está desacoplado del historial.** `autosnap` hace force-push del estado
-  vivo a un ref lateral por máquina cada ~30 min para recuperación ante fallo de disco,
-  mientras `main` se mantiene limpia (solo sellados) → el pull de la otra máquina es
-  siempre un fast-forward limpio.
+- **El WIP es un "botón de guardar" continuo — para ficheros *guardados*.** Un único commit
+  se amendea cada ~5 min, así que cualquier estado guardado anterior es recuperable del
+  reflog (resolución ≈5 min). Fotografía lo que está en disco, **no** el buffer no guardado
+  de tu editor — así que su valor es el *rollback*, no sobrevivir a un crash (un corte de
+  luz con el disco intacto no pierde nada de todos modos; los ficheros guardados ya están
+  en disco).
+- **El backup está desacoplado del historial.** `autosnap` hace force-push del estado vivo
+  a un ref lateral por máquina cada ~30 min, mientras `main` se mantiene limpia (solo
+  sellados) → el pull de la otra máquina es siempre un fast-forward limpio. Sirve tanto a la
+  rara recuperación ante fallo de disco como al relevo entre máquinas.
 
 El coste que aceptamos: el historial se lee como bloques de tiempo en vez de commits
-perfectamente atómicos, y un fallo total de disco puede perder hasta ~30 min — a cambio
-de backup versionado sin esfuerzo y sincronización secuencial entre máquinas.
+perfectamente atómicos; la resolución de rollback es ~5 min (la cadencia de snapshot); y un
+fallo total de disco puede perder hasta ~30 min (la cadencia de autosnap) — a cambio de una
+máquina del tiempo versionada sin esfuerzo y continuidad multi-máquina de bajo esfuerzo.
 
 ### Pragmática vs purista: tú decides qué significa un commit
 
@@ -256,8 +280,8 @@ seguridad por debajo:
   El sellado automático no se dispara nunca, así que la rama queda **inmaculada** — cada
   commit permanente es uno que hiciste *tú*, cuando una tarea está de verdad terminada,
   vía **Smart Commit** (Conventional Commits propuesto por IA). El WIP y el `autosnap`
-  siguen funcionando por debajo, así que un corte de luz o un fallo de disco siguen sin
-  perder nada. Es "Git casi puro" con una red de seguridad invisible — un historial
+  siguen funcionando por debajo, así que conservas la máquina del tiempo y la recuperación
+  ante fallo de disco. Es "Git casi puro" con una red de seguridad invisible — un historial
   presentable incluso junto a un equipo.
 
   > **Nota:** incluso en modo purista sigues teniendo continuidad automática entre
@@ -316,6 +340,15 @@ activo (es lo que publica el espejo que lee tu otra máquina).
 
 SincroGit tiene un alcance deliberadamente acotado. Lo que **no** hace:
 
+- **Versiona ficheros *guardados*, no buffers sin guardar.** Un corte de luz/crash con el
+  disco intacto no pierde nada de todos modos (tus ficheros guardados están en disco); el
+  valor de SincroGit ahí es el *rollback* a un estado guardado anterior, no sobrevivir al
+  crash. **No** rescata trabajo que nunca guardaste — eso es el autosave de tu editor.
+- **La sincro multi-máquina es diferida, no instantánea.** Tu trabajo llega a la otra
+  máquina en minutos, no segundos: la fuente espeja su WIP cada `autosnap_interval_min`
+  (~30 min) y el destino lo recoge cada `pull_interval_min` (~10 min) — hasta ~40 min en el
+  peor caso. Un **Smart Commit** antes de cambiar lo hace pronto (≤ el intervalo de pull del
+  destino); ambos intervalos son configurables. O sea: transparente, pero no en caliente.
 - **Secuencial, no simultáneo.** Asume una máquina a la vez. No fusiona ediciones
   simultáneas en dos máquinas — el rebase se aborta y el repo se pausa para que resuelvas
   a mano. Es una herramienta personal, no para trabajo en equipo sobre una rama compartida.
@@ -324,8 +357,10 @@ SincroGit tiene un alcance deliberadamente acotado. Lo que **no** hace:
 - **Historial por bloques de tiempo.** Los sellados `sincro:` agrupan ~6 h de cambios
   inconexos, así que un `git bisect`/`revert` de un cambio lógico es más difícil que sobre
   un historial curado (usa **Smart Commit** cuando quieras un commit limpio).
-- **Las ventanas de recuperación no son cero.** Corte de luz/crash: hasta ~5 min (último
-  snapshot); fallo total de disco: hasta ~30 min (último autosnap).
+- **La resolución de rollback / la ventana de fallo de disco no son cero.** Puedes volver
+  con resolución ~5 min (cadencia de snapshot); un **fallo total de disco** pierde hasta
+  ~30 min (el último autosnap en el remoto) — un evento raro, y el único caso donde "los
+  ficheros en disco" no te cubre ya.
 - **Los conflictos los resuelves tú.** Ante conflicto nunca fuerza — pausa y avisa; lo
   arreglas en la terminal y reanudas.
 - **Necesita tus credenciales de Git.** Corre en tu sesión de usuario y pushea con tu

@@ -2,12 +2,17 @@
 
 Seamos honestos: Git es increíble, pero pide disciplina. Y a veces simplemente **no
 tenemos ganas** de hacer `git add`, pensar el mensaje perfecto y `git push` cada vez que
-nos levantamos a por un café. Si alguna vez perdiste trabajo porque Windows se reinició
-solo, o tu historial está lleno de mensajes tipo `asdffdsa` y `ahora sí funciona`, estás
-en el sitio correcto.
+nos levantamos a por un café. Si alguna vez sobrescribiste una versión buena con una mala y
+deseaste un *deshacer*, o tu historial está lleno de mensajes tipo `asdffdsa` y `ahora sí
+funciona`, estás en el sitio correcto.
 
-SincroGit tiene **una sola regla**: *tú céntrate en programar; él asume que eres
-olvidadizo y se encarga de que no pierdas una línea de código.*
+SincroGit tiene **una sola regla**: *tú céntrate en programar; él mantiene una **máquina
+del tiempo** versionada y silenciosa de tus ficheros guardados, para que siempre puedas
+volver atrás.*
+
+> También es perfecto para **repos de prueba y experimentales** — código que no merece un
+> historial hecho a mano, pero cuyo rastro odiarías perder. Déjalo correr; no pierdas un
+> spike.
 
 > ¿Quieres el detalle técnico? Está en [DISENO.md](DISENO.md). (English version:
 > [GUIDE.md](GUIDE.md).) Aquí vamos a lo práctico.
@@ -17,8 +22,10 @@ olvidadizo y se encarga de que no pierdas una línea de código.*
 Olvídate de la terminal. SincroGit te cubre las espaldas con tres ritmos automáticos:
 
 - **🖊️ El borrador — cada ~5 min.** Mientras picas código (o miras memes mientras
-  compila), toma una "foto" invisible de tus archivos. Si se va la luz, al volver tu
-  código está **exactamente** como lo dejaste. *Si no tocaste nada, no hace nada.*
+  compila), toma una "foto" invisible de tus archivos **guardados**. Así, si borras una
+  función, rompes algo, o solo quieres cómo estaba hace una hora, puedes volver atrás —
+  aunque nunca commitearas. *Si no tocaste nada, no hace nada.* (Fotografía lo que guardaste
+  en disco, no el buffer sin guardar de tu editor; de eso se encarga el autosave del editor.)
 - **☁️ La copia en la nube — cada ~30 min.** Sube tu último estado a un rincón privado
   del remoto. Es tu red ante un **desastre de disco** (no la del día a día).
 - **📦 El sellado — cada ~6 h.** Coge todos esos borradores invisibles, los empaqueta en
@@ -37,15 +44,18 @@ portátil sin hacer `push`).
 2. Programas tres horas. Ni rastro de la consola.
 3. Te llaman a comer. Te levantas y te vas **sin tocar nada**.
 
-**Antes de cambiar de máquina:** sinceramente, **nada que recordar**. SincroGit sigue
-replicando tu trabajo vivo, y el portátil **lo recoge solo**. (Si te gusta un historial
-ordenado, un **Smart Commit** antes de irte queda bien — pero es opcional.)
+**Antes de cambiar de máquina:** nada que *tengas* que hacer — tu trabajo se replica solo.
+Pero que sepas que es un relevo **con unos minutos de retardo** (no instantáneo): tu
+sobremesa espeja su estado cada ~30 min y el portátil mira cada ~10 min, así que en el peor
+caso va hasta ~40 min por detrás. ¿Quieres el portátil listo **al segundo** de sentarte?
+Haz un **Smart Commit** antes de irte — eso sube ya, y el portátil lo recoge en su próxima
+revisión (≈10 min). (O baja esos intervalos en la config.)
 
 **Por la tarde, en el portátil:**
-- Lo abres. SincroGit detecta el trabajo más nuevo del sobremesa y **te adelanta hasta él
-  automáticamente** — sigues justo donde lo dejaste. Sin commit, sin pull, sin nada.
-  (Recibes un pequeño aviso, así que nunca es silencioso. ¿Prefieres pulsar un botón tú
-  antes de que cambien tus ficheros? Pon `live_handoff: ask`.)
+- Lo abres y, en unos minutos, SincroGit detecta el trabajo más nuevo del sobremesa y **te
+  adelanta hasta él automáticamente** — sigues donde lo dejaste. Sin commit, sin pull, sin
+  nada. (Recibes un pequeño aviso, así que nunca es silencioso. ¿Prefieres pulsar un botón
+  tú antes de que cambien tus ficheros? Pon `live_handoff: ask`.)
 
 > 🤝 **¿"Tus máquinas han divergido"?** Eso solo pasa si cambiaste cosas en **las dos**
 > máquinas sin sincronizar entre medias. SincroGit no adivina cómo mezclar dos montones de
@@ -108,10 +118,13 @@ Solo tienes que recordar cuatro cosas:
 ## 🚫 Lo que NO hace (para que no te lleves sorpresas)
 
 - No fusiona el trabajo de **dos máquinas a la vez** (es de uso por turnos).
+- No sincroniza **al instante** entre máquinas — es un relevo de unos minutos (ver arriba).
+- No rescata trabajo **sin guardar** — versiona lo que **guardaste** en disco (del resto se
+  encarga el autosave de tu editor). Un corte de luz con el disco intacto no pierde nada.
 - No versiona **binarios ni ficheros > 1 MB** automáticamente (esos, a mano).
 - No es un **backup total**: guarda tu código de texto, no toda la carpeta.
 - No resuelve conflictos por ti: te avisa y los resuelves tú.
-- Ante un fallo **total** de disco puedes perder **hasta ~30 min** (no es cero).
+- Ante un fallo **total** de disco (raro) puedes perder **hasta ~30 min** (no es cero).
 
 ---
 

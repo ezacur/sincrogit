@@ -1,6 +1,7 @@
 # SincroGit — Documento de diseño
 
-> Sincronización automática e instantánea, pero con versionado robusto sobre Git.
+> Una máquina del tiempo automática y versionada para tus repos (y continuidad
+> multi-máquina de bajo esfuerzo), con **cero** disciplina de Git.
 > Plataforma objetivo: **Windows** (uso interactivo, una sola máquina a la vez).
 
 ---
@@ -9,8 +10,8 @@
 
 **Quiero dos cosas a la vez:**
 
-1. **Versionado + autobackup local.** Volver a la versión de ayer; y no perder trabajo ante un corte de luz o crash (recuperar hasta el último minuto).
-2. **Sincronización entre equipos (secuencial).** Trabajo casi siempre en el sobremesa y ocasionalmente en el portátil, **nunca a la vez**. Al cambiar de máquina, quiero que las fuentes se actualicen rápido y automáticamente.
+1. **Versionado + máquina del tiempo, con cero disciplina.** Volver cualquier fichero *guardado* a un estado anterior (rompiste/borraste/sobrescribiste algo) o a ayer — sin ejecutar `git` jamás. (Fotografía lo que está en disco, no los buffers no guardados del editor; un corte de luz con el disco intacto no pierde nada de todos modos — el valor es el rollback, no sobrevivir al crash. Un *fallo total de disco* es el único caso que cubre el espejo remoto, y es raro.)
+2. **Sincronización entre equipos (secuencial).** Trabajo casi siempre en el sobremesa y ocasionalmente en el portátil, **nunca a la vez**. Al cambiar de máquina, quiero que las fuentes se actualicen automáticamente (en minutos — ver §4.2; no instantáneo).
 
 **Fuera de alcance (de momento):**
 
@@ -39,7 +40,7 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 
 **Por qué funciona:**
 
-- El estado actual queda guardado en disco cada ~5 min → **recuperación ante corte de luz** (al reiniciar, `HEAD` = último snapshot).
+- El estado guardado actual se commitea cada ~5 min → un **punto de rollback** con resolución ~5 min (`HEAD` = último snapshot, los anteriores en el reflog). OJO: esto *no* es protección ante cortes de luz — los ficheros guardados sobreviven al corte en el disco igualmente, y los buffers no guardados nunca se capturan; el valor es la máquina del tiempo.
 - Como se hace `amend`, no se acumulan cientos de commits: solo **~4 commits/día** (uno cada 6 h).
 - El historial "limpio" (sellados) es lo único que viaja al remoto → **pull siempre limpio, sin force-push** (ver §4).
 
@@ -115,7 +116,7 @@ Como sellar cada 6 h dejaría hasta 6 h de trabajo fuera del remoto, **autosnap*
 - **No ensucia la rama:** nadie pullea ese ref para trabajar; la rama `main` sigue recibiendo solo sellados → pull siempre limpio. Es la excepción deliberada a "el WIP no sale de la máquina", acotada a un ref de backup.
 - **RPO ante fallo total de disco ≈ 30 min** (en vez de 6 h). En la otra máquina: *Fetch autosnaps* → explorar/restaurar el último estado (fichero o repo entero).
 - **Coste:** hasta ~48 push/día/repo en trabajo activo (force-push barato; **nada** en repos inactivos, porque solo sube si HEAD cambió). Objetos huérfanos en el remoto hasta su GC.
-- **Corte de luz / crash de SO** sigue cubierto por el snapshot local de cada 5 min (`HEAD` en disco) y el `reflog`.
+- **Corte de luz / crash de SO** no necesita nada especial del autosnap: los ficheros guardados sobreviven en el disco local, y el snapshot de 5 min / el `reflog` dan los puntos de rollback. El autosnap es para el caso *la-máquina-ya-no-está* (y el relevo, §4.2).
 
 ### 4.2 Relevo entre máquinas (WIP vivo)
 
@@ -293,7 +294,7 @@ repos:
 
 | Escenario | Qué pasa | Cómo recupero |
 |-----------|----------|---------------|
-| **Corte de luz / crash de SO** | El último snapshot (≤5 min) está commiteado en `HEAD` (WIP) | Al reiniciar, el trabajo está ahí. `git reflog` para estados intermedios de la ventana. |
+| **Corte de luz / crash de SO (disco intacto)** | Los ficheros guardados están en el disco; el último snapshot (≤5 min) está en `HEAD` (WIP) | Nada que recuperar para los ficheros guardados (el disco los tiene). Para *revertir* un estado guardado malo: `git reflog` (resolución ≈5 min). Los buffers sin guardar son cosa de tu editor. |
 | **"Quiero la versión de ayer"** | Está en los commits sellados | `git checkout`/`git restore` desde el sellado correspondiente. |
 | **Borré algo hace 20 min (dentro de la ventana)** | Snapshot anterior quedó *unreachable* en reflog | `git reflog` + `git checkout`. *(Más cómodo con la rama `autosnap` opcional, §12.)* |
 | **Fallo total de disco** | Lo sellado está en el remoto; el último estado (≤30 min) está en el ref `autosnap` (§4.1) | En otra máquina: *Fetch autosnaps* → restaurar (fichero o repo entero). Pérdida máx ≈ 30 min. Sin autosnap: hasta el último sellado (6 h). |
@@ -335,7 +336,7 @@ repos:
 - Filtro texto/tamaño.
 - Sellado cada 6 h con **mensaje de fallback**.
 - Logging.
-> Con esto ya tengo autobackup + versionado, que es el 80 % del valor.
+> Con esto ya tengo una máquina del tiempo versionada, que es el 80 % del valor.
 
 **✅ Fase 2 — IA + sincronización remota — COMPLETA:**
 - Generador de mensajes IA híbrido (Ollama → Gemini → fallback). Nunca bloquea el sellado.

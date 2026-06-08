@@ -1,9 +1,26 @@
 # SincroGit
 
-Automatic, instant file synchronization, but with **robust Git versioning**.
-It takes automatic *snapshots* of your repos every few minutes (auto-backup against
-power cuts), mirrors the latest state to the remote every ~30 min (**autosnap**, for
-disk-failure recovery) and "seals" commits with a clean history every 6 hours.
+SincroGit gives any repo an automatic, versioned **time machine** — without you ever
+running `git`. Every few minutes it snapshots your **saved** files, every ~6 h it "seals"
+a clean permanent commit, and it mirrors your latest state to the remote so your work
+follows you between machines with near-zero effort.
+
+**What it's actually good for** (no overselling):
+
+- **A time machine for people/projects that won't commit by hand.** You broke or deleted
+  something hours ago and only just noticed? Roll back to any earlier *saved* state — no
+  discipline, no `git add` ever. Ideal for the busy/forgetful/learning developer.
+- **Scratch & experiment repos.** Code that doesn't deserve a curated history but whose
+  *trail* you'd hate to lose — spikes, tests, throwaways. Full recoverable history, zero
+  ceremony. (Arguably its sweet spot.)
+- **Low-effort multi-machine continuity.** Move between your office and home machines and
+  your work follows you — *delayed by minutes, not instant* (see
+  [handoff](#cross-machine-handoff-live-wip)); a **Smart Commit** before you leave makes
+  the handoff prompt.
+- **(Rare bonus) survives a dead disk.** The remote mirror recovers your latest state
+  (≤~30 min old) if the whole machine dies. It does **not** rescue unsaved editor buffers,
+  and a power cut with an intact disk loses nothing either way — your saved files are
+  already on disk; SincroGit's value there is the *rollback*, not the survival.
 
 > Full design and decisions in **[DESIGN.md](DESIGN.md)**. New to Git or want the
 > plain-language version? See **[GUIDE.md](GUIDE.md)** (Spanish: [GUIA.md](GUIA.md)).
@@ -200,8 +217,8 @@ every 6h: the WIP is sealed (descriptive message) and a new WIP is created on to
 result: ... ── sealed_N ── sealed_N+1 ── WIP(new)
 ```
 
-- **Recover recent work** (power cut): the latest snapshot is in `HEAD`.
-  Intermediate states of the window are in `git reflog`.
+- **Undo a recent mistake**: the latest snapshot is in `HEAD`; earlier saved states of
+  the window are in `git reflog` (≈5 min resolution).
 - **Go back to yesterday**: `git checkout`/`restore` from the matching sealed commit.
 
 ## Design notes & trade-offs
@@ -214,15 +231,20 @@ commit and moves between machines. The deliberate trade-offs:
   whatever changed in a ~6 h window — a timeline, not atomic units. When you want a
   curated commit, use **Smart Commit** (AI-proposed Conventional Commits message).
   The `sincro:` prefix keeps machine commits and yours easy to tell apart.
-- **The WIP is a continuous "save button".** One commit is amended every ~5 min, so a
-  power cut loses nothing; intra-window states stay in the reflog.
+- **The WIP is a continuous "save button" — for *saved* files.** One commit is amended
+  every ~5 min, so any earlier saved state is recoverable from the reflog (≈5 min
+  resolution). It snapshots what's on disk, **not** your editor's unsaved buffer — so its
+  value is the *rollback*, not surviving a crash (a power cut with an intact disk loses
+  nothing regardless; saved files are already on disk).
 - **Backup is decoupled from history.** `autosnap` force-pushes the live state to a
-  per-machine side ref every ~30 min for disk-failure recovery, while `main` stays
-  clean (only sealed commits) → the other machine's pull is always a clean fast-forward.
+  per-machine side ref every ~30 min, while `main` stays clean (only sealed commits) → the
+  other machine's pull is always a clean fast-forward. This serves both the rare
+  disk-failure recovery and the cross-machine handoff.
 
-The cost we accept: history reads as time-buckets rather than perfectly atomic
-commits, and a total disk failure can lose up to ~30 min — in exchange for effortless
-versioned backup and sequential multi-machine sync.
+The cost we accept: history reads as time-buckets rather than perfectly atomic commits;
+rollback resolution is ~5 min (the snapshot cadence); and a total disk failure can lose up
+to ~30 min (the autosnap cadence) — in exchange for an effortless versioned time machine
+and low-effort multi-machine continuity.
 
 ### Pragmatic vs purist: you decide what a commit means
 
@@ -237,8 +259,8 @@ a clock so the forgetful get a clean-ish history for free — but you can flip i
 - **Purist.** Set `seal_interval_min: inf` (see *[Disabling an interval or limit](#disabling-an-interval-or-limit)*).
   The automatic seal never fires, so the branch stays **immaculate** — every permanent
   commit is one *you* made, when a task is actually done, via **Smart Commit**
-  (AI-proposed Conventional Commits). The WIP and `autosnap` still run underneath, so a
-  power cut or disk failure still loses nothing. This is "almost pure Git" with an
+  (AI-proposed Conventional Commits). The WIP and `autosnap` still run underneath, so you
+  keep the time machine and disk-failure recovery. This is "almost pure Git" with an
   invisible safety net — a history presentable even alongside a team.
 
   > **Note:** even in purist mode you still get automatic machine-to-machine continuity,
@@ -296,6 +318,15 @@ Set `live_handoff` per repo to `auto` (default), `ask`, or `off`. It needs `auto
 
 SincroGit has a deliberately narrow scope. What it does **not** do:
 
+- **It versions *saved* files, not unsaved buffers.** A power cut/crash with an intact
+  disk loses nothing either way (your saved files are on disk); SincroGit's value there is
+  the *rollback* to an earlier saved state, not crash survival. It does **not** rescue
+  work you never saved — that's your editor's autosave.
+- **Multi-machine sync is delayed, not instant.** Your work reaches the other machine
+  within minutes, not seconds: the source mirrors its WIP every `autosnap_interval_min`
+  (~30 min) and the target picks it up every `pull_interval_min` (~10 min) — so up to
+  ~40 min worst case. A **Smart Commit** before you switch makes it prompt (≤ the target's
+  pull interval); both intervals are configurable. So: transparent, but not hot-swap.
 - **Sequential, not concurrent.** It assumes one machine at a time. Simultaneous edits on
   two machines are not merged — the rebase is aborted and the repo paused for you to
   resolve by hand. It's a personal tool, not for team work on a shared branch.
@@ -304,8 +335,10 @@ SincroGit has a deliberately narrow scope. What it does **not** do:
 - **Time-bucket history.** `sincro:` seals group ~6 h of unrelated changes, so a
   `git bisect`/`revert` of one logical change is harder than on curated history (use
   **Smart Commit** when you want a clean, logical commit).
-- **Recovery windows aren't zero.** A power cut/crash can lose up to ~5 min (last
-  snapshot); a total disk failure up to ~30 min (last autosnap).
+- **Rollback resolution / disk-failure window aren't zero.** You can roll back to ~5 min
+  resolution (the snapshot cadence); a **total disk failure** loses up to ~30 min (the last
+  autosnap on the remote) — a rare event, and the only case where "files on disk" doesn't
+  already cover you.
 - **Conflicts are yours to resolve.** On a rebase conflict it never forces — it pauses
   and notifies; you fix it in the terminal and resume.
 - **Needs your Git credentials.** It runs in your user session and pushes with your

@@ -1,6 +1,7 @@
 # SincroGit — Design document
 
-> Automatic, instant file synchronization, but with robust Git versioning.
+> An automatic, versioned time machine for your repos (and low-effort multi-machine
+> continuity), with **zero** Git discipline required.
 > Target platform: **Windows** (interactive use, one machine at a time).
 
 ---
@@ -9,8 +10,8 @@
 
 **I want two things at once:**
 
-1. **Versioning + local auto-backup.** Go back to yesterday's version; and don't lose work on a power cut or crash (recover up to the last minute).
-2. **Sync between machines (sequential).** I work almost always on the desktop and occasionally on the laptop, **never both at once**. When switching machines, I want the sources to update quickly and automatically.
+1. **Versioning + a time machine, with zero discipline.** Roll back any *saved* file to an earlier state (you broke/deleted/overwrote something) or to yesterday — without ever running `git`. (It snapshots what's on disk, not unsaved editor buffers; a power cut with an intact disk loses nothing regardless — the value is the rollback, not crash survival. A *total disk failure* is the one case the remote mirror covers, and it's rare.)
+2. **Sync between machines (sequential).** I work almost always on the desktop and occasionally on the laptop, **never both at once**. When switching machines, I want the sources to update automatically (within minutes — see §4.2; not instant).
 
 **Out of scope (for now):**
 
@@ -39,7 +40,7 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
 
 **Why it works:**
 
-- The current state is saved to disk every ~5 min → **recovery on a power cut** (on reboot, `HEAD` = last snapshot).
+- The current saved state is committed every ~5 min → a **rollback point** at ~5 min resolution (`HEAD` = last snapshot, earlier ones in the reflog). NB: this is *not* power-cut protection — saved files survive a power cut on the disk anyway, and unsaved buffers are never captured; the value is the time machine.
 - Because we `amend`, hundreds of commits don't pile up: only **~4 commits/day** (one every 6 h).
 - The "clean" history (sealed) is the only thing that travels to the remote → **pull always clean, no force-push** (see §4).
 
@@ -115,7 +116,7 @@ Since sealing every 6 h would leave up to 6 h of work off the remote, **autosnap
 - **Keeps the branch clean:** nobody pulls that ref for work; `main` still receives only sealed commits → the pull is always clean. It's the deliberate exception to "the WIP never leaves the machine", scoped to a backup ref.
 - **Disk-failure RPO ≈ 30 min** (instead of 6 h). On the other machine: *Fetch autosnaps* → browse/restore the latest state (single file or whole repo).
 - **Cost:** up to ~48 pushes/day/repo during active work (cheap force-push; **nothing** on idle repos, since it only pushes when HEAD changed). Orphan objects on the remote until its GC.
-- **Power cut / OS crash** is still covered by the local snapshot every 5 min (`HEAD` on disk) and the `reflog`.
+- **Power cut / OS crash** needs nothing special from autosnap: saved files survive on the local disk, and the 5-min snapshot/`reflog` give the rollback points. autosnap is for the *machine-is-gone* case (and the handoff, §4.2).
 
 > *("Live mirror" variant discarded for now: it did force-with-lease of the WIP every minute to keep the remote <1 min behind. More traffic and complexity; re-evaluable if real-time remote backup ever becomes critical.)*
 
@@ -293,7 +294,7 @@ repos:
 
 | Scenario | What happens | How I recover |
 |----------|--------------|---------------|
-| **Power cut / OS crash** | The last snapshot (≤5 min) is committed in `HEAD` (WIP) | On reboot, the work is there. `git reflog` for intermediate states of the window. |
+| **Power cut / OS crash (disk intact)** | Saved files are on the disk; the last snapshot (≤5 min) is in `HEAD` (WIP) | Nothing to recover for saved files (the disk has them). For *rolling back* a bad saved state: `git reflog` (≈5 min resolution). Unsaved buffers are your editor's job. |
 | **"I want yesterday's version"** | It's in the sealed commits | `git checkout`/`git restore` from the matching sealed commit. |
 | **I deleted something 20 min ago (within the window)** | The previous snapshot became *unreachable* in the reflog | `git reflog` + `git checkout`. *(More convenient with the optional `autosnap` branch, §12.)* |
 | **Total disk failure** | Sealed state is on the remote; the latest state (≤30 min) is in the `autosnap` ref (§4.1) | On another machine: *Fetch autosnaps* → restore (file or whole repo). Max loss ≈ 30 min. Without autosnap: down to the last seal (6 h). |
@@ -339,7 +340,7 @@ repos:
 - Text/size filter.
 - Sealing every 6 h with a **fallback message**.
 - Logging.
-> With this I already have auto-backup + versioning, which is 80% of the value.
+> With this I already have a versioned time machine, which is 80% of the value.
 
 **✅ Phase 2 — AI + remote sync — COMPLETE:**
 - Hybrid AI message generator (Ollama → Gemini → fallback). Never blocks the seal.

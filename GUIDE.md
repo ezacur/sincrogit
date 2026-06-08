@@ -2,12 +2,15 @@
 
 Let's be honest: Git is great, but it demands discipline. And sometimes we just **don't
 feel like** running `git add`, crafting the perfect message, and `git push`ing every time
-we get up for a coffee. If you've ever lost work because Windows rebooted itself, or your
-history is full of messages like `asdffdsa` and `now it really works`, you're in the right
-place.
+we get up for a coffee. If you've ever overwritten a good version with a bad one and wished
+for an *undo*, or your history is full of messages like `asdffdsa` and `now it really
+works`, you're in the right place.
 
-SincroGit has **one rule**: *you focus on coding; it assumes you're forgetful and makes
-sure you never lose a line of code.*
+SincroGit has **one rule**: *you focus on coding; it keeps a quiet, versioned **time
+machine** of your saved files, so you can always go back.*
+
+> It's also perfect for **scratch and experiment repos** — code that doesn't deserve a
+> hand-crafted history, but whose trail you'd hate to lose. Let it run; never lose a spike.
 
 > Want the technical detail? It's in [DESIGN.md](DESIGN.md). (Versión en español:
 > [GUIA.md](GUIA.md).) Here we keep it practical.
@@ -17,8 +20,10 @@ sure you never lose a line of code.*
 Forget the terminal. SincroGit has your back with three automatic rhythms:
 
 - **🖊️ The draft — every ~5 min.** While you code (or watch memes while it compiles), it
-  takes an invisible "snapshot" of your files. If the power dies, when you come back your
-  code is **exactly** as you left it. *If you didn't touch anything, it does nothing.*
+  takes an invisible "snapshot" of your **saved** files. So if you delete a function, break
+  something, or just want how it looked an hour ago, you can roll back — even though you
+  never committed. *If you didn't touch anything, it does nothing.* (It snapshots what you
+  saved to disk — not your editor's unsaved buffer; that's your editor's autosave.)
 - **☁️ The cloud copy — every ~30 min.** It pushes your latest state to a private corner
   of the remote. It's your safety net for a **disk disaster** (not the day-to-day one).
 - **📦 The seal — every ~6 h.** It bundles all those invisible drafts into a "real"
@@ -37,15 +42,18 @@ laptop lid without `push`ing).
 2. You code for three hours. No sign of the console.
 3. Lunch break. You get up and leave **without touching anything**.
 
-**Before switching machines:** honestly, **nothing to remember**. SincroGit keeps mirroring
-your live work, and the laptop **picks it up by itself**. (If you like a tidy history, a
-**Smart Commit** before you leave is a nice touch — but it's optional.)
+**Before switching machines:** nothing you *must* do — your work mirrors itself. Just know
+it's a relay with a **few minutes' delay** (not instant): your desktop mirrors its state
+every ~30 min and the laptop checks every ~10 min, so worst case it's up to ~40 min behind.
+Want the laptop ready **the second** you sit down? Do a **Smart Commit** before you leave —
+that pushes immediately and the laptop picks it up on its next check (≈10 min). (Or shrink
+those intervals in the config.)
 
 **In the afternoon, on the laptop:**
-- You open it. SincroGit spots your desktop's newer work and **fast-forwards you to it
-  automatically** — you carry on exactly where you left off. No commit, no pull, nothing.
-  (You get a small heads-up notification, so it's never silent. Rather press a button
-  yourself before your files change? Set `live_handoff: ask`.)
+- You open it and, within a few minutes, SincroGit spots your desktop's newer work and
+  **fast-forwards you to it automatically** — you carry on where you left off. No commit, no
+  pull, nothing. (You get a small heads-up notification, so it's never silent. Rather press
+  a button yourself before your files change? Set `live_handoff: ask`.)
 
 > 🤝 **"Your machines diverged"?** That only happens if you changed things on **both**
 > machines without syncing in between. SincroGit won't guess how to blend two piles of
@@ -107,10 +115,13 @@ Just four things to remember:
 ## 🚫 What it does NOT do (so there are no surprises)
 
 - It doesn't merge work from **two machines at once** (it's turn-based).
+- It doesn't sync **instantly** between machines — it's a few minutes' relay (see above).
+- It doesn't rescue **unsaved** work — it versions what you've **saved** to disk (your
+  editor's autosave handles the rest). A power cut with an intact disk loses nothing anyway.
 - It doesn't version **binaries or files > 1 MB** automatically (those, by hand).
 - It's not a **full backup**: it keeps your text code, not the whole folder.
 - It doesn't resolve conflicts for you: it warns you and you resolve them.
-- On a **total** disk failure you can lose **up to ~30 min** (not zero).
+- On a **total** disk failure (rare) you can lose **up to ~30 min** (not zero).
 
 ---
 
