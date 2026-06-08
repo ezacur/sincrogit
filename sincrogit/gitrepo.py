@@ -654,14 +654,17 @@ class GitRepo:
         markdown rendering; otherwise the raw content (file_content_at)."""
         rel = relpath.replace("\\", "/")
         if self._pandoc and rel.lower().endswith(".docx"):
-            res = subprocess.run(
-                ["git", "-C", self.path, "show", f"{sha}:{rel}"],
-                capture_output=True, creationflags=_NO_WINDOW,
-            )  # binary blob (no text decode)
-            if res.returncode == 0:
-                md = self._docx_bytes_to_md(res.stdout)
-                if md is not None:
-                    return md[:max_bytes]
+            try:
+                res = subprocess.run(
+                    ["git", "-C", self.path, "show", f"{sha}:{rel}"],
+                    capture_output=True, creationflags=_NO_WINDOW, timeout=30,
+                )  # binary blob (no text decode)
+                if res.returncode == 0:
+                    md = self._docx_bytes_to_md(res.stdout)
+                    if md is not None:
+                        return md[:max_bytes]
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # fall back to the raw content below
         return self.file_content_at(rel, sha, max_bytes)
 
     def worktree_text(self, relpath: str, max_bytes: int = 400_000) -> str:

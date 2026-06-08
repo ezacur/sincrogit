@@ -28,9 +28,15 @@ _TEXT_BOMS = (
     b"\xef\xbb\xbf",      # UTF-8 with BOM
 )
 
-# Control bytes that real text almost never contains: everything below 0x20
-# except the usual whitespace (tab, LF, VT, FF, CR), plus DEL (0x7F).
-_TEXT_WHITESPACE = frozenset({0x09, 0x0A, 0x0B, 0x0C, 0x0D})
+# "Text" bytes: the usual whitespace + printable ASCII + every high byte (legacy
+# 8-bit text and UTF-8 multibyte sequences). Everything else (other control bytes
+# and DEL 0x7F) counts as "control". Used with bytes.translate() to count control
+# bytes at C speed (a Python per-byte loop is too slow on a big initial scan).
+_TEXT_BYTES = bytes(
+    [0x09, 0x0A, 0x0B, 0x0C, 0x0D]      # tab, LF, VT, FF, CR
+    + list(range(0x20, 0x7F))           # printable ASCII (0x20..0x7E)
+    + list(range(0x80, 0x100))          # high bytes (Latin-1 / UTF-8 multibyte)
+)
 
 try:
     import pathspec  # type: ignore
@@ -123,7 +129,7 @@ class FileFilter:
         if b"\x00" in chunk:
             return False
         sample = chunk[:_RATIO_SAMPLE]
-        control = sum(
-            1 for b in sample if (b < 0x20 and b not in _TEXT_WHITESPACE) or b == 0x7F
-        )
+        # Count control bytes at C speed: delete all "text" bytes, what's left is
+        # the control bytes.
+        control = len(sample.translate(None, _TEXT_BYTES))
         return control / len(sample) <= _MAX_CONTROL_RATIO

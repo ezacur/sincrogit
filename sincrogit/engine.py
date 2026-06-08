@@ -4,8 +4,9 @@
 - A tick loop (every few seconds) decides, per repo:
     * SNAPSHOT: if dirty, the debounce and the snapshot interval have elapsed
       -> stage (filtered) + `git commit --amend` over the WIP.
-    * SEAL: if 2h have passed since the last sealed commit -> message (AI or
-      fallback) + `git commit --amend` (seals) + new WIP + push.
+    * SEAL: if the seal interval (default 6h) has passed since the last sealed
+      commit -> message (AI or fallback) + `git commit --amend` (seals) + new WIP + push.
+    * AUTOSNAP: every ~30 min, force-push HEAD to a per-host side ref (disaster backup).
     * PULL: every 10 min, fetch + (if the remote has something) rebase the WIP on top.
 
 Concurrency model (see §7 of DESIGN.md):
@@ -253,6 +254,9 @@ class Engine:
             finally:
                 with st._lock:
                     st.net_busy = False
+                # The repo is free again; wake the loop so any action that was
+                # waiting on this worker (a due sync/seal/snapshot) runs now.
+                self._wake.set()
 
         threading.Thread(
             target=worker, name=f"sincrogit-{label}-{st.cfg.name}", daemon=True
@@ -384,10 +388,10 @@ class Engine:
                 self.tick()
                 if self._stop.is_set():
                     break
-                # Adaptive sleep: short while actively working, long while idle.
-                # The watcher (and stop/resume) set _wake to interrupt early, so an
-                # idle laptop barely spins; timed actions (fetch/seal/autosnap) still
-                # fire because we wake at least every IDLE_TICK_SEC.
+                # Sleep until the next action is actually due (see _wait_seconds),
+                # capped at MAX_TICK_SEC. The watcher (and stop/resume/worker
+                # completion) set _wake to interrupt early, so an idle laptop barely
+                # spins while changes are still handled at once.
                 self._wake.wait(self._wait_seconds())
                 self._wake.clear()
         finally:
@@ -406,7 +410,10 @@ class Engine:
         now_epoch = time.time()
         soonest = float(self.MAX_TICK_SEC)
         for st in self._states_snapshot():
-            if st.paused or st.user_paused or st.off_branch:
+            # net_busy: a network worker holds this repo, so nothing else can run
+            # on it until it finishes — and it sets _wake on completion. No point
+            # waking for it (avoids busy-polling while a fetch/push is in flight).
+            if st.paused or st.user_paused or st.off_branch or st.net_busy:
                 continue
             cfg = st.cfg
             # next permanent seal
@@ -591,8 +598,9 @@ class Engine:
             return
         if not st.repo.has_remote(st.cfg.remote):
             return
-        st.last_autosnap_mono = now_mono
-        self._dispatch_network(st, "autosnap", lambda: self._do_autosnap(st))
+        # Advance only on a real dispatch (see _maybe_sync); pending stays set.
+        if self._dispatch_network(st, "autosnap", lambda: self._do_autosnap(st)):
+            st.last_autosnap_mono = now_mono
 
     def _do_autosnap(self, st: RepoState):
         """Force-push HEAD to this host's autosnap ref. Assumes op_lock (runs in a
@@ -627,10 +635,11 @@ class Engine:
             return
         if now_mono - st.last_pull_mono < st.cfg.pull_interval_sec:
             return
-        # Set the clock before dispatching so we don't re-queue it every tick
-        # while the worker is still running.
-        st.last_pull_mono = now_mono
-        self._dispatch_network(st, "sync", lambda: self._do_sync(st))
+        # Advance the clock only if we actually kicked off the sync. If a worker
+        # was already busy on this repo, leave it due so it runs as soon as the
+        # worker frees (it sets _wake) instead of waiting a whole interval.
+        if self._dispatch_network(st, "sync", lambda: self._do_sync(st)):
+            st.last_pull_mono = now_mono
 
     def _do_sync(self, st: RepoState):
         """One network cycle: fetch + pull (rebase) if the remote is ahead, and
