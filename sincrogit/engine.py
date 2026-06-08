@@ -82,8 +82,11 @@ class RepoState:
 
 
 class Engine:
-    TICK_SEC = 3            # active cadence: while some repo is dirty (work in progress)
-    IDLE_TICK_SEC = 15      # idle cadence: nothing dirty; the watcher wakes us early anyway
+    # The loop sleeps until the *soonest action that could actually fire* across
+    # all repos (next snapshot/seal/autosnap/fetch), capped at MAX_TICK_SEC as a
+    # safety backstop, and the watcher wakes it instantly on a change. So it does
+    # NOT poll every few seconds while the next snapshot is minutes away.
+    MAX_TICK_SEC = 60
     _BRANCH_CHECK_TTL = 15  # seconds: cap how often the per-repo branch check runs
 
     def __init__(self, config, emit_event=None):
@@ -391,16 +394,35 @@ class Engine:
             self.shutdown()
 
     def _wait_seconds(self) -> float:
+        """How long to sleep before the next tick: the time until the soonest
+        action that could fire across all repos (snapshot/seal/autosnap/fetch),
+        capped at MAX_TICK_SEC (a backstop) and floored to avoid busy-looping.
+        The watcher / stop / resume set _wake to interrupt this early, so new
+        changes are handled at once. No fixed-rate polling while nothing is due.
+        """
         if self._paused.is_set():
-            return self.IDLE_TICK_SEC
-        return self.TICK_SEC if self._any_dirty() else self.IDLE_TICK_SEC
-
-    def _any_dirty(self) -> bool:
-        """Is any actionable (not paused) repo waiting to be snapshotted?"""
-        return any(
-            st.dirty and not (st.paused or st.user_paused)
-            for st in self._states_snapshot()
-        )
+            return self.MAX_TICK_SEC
+        now_mono = time.monotonic()
+        now_epoch = time.time()
+        soonest = float(self.MAX_TICK_SEC)
+        for st in self._states_snapshot():
+            if st.paused or st.user_paused or st.off_branch:
+                continue
+            cfg = st.cfg
+            # next permanent seal
+            soonest = min(soonest, st.last_seal_epoch + cfg.seal_interval_sec - now_epoch)
+            # next remote sync (fetch/push)
+            if cfg.pull or cfg.push:
+                soonest = min(soonest, st.last_pull_mono + cfg.pull_interval_sec - now_mono)
+            # next snapshot — only if there are pending changes
+            if st.dirty:
+                snap = max(st.last_event_mono + cfg.debounce_sec,
+                           st.last_snapshot_mono + cfg.snapshot_interval_sec) - now_mono
+                soonest = min(soonest, snap)
+            # next autosnap — only if the live mirror is stale
+            if cfg.autosnap and st.autosnap_pending:
+                soonest = min(soonest, st.last_autosnap_mono + cfg.autosnap_interval_sec - now_mono)
+        return max(1.0, min(soonest, float(self.MAX_TICK_SEC)))
 
     def stop(self):
         self._stop.set()
