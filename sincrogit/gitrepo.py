@@ -266,7 +266,7 @@ class GitRepo:
                 paths.append(path)
         return paths
 
-    def stage_changes(self, file_filter, on_drop=None) -> bool:
+    def stage_changes(self, file_filter, on_drop=None, on_skip=None) -> bool:
         """Run `git add` ONLY on files that pass the filter.
 
         Deletions of already-tracked files are always staged.
@@ -276,6 +276,10 @@ class GitRepo:
         but the filter now rejects (e.g. a text file that grew past the size
         limit) so the caller can warn the user. New untracked binaries/large
         files and user-configured excludes are skipped silently (expected).
+
+        `on_skip(relpath, reason)` is called for EVERY filtered-out file whose
+        reason isn't a user exclude (binary / too large), tracked or not — so the
+        caller can spot a high-churn "noise" folder and suggest excluding it.
         """
         to_stage = []
         dropped = []  # (rel, reason) for existing files the filter rejected
@@ -288,6 +292,8 @@ class GitRepo:
                 else:
                     log.debug("filtered out (%s): %s", reason, rel)
                     dropped.append((rel, reason))
+                    if on_skip is not None and reason != "excluded":
+                        on_skip(rel, reason)
             else:
                 # The file is no longer on disk => deletion of something tracked.
                 to_stage.append(rel)

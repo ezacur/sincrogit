@@ -110,7 +110,8 @@ Solo tienes que recordar cuatro cosas:
    pausa (icono rojo) y te pide ayuda. Lo arreglas en tu editor y le das a **"Reanudar"**.
 3. **Cambio de rama:** si te vas a otra rama desde la terminal (`git checkout pruebas`),
    SincroGit es lo bastante listo para **pausarse** y no ensuciar tus experimentos. Cuando
-   vuelves a tu rama de siempre, retoma el trabajo.
+   vuelves a tu rama de siempre, retoma el trabajo. *(¿Trabajas con feature branches? Pon
+   `track_current_branch: true` y **seguirá** cada rama en vez de pausarse.)*
 4. **No metas el repo dentro de Dropbox / OneDrive / Drive.** Esas herramientas pueden
    **corromper** el `.git` al sincronizar a la vez. Deja que SincroGit gestione el Git, y
    que la otra herramienta gestione *otros* ficheros.

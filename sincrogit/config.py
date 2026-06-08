@@ -68,6 +68,8 @@ _INHERITABLE = [
     "autosnap",
     "autosnap_interval_min",
     "live_handoff",
+    "track_current_branch",
+    "suggest_excludes",
     "extra_includes",
     "max_include_bytes",
 ]
@@ -100,6 +102,13 @@ class RepoConfig:
                                           # = fast-forward automatically (notify on apply);
                                           # 'ask' = notify + one-click Apply (no silent
                                           # reset); 'off'/false = manual. Needs autosnap on.
+    track_current_branch: bool = False    # follow the CURRENT branch instead of pausing
+                                          # off `branch`: snapshot/autosnap/handoff/push on
+                                          # whatever branch HEAD is on (pairs with purist
+                                          # mode for a feature-branch workflow). Opt-in.
+    suggest_excludes: bool = True         # suggest adding a high-churn folder (many
+                                          # filtered-out files) to extra_excludes — a
+                                          # one-time notification per folder, never auto-edits.
 
     def __post_init__(self):
         # Normalize disable sentinels (inf/off/none/never, None, False) to

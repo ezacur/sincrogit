@@ -60,6 +60,10 @@ class RepoState:
         self.off_branch = False   # HEAD is on a branch other than cfg.branch -> yield
         self._branch_cache = None      # last branch-check result (rate-limited, see below)
         self._branch_checked_mono = 0.0
+        self.active_branch = cfg.branch  # branch currently operated on (== cfg.branch, or
+                                         # the current branch when track_current_branch)
+        self._skip_counts = {}    # top-level dir -> set of filtered-out rel paths (noise)
+        self._noise_warned = set()  # dirs already suggested for extra_excludes (once each)
         self.user = ""            # "same person across machines" id for handoff (git email)
         self._handoff_warned_sha = None  # last diverging peer WIP we warned about (throttle)
         self.pending_handoff = None  # {sha, host} a safe FF awaiting the user (ask mode)
@@ -98,6 +102,9 @@ class Engine:
     # the seal — the old gc trigger — never fires, so a long-lived WIP would bloat
     # the repo. Once a day is plenty (gc --auto only packs past its own threshold).
     GC_INTERVAL_SEC = 86400
+    # Distinct filtered-out files in ONE top-level folder before we suggest excluding
+    # it (Smart Ignore). High enough that a normal refactor never trips it.
+    NOISE_SUGGEST_THRESHOLD = 50
 
     def __init__(self, config, emit_event=None):
         self.config = config
@@ -179,21 +186,50 @@ class Engine:
         return cb
 
     def _branch_ok(self, st: "RepoState"):
-        """(on_configured_branch, current_branch_name). Fresh, uncached check."""
+        """(should_operate, current_branch_name). Fresh, uncached. Side effect: when
+        should_operate, sets st.active_branch to the branch to operate on.
+
+        - track_current_branch: FOLLOW whatever branch HEAD is on (operate unless
+          detached / no branch).
+        - otherwise: the branch guard — operate only when HEAD is on cfg.branch.
+        """
         current = st.repo.current_branch()
-        return (current == st.cfg.branch), current
+        if st.cfg.track_current_branch:
+            ok = bool(current) and current != "HEAD"  # yield only on detached HEAD
+            if ok:
+                st.active_branch = current
+            return ok, current
+        ok = (current == st.cfg.branch)
+        if ok:
+            st.active_branch = st.cfg.branch
+        return ok, current
+
+    def _branch_block_msg(self, st: "RepoState", current) -> str:
+        """Why a manual action can't run on the current HEAD (mode-aware)."""
+        if st.cfg.track_current_branch:
+            return f"HEAD is detached ('{current}'); check out a branch first"
+        return f"on branch '{current}', not configured '{st.cfg.branch}'; switch back first"
 
     def _ensure_on_branch(self, st: "RepoState", now_mono: float) -> bool:
-        """Guard for the tick loop: only operate when HEAD is on the configured
-        branch. If the user did a manual `git checkout`, SincroGit yields the repo
-        instead of snapshotting/sealing the wrong branch and pushing it to the
-        configured branch's ref. Logs the transition once each way. See §11 of
-        DESIGN.md.
+        """Guard for the tick loop. Returns whether to operate on this repo this
+        cycle, keeping st.active_branch / st.branch / st.off_branch current. See §11.
 
-        Rate-limited (the check spawns `git rev-parse`): an overdue seal/sync on a
-        wrong branch must not run it every tick. A switch is still noticed within
-        _BRANCH_CHECK_TTL seconds.
+        Default: only operate when HEAD is on the configured branch (a manual
+        `git checkout` makes SincroGit yield instead of snapshotting/pushing the
+        wrong branch). This path is rate-limited (the check spawns `git rev-parse`).
+
+        With track_current_branch it instead FOLLOWS the current branch — operating
+        on whatever you're on, never pausing — and logs each switch once.
         """
+        if st.cfg.track_current_branch:
+            ok, current = self._branch_ok(st)  # fresh: following needs accuracy
+            if current != st.branch:
+                st.branch = current
+                if ok:
+                    self._emit(st.cfg.name, "info", f"now following branch '{current}'")
+            st.off_branch = False
+            return ok
+
         if st._branch_cache is not None and now_mono - st._branch_checked_mono < self._BRANCH_CHECK_TTL:
             return st._branch_cache
         st._branch_checked_mono = now_mono
@@ -238,10 +274,12 @@ class Engine:
 
     def _stage(self, st: "RepoState") -> bool:
         """Stage the filtered changes, warning once about any tracked file that
-        dropped out of auto-snapshot (see _note_dropped). Returns True if staged."""
+        dropped out of auto-snapshot (see _note_dropped) and suggesting an exclude
+        for high-churn folders (see _note_noise). Returns True if staged."""
         return st.repo.stage_changes(
             st.file_filter,
             on_drop=lambda rel, reason: self._note_dropped(st, rel, reason),
+            on_skip=lambda rel, reason: self._note_noise(st, rel, reason),
         )
 
     def _note_dropped(self, st: "RepoState", relpath: str, reason: str):
@@ -258,6 +296,35 @@ class Engine:
             f"commit it by hand if you want it versioned",
             "WARNING",
         )
+
+    def _note_noise(self, st: "RepoState", relpath: str, reason: str):
+        """A filtered-out file (binary / too large, not a user exclude). When a
+        single top-level folder accumulates many of them, it's almost always build
+        output / a cache — suggest excluding it (ONCE per folder, a notification +
+        log; never auto-edits the config). 'Smart Ignore'. See §5 of DESIGN.md.
+        """
+        if not st.cfg.suggest_excludes or "/" not in relpath:
+            return  # files at the repo root have no folder to suggest
+        top = relpath.split("/", 1)[0]
+        if top in st._noise_warned:
+            return
+        bucket = st._skip_counts.setdefault(top, set())
+        bucket.add(relpath)
+        if len(bucket) >= self.NOISE_SUGGEST_THRESHOLD:
+            st._noise_warned.add(top)
+            st._skip_counts.pop(top, None)  # free the set; we've warned
+            pattern = f"**/{top}/**"
+            notify(
+                "SincroGit: noisy folder",
+                f"'{st.cfg.name}': '{top}/' is churning {len(bucket)}+ unversioned files. "
+                f"Add '{pattern}' to extra_excludes to keep the engine light.",
+            )
+            self._emit(
+                st.cfg.name, "info",
+                f"folder '{top}/' has {len(bucket)}+ filtered-out files; consider adding "
+                f"'{pattern}' to extra_excludes (or set suggest_excludes: false)",
+                "WARNING",
+            )
 
     # ----------------------------------------------- background network task
     def _dispatch_network(self, st: "RepoState", label: str, fn) -> bool:
@@ -389,7 +456,11 @@ class Engine:
 
             branch = repo.current_branch()
             st.branch = branch
-            if branch and branch != rc.branch:
+            if rc.track_current_branch:
+                # Follow mode: operate on whatever branch we start on (no pausing).
+                if branch and branch != "HEAD":
+                    st.active_branch = branch
+            elif branch and branch != rc.branch:
                 st.off_branch = True  # the branch guard keeps autosync paused until you switch
                 log.warning(
                     "[%s] current branch '%s' != configured '%s'; autosync will wait "
@@ -613,10 +684,10 @@ class Engine:
         """Push the last sealed commit. Assumes the caller holds st.op_lock
         (it always runs inside a _dispatch_network worker)."""
         repo, cfg = st.repo, st.cfg
-        ok, msg = repo.push_sealed(cfg.remote, cfg.branch, timeout=cfg.git_timeout_sec)
+        ok, msg = repo.push_sealed(cfg.remote, st.active_branch, timeout=cfg.git_timeout_sec)
         if ok:
             self._mark_action(st, "push")
-            self._emit(cfg.name, "push", f"push OK -> {cfg.remote}/{cfg.branch}")
+            self._emit(cfg.name, "push", f"push OK -> {cfg.remote}/{st.active_branch}")
         else:
             # A rejected push (remote ahead) is reconciled in the next sync.
             self._emit(cfg.name, "push", f"push failed (will retry): {msg}", "WARNING")
@@ -642,9 +713,9 @@ class Engine:
         _dispatch_network worker). Clears the pending flag only on success."""
         repo, cfg = st.repo, st.cfg
         ok, msg = repo.push_autosnap(
-            cfg.remote, cfg.branch, st.user, self._autosnap_host, timeout=cfg.git_timeout_sec
+            cfg.remote, st.active_branch, st.user, self._autosnap_host, timeout=cfg.git_timeout_sec
         )
-        ref = repo.autosnap_ref(st.user, self._autosnap_host, cfg.branch)
+        ref = repo.autosnap_ref(st.user, self._autosnap_host, st.active_branch)
         if ok:
             st.autosnap_pending = False
             self._mark_action(st, "autosnap")
@@ -710,7 +781,7 @@ class Engine:
 
         if not repo.fetch(cfg.remote, timeout=cfg.git_timeout_sec):
             return  # already warned in the log
-        remote_exists = repo.remote_branch_exists(cfg.remote, cfg.branch)
+        remote_exists = repo.remote_branch_exists(cfg.remote, st.active_branch)
 
         # --- PULL: rebase the WIP onto the new remote commits ---
         if not self._pull_after_fetch(st, remote_exists):
@@ -718,7 +789,7 @@ class Engine:
 
         # --- PUSH: upload pending sealed commits (first push or retries) ---
         if cfg.push:
-            if not remote_exists or repo.has_unpushed_sealed(cfg.remote, cfg.branch):
+            if not remote_exists or repo.has_unpushed_sealed(cfg.remote, st.active_branch):
                 self._do_push(st)
 
         # --- HANDOFF: pick up this user's newer live WIP from another machine ---
@@ -744,7 +815,7 @@ class Engine:
             return
         # Refresh only MY machines' mirrors (cheap; ignores teammates').
         repo.fetch_autosnaps(cfg.remote, user=st.user, timeout=cfg.git_timeout_sec)
-        peer = repo.peer_wip(st.user, self._autosnap_host, cfg.branch)
+        peer = repo.peer_wip(st.user, self._autosnap_host, st.active_branch)
         if not peer:
             st.pending_handoff = None
             return
@@ -820,7 +891,7 @@ class Engine:
             return False, "repo not found"
         ok, cur = self._branch_ok(st)
         if not ok:
-            return False, f"on branch '{cur}', not configured '{st.cfg.branch}'; switch back first"
+            return False, self._branch_block_msg(st, cur)
         repo = st.repo
         with st.op_lock:
             if repo.is_busy():
@@ -828,7 +899,7 @@ class Engine:
             if not repo.has_remote(st.cfg.remote):
                 return False, "no remote configured"
             repo.fetch_autosnaps(st.cfg.remote, user=st.user, timeout=st.cfg.git_timeout_sec)
-            peer = repo.peer_wip(st.user, self._autosnap_host, st.cfg.branch)
+            peer = repo.peer_wip(st.user, self._autosnap_host, st.active_branch)
             if not peer:
                 st.pending_handoff = None
                 return False, "the other machine's work is no longer available"
@@ -864,13 +935,13 @@ class Engine:
         """Rebase the WIP onto new remote commits (assumes fetch already ran).
         Returns False if a conflict occurred (and the repo was paused)."""
         repo, cfg = st.repo, st.cfg
-        behind = repo.commits_behind(cfg.remote, cfg.branch) if (cfg.pull and remote_exists) else 0
+        behind = repo.commits_behind(cfg.remote, st.active_branch) if (cfg.pull and remote_exists) else 0
         if behind <= 0:
             return True
         self._ensure_wip(st)
         if self._stage(st) and repo.has_staged_changes():
             repo.amend_keep_message()
-        if repo.rebase_onto_remote(cfg.remote, cfg.branch):
+        if repo.rebase_onto_remote(cfg.remote, st.active_branch):
             self._mark_action(st, "pull")
             self._emit(cfg.name, "pull", f"integrated {behind} commit(s) from the remote")
             return True
@@ -1002,7 +1073,7 @@ class Engine:
             return False, "repo not found"
         ok, cur = self._branch_ok(st)
         if not ok:
-            return False, f"on branch '{cur}', not configured '{st.cfg.branch}'; switch back first"
+            return False, self._branch_block_msg(st, cur)
         with st.op_lock:
             try:
                 sealed = self._do_seal(st, time.time(), message=message)
@@ -1028,7 +1099,7 @@ class Engine:
             return False, "", "", "repo not found"
         ok, cur = self._branch_ok(st)
         if not ok:
-            return False, "", "", f"on branch '{cur}', not configured '{st.cfg.branch}'; switch back first"
+            return False, "", "", self._branch_block_msg(st, cur)
 
         # Quick git work under the lock: capture the WIP and the diffs.
         with st.op_lock:
@@ -1070,7 +1141,7 @@ class Engine:
             return False, "repo not found"
         ok, cur = self._branch_ok(st)
         if not ok:
-            return False, f"on branch '{cur}', not configured '{st.cfg.branch}'; switch back first"
+            return False, self._branch_block_msg(st, cur)
         repo, cfg = st.repo, st.cfg
         with st.op_lock:
             if repo.is_busy():
@@ -1079,7 +1150,7 @@ class Engine:
                 return False, "no remote configured"
             if not repo.fetch(cfg.remote, timeout=cfg.git_timeout_sec):
                 return False, "fetch failed"
-            remote_exists = repo.remote_branch_exists(cfg.remote, cfg.branch)
+            remote_exists = repo.remote_branch_exists(cfg.remote, st.active_branch)
             ok = self._pull_after_fetch(st, remote_exists)
         return (ok, "pulled" if ok else "conflict; repo paused")
 

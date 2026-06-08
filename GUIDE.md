@@ -107,7 +107,8 @@ Just four things to remember:
    (red icon) and asks for help. Fix it in your editor and hit **"Resume"**.
 3. **Branch switch:** if you jump to another branch from the terminal (`git checkout
    tests`), SincroGit is smart enough to **pause** and not pollute your experiments. When
-   you go back to your usual branch, it resumes.
+   you go back to your usual branch, it resumes. *(Power user on feature branches? Set
+   `track_current_branch: true` and it will **follow** each branch instead of pausing.)*
 4. **Don't keep the repo inside Dropbox / OneDrive / Drive.** Those tools can **corrupt**
    the `.git` by syncing at the same time. Let SincroGit handle Git, and let the other tool
    handle *other* files.

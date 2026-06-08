@@ -69,7 +69,12 @@ trabajo te siga entre máquinas con esfuerzo casi nulo.
   nunca auto-fusiona — avisa y deja ambos estados intactos. Ver
   [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo). Interruptor: `live_handoff`.
 - ✅ **Guarda de rama**: si haces `git checkout` a otra rama, SincroGit se inhibe en ese
-  repo (no snapshot/seal/push en la rama equivocada) hasta que vuelvas.
+  repo (no snapshot/seal/push en la rama equivocada) hasta que vuelvas. O pon
+  `track_current_branch: true` para **seguir** la rama actual (flujo de feature branches;
+  snapshots/autosnap/relevo/push en la rama en la que estés).
+- ✅ **Smart Ignore**: si una carpeta no para de generar ficheros filtrados (salida de
+  build, cachés), SincroGit sugiere una vez —una notificación— añadirla a `extra_excludes`.
+  Nunca auto-edita. Interruptor `suggest_excludes`.
 
 **Fase 4 (interfaz de bandeja):**
 
@@ -180,6 +185,14 @@ interno de Word al reguardar (timestamps, IDs de revisión) **no**, así que no 
 ni respaldan hasta que un cambio de contenido los arrastre. Tras una sesión de solo
 maquetar, fuerza una versión con un **Smart Commit** manual. (Sin pandoc, la detección
 vuelve a bytes y cada guardado es una versión.)
+
+> 📌 **Posible, aún no implementado:** el mismo mecanismo de textconv inline podría dar
+> diffs legibles para otros formatos — notebooks Jupyter (`.ipynb` vía `jupytext`/`nbconvert`),
+> hojas de cálculo (`.xlsx` vía `in2csv`), etc. — mediante un mapa configurable
+> `patrón → comando` en vez del driver actual solo-`.docx`. Es una extensión limpia que no
+> hemos construido. Aviso por si la hacemos: textconv arregla el *diff legible*, no el *peso
+> del repo* — un `.ipynb` seguiría guardando el JSON completo (outputs); la higiene real de
+> notebooks necesita además un *clean filter* (p. ej. `nbstripout`).
 
 ### Restaurar una versión pasada (máquina del tiempo)
 
@@ -412,6 +425,8 @@ sobreescribibles por repo):
 | `autosnap` | true | Espejo en vivo de HEAD a `refs/autosnap/<user>/<host>/<rama>` (recuperación ante fallo de disco + relevo) |
 | `autosnap_interval_min` | 30 | Cada cuánto se hace force-push del espejo (solo si cambió) |
 | `live_handoff` | auto | Recoger el WIP vivo de tu otra máquina: `auto` (fast-forward + notifica), `ask` (aplicar a un clic), `off`. Ver [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo) |
+| `track_current_branch` | false | Seguir la rama **actual** en vez de pausar fuera de `branch` (flujo de feature branches; se acopla con el modo purista). Opt-in |
+| `suggest_excludes` | true | Sugerir (una vez, notificación) añadir una carpeta ruidosa a `extra_excludes` — nunca auto-edita |
 | `max_file_bytes` | 1048576 | Tamaño máximo de fichero a versionar (1 MB) |
 | `extra_excludes` | — | Patrones estilo `.gitignore` a excluir |
 | `extra_includes` | — | patrones versionados aunque sean binarios (p. ej. `**/*.docx`) |

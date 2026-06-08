@@ -44,6 +44,9 @@ defaults:
   autosnap_interval_min: 30       # force-push the live mirror every 30 min (only if changed)
   live_handoff: auto              # pick up your other machine's live WIP: auto (fast-forward
                                   # + notify) | ask (one-click apply) | off. Needs autosnap on.
+  track_current_branch: false     # false = pause off `branch`; true = follow the current
+                                  # branch (feature-branch workflow; pairs with purist mode).
+  suggest_excludes: true          # suggest once adding a high-churn folder to extra_excludes
   extra_excludes:
     - "**/node_modules/**"
     - "**/.venv/**"

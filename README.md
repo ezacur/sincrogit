@@ -65,7 +65,12 @@ follows you between machines with near-zero effort.
   it never auto-merges — it notifies and leaves both intact for you to resolve. See
   [Cross-machine handoff](#cross-machine-handoff-live-wip). Toggle: `live_handoff`.
 - ✅ **Branch guard**: if you `git checkout` another branch, SincroGit yields that repo
-  (no snapshot/seal/push on the wrong branch) until you switch back.
+  (no snapshot/seal/push on the wrong branch) until you switch back. Or set
+  `track_current_branch: true` to **follow** the current branch instead (feature-branch
+  workflow; snapshots/autosnap/handoff/push on whatever branch you're on).
+- ✅ **Smart Ignore**: if one folder keeps churning out filtered files (build output,
+  caches), SincroGit suggests once — a notification — adding it to `extra_excludes`. Never
+  auto-edits. Toggle `suggest_excludes`.
 
 **Phase 4 (system tray UI):**
 
@@ -170,6 +175,14 @@ formatting (bold, italics, headings, lists, tables, links) count; purely visual 
 revision IDs) do **not**, so they aren't versioned or backed up until a content edit
 includes them. After a styling-only session, force a version with a manual **Smart
 Commit**. (Without pandoc, detection falls back to bytes, so every save is a version.)
+
+> 📌 **Possible, not yet implemented:** the same inline-textconv mechanism could give
+> readable diffs for other formats — Jupyter notebooks (`.ipynb` via `jupytext`/`nbconvert`),
+> spreadsheets (`.xlsx` via `in2csv`), etc. — driven by a configurable `pattern → command`
+> map instead of the current `.docx`-only driver. It's a clean extension we haven't built.
+> Caveat to keep in mind if we do: textconv fixes the *readable diff*, not the *repo size* —
+> a `.ipynb` would still store the full JSON (outputs); real notebook hygiene also needs a
+> clean filter (e.g. `nbstripout`).
 
 ### Restore a past version (time machine)
 
@@ -387,6 +400,8 @@ overridable per repo):
 | `autosnap` | true | Live mirror of HEAD to `refs/autosnap/<user>/<host>/<branch>` (disk-failure recovery + handoff) |
 | `autosnap_interval_min` | 30 | How often the mirror is force-pushed (only if it changed) |
 | `live_handoff` | auto | Pick up your other machine's live WIP: `auto` (fast-forward + notify), `ask` (one-click apply), `off`. See [Cross-machine handoff](#cross-machine-handoff-live-wip) |
+| `track_current_branch` | false | Follow the **current** branch instead of pausing off `branch` (feature-branch workflow; pairs with purist mode). Opt-in |
+| `suggest_excludes` | true | Suggest (once, a notification) adding a high-churn folder to `extra_excludes` — never auto-edits |
 | `max_file_bytes` | 1048576 | Maximum file size to version (1 MB) |
 | `extra_excludes` | — | `.gitignore`-style patterns to exclude |
 | `extra_includes` | — | patterns versioned even if binary (e.g. `**/*.docx`) |

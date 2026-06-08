@@ -23,6 +23,12 @@ defaults:
                                   # automatically + notify; ask = notify + one-click Apply
                                   # (no silent change); off = manual. Never auto-merges on
                                   # divergence. Needs autosnap on. See the README.
+  track_current_branch: false     # false = pause when you checkout another branch (guard).
+                                  # true = FOLLOW the current branch (snapshot/autosnap/
+                                  # handoff/push on whatever branch you're on; pairs with
+                                  # purist mode for a feature-branch workflow).
+  suggest_excludes: true          # suggest once (a notification) adding a high-churn folder
+                                  # to extra_excludes; never auto-edits the config.
   extra_excludes:                 # in addition to the text/size filter (.gitignore style)
     - "**/node_modules/**"
     - "**/.venv/**"
