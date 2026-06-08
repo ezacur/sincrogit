@@ -82,7 +82,8 @@ class RepoState:
 
 
 class Engine:
-    TICK_SEC = 3
+    TICK_SEC = 3            # active cadence: while some repo is dirty (work in progress)
+    IDLE_TICK_SEC = 15      # idle cadence: nothing dirty; the watcher wakes us early anyway
     _BRANCH_CHECK_TTL = 15  # seconds: cap how often the per-repo branch check runs
 
     def __init__(self, config, emit_event=None):
@@ -92,6 +93,9 @@ class Engine:
         self._watch_ready = False
         self._stop = threading.Event()
         self._paused = threading.Event()  # GLOBAL pause (from the tray)
+        # Set by the watcher (a change arrived) or by stop()/resume() to wake the
+        # main loop out of its idle sleep immediately (adaptive tick).
+        self._wake = threading.Event()
         # Guards the `states` list itself (append from add_repo vs. iteration from
         # the tick / GUI). Git work is NOT serialized here — that's each repo's
         # own op_lock (see the module docstring).
@@ -133,6 +137,14 @@ class Engine:
         """A stable copy of the repo list to iterate without racing add_repo."""
         with self._states_lock:
             return list(self.states)
+
+    def _dirty_cb(self, st: "RepoState"):
+        """Build the watcher callback for a repo: mark it dirty AND wake the main
+        loop out of its idle sleep so the change is handled promptly."""
+        def cb():
+            st.mark_dirty()
+            self._wake.set()
+        return cb
 
     def _branch_ok(self, st: "RepoState"):
         """(on_configured_branch, current_branch_name). Fresh, uncached check."""
@@ -253,6 +265,7 @@ class Engine:
     def resume(self):
         if self._paused.is_set():
             self._paused.clear()
+            self._wake.set()  # resume ticking immediately
             self._emit("", "resume", "SincroGit resumed")
 
     def is_paused(self) -> bool:
@@ -273,6 +286,7 @@ class Engine:
             if st.cfg.name == name and (st.user_paused or st.paused):
                 st.user_paused = False
                 st.paused = False
+                self._wake.set()  # re-evaluate this repo without waiting
                 self._emit(name, "resume", "repo resumed")
                 return True
         return False
@@ -330,7 +344,7 @@ class Engine:
             with self._states_lock:
                 self.states.append(st)
             if self._watch_ready:
-                self.watch.watch(rc.path, st.mark_dirty)
+                self.watch.watch(rc.path, self._dirty_cb(st))
 
             branch = repo.current_branch()
             st.branch = branch
@@ -365,12 +379,32 @@ class Engine:
         try:
             while not self._stop.is_set():
                 self.tick()
-                self._stop.wait(self.TICK_SEC)
+                if self._stop.is_set():
+                    break
+                # Adaptive sleep: short while actively working, long while idle.
+                # The watcher (and stop/resume) set _wake to interrupt early, so an
+                # idle laptop barely spins; timed actions (fetch/seal/autosnap) still
+                # fire because we wake at least every IDLE_TICK_SEC.
+                self._wake.wait(self._wait_seconds())
+                self._wake.clear()
         finally:
             self.shutdown()
 
+    def _wait_seconds(self) -> float:
+        if self._paused.is_set():
+            return self.IDLE_TICK_SEC
+        return self.TICK_SEC if self._any_dirty() else self.IDLE_TICK_SEC
+
+    def _any_dirty(self) -> bool:
+        """Is any actionable (not paused) repo waiting to be snapshotted?"""
+        return any(
+            st.dirty and not (st.paused or st.user_paused)
+            for st in self._states_snapshot()
+        )
+
     def stop(self):
         self._stop.set()
+        self._wake.set()  # interrupt the idle wait so shutdown is prompt
 
     def tick(self):
         if self._paused.is_set():
@@ -727,9 +761,10 @@ class Engine:
             self.states.append(st)
         if self._watch_ready and self.watch is not None:
             try:
-                self.watch.watch(rc.path, st.mark_dirty)
+                self.watch.watch(rc.path, self._dirty_cb(st))
             except Exception:  # noqa: BLE001 — watching is best-effort
                 log.warning("[%s] could not start the watcher", rc.name)
+        self._wake.set()  # pick up the new repo without waiting out the idle sleep
         self._ensure_docx_attributes(st)
         self._emit(rc.name, "startup", f"repo added: '{rc.path}' (branch {st.branch})")
         return True, "added"
