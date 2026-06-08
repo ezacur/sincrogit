@@ -249,8 +249,19 @@ def append_repo(config_path: str, repo_entry: dict) -> None:
     )
 
     if repos_is_last:
+        # Re-dumping the repos section would drop any comment/blank lines trailing at
+        # the end of the file — preserve them (re-append after the dumped block).
+        tail = []
+        for ln in reversed(lines):
+            if ln.strip() == "" or ln.lstrip().startswith("#"):
+                tail.append(ln)
+            else:
+                break
+        tail.reverse()
         prefix = "\n".join(lines[:repos_idx]).rstrip("\n")
         out = (prefix + "\n" if prefix else "") + repos_block
+        if tail:
+            out = out.rstrip("\n") + "\n" + "\n".join(tail).rstrip("\n") + "\n"
     else:
         out = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 

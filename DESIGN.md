@@ -314,6 +314,17 @@ repos:
   positional `HEAD~1`): if the user commits manually on top of the WIP, their
   commit is what gets pushed — never the transient WIP. The seal clock is also
   reset when an external commit is detected (it's respected as a manual seal).
+- **Single instance (no two daemons racing git).** Authoritative guard is a Windows
+  named mutex (`acquire_instance_mutex`; no stale-lock problem — the OS releases it on
+  process death — and it can't be stolen by an app squatting on the lock port). The
+  localhost port (49677) is kept only as the "show the running panel" activation channel;
+  if a foreign app holds it, single-instance is still enforced by the mutex (we just lose
+  that IPC channel). The mutex is tray-only (headless can intentionally run several with
+  different configs).
+- **Watcher load.** The watchdog handler drops events for `.git` internals **and** for
+  paths matching the repo's excludes (`FileFilter.is_excluded`, a cheap pathspec check, no
+  disk I/O) — so a burst like `npm install` under `node_modules/` never wakes the engine.
+  Complements *Smart Ignore* (which suggests adding such folders to `extra_excludes`).
 - **Never `--force`** in the automatic flow.
 - **Git output language** forced to English (`LC_ALL=C`) for consistent logs (our parsing uses locale-independent porcelain/plumbing commands).
 - **Maintenance:** `git gc --auto` after each seal **and at least once a day**

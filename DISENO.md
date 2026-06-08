@@ -311,6 +311,17 @@ repos:
 - **Operaciones git manuales mías** mientras corre el daemon (rebase, checkout de rama, etc.): la herramienta debe detectar `HEAD` cambiado/`rebase en curso`/índice ocupado y **ceder** (saltarse ese ciclo) en vez de pelearse. Detectar `.git/MERGE_HEAD`, `.git/rebase-*`, lock del índice.
 - **Guarda de rama / seguir rama.** Por defecto, cuando HEAD no está en la `branch` configurada, el repo **cede** (sin snapshot/seal/autosnap/push en la rama equivocada) — `_ensure_on_branch`, rate-limited. Con **`track_current_branch: true`** en su lugar **sigue** la rama actual: cada operación con rama usa `st.active_branch` (la rama viva de HEAD) en vez de `cfg.branch`, así snapshot/autosnap/relevo/push ocurren en la rama en la que estés (cada rama tiene su `refs/autosnap/<user>/<host>/<rama>`, y el relevo solo casa la misma rama). HEAD desacoplado (detached) sigue cediendo. Se acopla con el modo purista (sin auto-seal → nada se auto-pushea donde no debe). Opt-in; el default mantiene el guard seguro.
 - **El push solo empuja `HEAD~1`**: garantiza que nunca subo el WIP transitorio.
+- **Instancia única (que dos demonios no compitan por git).** La guarda autoritativa es un
+  mutex con nombre de Windows (`acquire_instance_mutex`; sin lock-huérfano —el SO lo libera
+  al morir el proceso— y no se lo puede robar una app que ocupe el puerto). El puerto local
+  (49677) queda solo como canal de "mostrar el panel"; si un ajeno lo ocupa, la instancia
+  única sigue garantizada por el mutex (solo perdemos ese canal IPC). El mutex es solo para
+  el modo bandeja (headless puede correr varios con configs distintas a propósito).
+- **Carga del watcher.** El handler de watchdog descarta eventos de los internos de `.git`
+  **y** de rutas que casan los excludes del repo (`FileFilter.is_excluded`, un chequeo de
+  pathspec barato, sin tocar disco) — así una ráfaga tipo `npm install` bajo `node_modules/`
+  nunca despierta al motor. Complementa a *Smart Ignore* (que sugiere añadir esas carpetas a
+  `extra_excludes`).
 - **Nunca `--force`** en el flujo automático.
 - **Mantenimiento:** `git gc --auto` tras cada sello **y al menos una vez al día**
   (`Engine.GC_INTERVAL_SEC`, en un worker en segundo plano), para empaquetar los objetos

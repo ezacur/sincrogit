@@ -27,6 +27,7 @@ from .config import load_config
 from .engine import Engine
 from .log import setup_logging
 from .runtime import (
+    acquire_instance_mutex,
     acquire_single_instance,
     attach_parent_console,
     ensure_config,
@@ -37,26 +38,43 @@ from .runtime import (
 
 def _run_tray(explicit_config) -> int:
     """Launch the GUI/daemon as a single instance."""
+    # Authoritative single-instance guard (Windows named mutex; no-op elsewhere).
+    # It can't be stolen by an app squatting on the lock port, so two instances can
+    # never race git on the same repos — the failure Gemini flagged.
+    if acquire_instance_mutex():
+        signal_existing_instance()  # best-effort: bring the running panel to front
+        print("SincroGit is already running.", file=sys.stderr)
+        return 0
     lock = acquire_single_instance()
     if lock is None:
-        # The lock port is taken. Confirm it's really another SincroGit (via the
-        # handshake) before bowing out: the port is in Windows' ephemeral range,
-        # so an unrelated app could be squatting on it — in that case we start
-        # anyway (without single-instance protection) rather than refuse to run.
+        # The lock port is taken. The mutex (on Windows) already guarantees we're the
+        # only instance, so this only costs us the "show the panel" activation channel.
         if signal_existing_instance():
             print("SincroGit is already running.", file=sys.stderr)
             return 0
-        print(
-            "Lock port held by another app; starting without single-instance "
-            "protection.",
-            file=sys.stderr,
-        )
+        if sys.platform == "win32":
+            print(
+                "Lock port held by another app; single-instance is still enforced "
+                "(mutex), but the 'show panel' channel is unavailable.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "Lock port held by another app; starting without single-instance "
+                "protection.",
+                file=sys.stderr,
+            )
         # lock stays None -> the activation listener simply won't run.
     cfg_path, created = ensure_config(explicit_config)
     try:
         from .gui.app import main as tray_main
     except ImportError as e:
-        print(f"The GUI needs PyQt5 (pip install PyQt5): {e}", file=sys.stderr)
+        print(
+            f"The GUI needs PyQt5 (pip install PyQt5): {e}\n"
+            f"To run the background daemon without the GUI, use:  "
+            f"python -m sincrogit --headless",
+            file=sys.stderr,
+        )
         return 2
     try:
         return tray_main(cfg_path, lock_socket=lock, open_config=created)

@@ -8,6 +8,7 @@ can be used/tested without watchdog installed.
 """
 
 import logging
+import os
 
 log = logging.getLogger("sincrogit.watcher")
 
@@ -22,16 +23,34 @@ def _make_handler_class():
     from watchdog.events import FileSystemEventHandler
 
     class _RepoEventHandler(FileSystemEventHandler):
-        def __init__(self, on_change):
+        def __init__(self, on_change, root, ignore=None):
             self._on_change = on_change
+            self._root = root
+            self._ignore = ignore  # callable(relpath) -> bool, or None
+
+        def _ignored(self, path: str) -> bool:
+            if not path:
+                return False
+            if _is_git_internal(path):
+                return True
+            if self._ignore is None:
+                return False
+            try:
+                rel = os.path.relpath(path, self._root)
+            except ValueError:  # different drive on Windows
+                return False
+            return self._ignore(rel)
 
         def on_any_event(self, event):
             if event.is_directory:
                 return
             src = getattr(event, "src_path", "") or ""
             dst = getattr(event, "dest_path", "") or ""
-            # Ignore git's internal noise (index, objects, locks...).
-            if _is_git_internal(src) and (not dst or _is_git_internal(dst)):
+            # Drop git's internal noise AND churn under excluded folders (e.g. the
+            # tens of thousands of events an `npm install` fires under node_modules)
+            # before it ever wakes the engine. A move OUT of an ignored folder into a
+            # tracked one is still processed (its dst isn't ignored).
+            if self._ignored(src) and (not dst or self._ignored(dst)):
                 return
             self._on_change()
 
@@ -46,8 +65,8 @@ class WatchManager:
         self._handler_cls = _make_handler_class()
         self._started = False
 
-    def watch(self, path: str, on_change):
-        handler = self._handler_cls(on_change)
+    def watch(self, path: str, on_change, ignore=None):
+        handler = self._handler_cls(on_change, path, ignore)
         self.observer.schedule(handler, path, recursive=True)
 
     def start(self):

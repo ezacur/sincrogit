@@ -12,10 +12,19 @@ See §6 of DESIGN.md.
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 
 log = logging.getLogger("sincrogit.ai")
+
+# A line that looks like a commit subject (Conventional Commits + our sincro:/auto:
+# prefixes). Used to pick the real title even when a chatty model adds a preamble.
+_SUBJECT_RE = re.compile(
+    r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|sincro|auto)"
+    r"(\([^)]+\))?!?: ",
+    re.IGNORECASE,
+)
 
 
 def generate_commit_message(ai_cfg, diff_stat: str, diff_text: str, manual: bool = False):
@@ -119,20 +128,20 @@ def _build_manual_prompt(lang: str, diff_stat: str, diff_text: str, include_cont
 def _split_message(text: str):
     if not text:
         return None, ""
-    cleaned = text.strip()
-    # Strip possible code fences that some models add.
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`").strip()
-    lines = [ln for ln in cleaned.splitlines()]
-    # First non-empty line = title.
-    title = ""
-    rest_start = 0
-    for i, ln in enumerate(lines):
-        if ln.strip():
-            title = ln.strip()
-            rest_start = i + 1
-            break
-    body = "\n".join(lines[rest_start:]).strip()
+    # Drop code-fence marker lines (``` or ```lang) wherever they appear — some
+    # models wrap the message, sometimes after a prose preamble.
+    lines = [ln for ln in text.strip().splitlines() if not ln.strip().startswith("```")]
+    # Prefer the first line that looks like a commit subject (this skips a chatty
+    # "Here's the commit:" preamble); otherwise fall back to the first non-empty line.
+    title_idx = next(
+        (i for i, ln in enumerate(lines) if _SUBJECT_RE.match(ln.strip())), None
+    )
+    if title_idx is None:
+        title_idx = next((i for i, ln in enumerate(lines) if ln.strip()), None)
+    if title_idx is None:
+        return None, ""
+    title = lines[title_idx].strip()
+    body = "\n".join(lines[title_idx + 1:]).strip()
     return title, body
 
 

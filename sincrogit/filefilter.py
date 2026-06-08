@@ -71,6 +71,14 @@ class FileFilter:
     def accept(self, abspath: str, relpath: str) -> bool:
         return self.reason_to_skip(abspath, relpath) is None
 
+    def is_excluded(self, relpath: str) -> bool:
+        """Cheap exclude-only check (no size/binary I/O). Used by the watcher to
+        drop filesystem events under excluded folders (e.g. node_modules during an
+        `npm install`) before they ever wake the engine — see §5/§11 of DESIGN.md."""
+        if self._spec is None:
+            return False
+        return self._spec.match_file(relpath.replace(os.sep, "/"))
+
     def reason_to_skip(self, abspath: str, relpath: str) -> str | None:
         """Why this file is NOT auto-versioned, or None if it is accepted.
 

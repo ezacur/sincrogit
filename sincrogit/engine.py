@@ -452,7 +452,7 @@ class Engine:
             with self._states_lock:
                 self.states.append(st)
             if self._watch_ready:
-                self.watch.watch(rc.path, self._dirty_cb(st))
+                self.watch.watch(rc.path, self._dirty_cb(st), ignore=st.file_filter.is_excluded)
 
             branch = repo.current_branch()
             st.branch = branch
@@ -1057,7 +1057,7 @@ class Engine:
             self.states.append(st)
         if self._watch_ready and self.watch is not None:
             try:
-                self.watch.watch(rc.path, self._dirty_cb(st))
+                self.watch.watch(rc.path, self._dirty_cb(st), ignore=st.file_filter.is_excluded)
             except Exception:  # noqa: BLE001 — watching is best-effort
                 log.warning("[%s] could not start the watcher", rc.name)
         self._wake.set()  # pick up the new repo without waiting out the idle sleep

@@ -136,6 +136,33 @@ def ensure_config(explicit: str | None) -> tuple:
 
 
 # ---------------------------------------------------------------- single instance
+_instance_mutex_handle = None  # kept for the process lifetime (never CloseHandle)
+
+
+def acquire_instance_mutex(name: str = "Local\\SincroGit-tray-instance") -> bool:
+    """Authoritative single-instance guard on Windows: a named mutex. Unlike a
+    lockfile it has NO stale-lock problem (the OS releases it when the process
+    dies), and unlike the port lock it can't be stolen by an unrelated app
+    squatting on the port. Returns True if ANOTHER instance already holds it.
+
+    On non-Windows it's a no-op (returns False) — the port lock remains the
+    mechanism there. The handle is kept in a module global for the process
+    lifetime; we never CloseHandle it, so the mutex is held until we exit.
+    """
+    global _instance_mutex_handle
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.CreateMutexW(None, False, name)
+        already = (kernel32.GetLastError() == 183)  # ERROR_ALREADY_EXISTS
+        _instance_mutex_handle = handle  # keep alive
+        return already
+    except Exception:  # noqa: BLE001 — if the mutex can't be created, fall back to the port
+        return False
+
+
 def acquire_single_instance(port: int = _LOCK_PORT):
     """Bind a localhost port as a lock. Returns the socket (keep it alive) or
     None if another instance already holds it."""
