@@ -53,6 +53,7 @@ class RepoState:
         self.net_busy = False     # a network task (fetch/pull/push/autosnap) is in flight
         self.autosnap_pending = False  # HEAD changed since the last autosnap push
         self.last_autosnap_mono = time.monotonic()
+        self.last_gc_mono = time.monotonic()  # last `git gc --auto` (decoupled from sealing)
         self.paused = False       # set on rebase conflicts (not cleared on its own)
         self.user_paused = False  # set by the user from the GUI (per repo)
         self.dropped_warned = set()  # files already warned about (no longer snapshotted)
@@ -89,6 +90,11 @@ class Engine:
     # NOT poll every few seconds while the next snapshot is minutes away.
     MAX_TICK_SEC = 60
     _BRANCH_CHECK_TTL = 15  # seconds: cap how often the per-repo branch check runs
+    # `git gc --auto` runs on this cadence, INDEPENDENT of sealing: the amend loop
+    # creates loose objects continuously, and with auto-seal disabled (purist mode)
+    # the seal — the old gc trigger — never fires, so a long-lived WIP would bloat
+    # the repo. Once a day is plenty (gc --auto only packs past its own threshold).
+    GC_INTERVAL_SEC = 86400
 
     def __init__(self, config, emit_event=None):
         self.config = config
@@ -473,6 +479,7 @@ class Engine:
                 self._maybe_snapshot(st, now_mono)  # local; skipped if a worker holds the repo
                 self._maybe_seal(st, now_epoch)     # local seal; push dispatched to a worker
                 self._maybe_autosnap(st, now_mono)  # live mirror; dispatched to a worker
+                self._maybe_gc(st, now_mono)        # daily repo packing; background worker
             except GitError as e:
                 log.error("[%s] error in the cycle: %s", st.cfg.name, e)
 
@@ -640,6 +647,24 @@ class Engine:
         else:
             # Keep pending=True so the next interval retries.
             self._emit(cfg.name, "autosnap", f"mirror push failed (will retry): {msg}", "WARNING")
+
+    # --------------------------------------------------------------- maintenance
+    def _maybe_gc(self, st: RepoState, now_mono: float):
+        """Pack loose objects ~once a day, INDEPENDENT of sealing (GC_INTERVAL_SEC).
+        The amend loop creates loose objects continuously; in purist mode the seal
+        never fires, so without this a long-lived WIP would bloat the repo. Runs on
+        a background worker (under op_lock) so a pack never blocks the tick; skips
+        while a merge/rebase is in progress."""
+        if now_mono - st.last_gc_mono < self.GC_INTERVAL_SEC:
+            return
+
+        def _gc():
+            if not st.repo.is_busy():
+                st.repo.gc_auto()
+
+        # Advance only on a real dispatch (a busy repo retries next interval).
+        if self._dispatch_network(st, "gc", _gc):
+            st.last_gc_mono = now_mono
 
     def _initial_sync(self):
         # Runs on its own thread at startup. Per-repo op_lock keeps each repo's

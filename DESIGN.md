@@ -273,7 +273,21 @@ repos:
   reset when an external commit is detected (it's respected as a manual seal).
 - **Never `--force`** in the automatic flow.
 - **Git output language** forced to English (`LC_ALL=C`) for consistent logs (our parsing uses locale-independent porcelain/plumbing commands).
-- **Maintenance:** `git gc --auto` after each seal, to pack the orphan objects left by the amends.
+- **Maintenance:** `git gc --auto` after each seal **and at least once a day**
+  (`Engine.GC_INTERVAL_SEC`, on a background worker), to pack the orphan objects left by
+  the amends. The daily trigger is **decoupled from sealing on purpose**: in purist mode
+  (`seal_interval_min: inf`) the seal never fires, so without it a long-lived WIP would
+  accumulate loose objects unbounded.
+- **Disabling intervals/limits:** any interval (`*_interval_*`, `debounce_sec`) or size
+  threshold (`max_file_bytes`, `max_include_bytes`) accepts a *disable sentinel*
+  (`inf`/`off`/`none`/`never`, also bare `None`/`False`), normalized to `math.inf` in
+  `RepoConfig.__post_init__`. `inf` flows through the deadline arithmetic untouched (a
+  due-time of `inf` is never reached; `min(x, inf) == x`), so the engine needs **no**
+  special-casing. The headline use is **purist mode** (`seal_interval_min: inf`): no
+  automatic seal — the permanent history is built only by manual **Smart Commit**, while
+  the WIP + `autosnap` keep providing the safety net. (YAML only parses `.inf` as a
+  float; a bare `inf`/`off` arrives as a string/bool, which is why the normalization
+  exists.)
 
 ---
 

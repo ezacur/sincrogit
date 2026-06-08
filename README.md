@@ -219,6 +219,29 @@ The cost we accept: history reads as time-buckets rather than perfectly atomic
 commits, and a total disk failure can lose up to ~30 min — in exchange for effortless
 versioned backup and sequential multi-machine sync.
 
+### Pragmatic vs purist: you decide what a commit means
+
+Purist Git says a commit should narrate a **logical unit of work** (a feature, a fix),
+**not the passage of time**. The permanent history is for a human to read later and
+understand *why* the code changed. SincroGit ships *pragmatic* by default — it seals on
+a clock so the forgetful get a clean-ish history for free — but you can flip it to
+*purist* and keep the exact same safety net underneath:
+
+- **Pragmatic (default).** Auto-seal every 6 h: the machine writes your timeline, you do
+  nothing. Best for solo work where you don't care about perfectly atomic commits.
+- **Purist.** Set `seal_interval_min: inf` (see *[Disabling an interval or limit](#disabling-an-interval-or-limit)*).
+  The automatic seal never fires, so the branch stays **immaculate** — every permanent
+  commit is one *you* made, when a task is actually done, via **Smart Commit**
+  (AI-proposed Conventional Commits). The WIP and `autosnap` still run underneath, so a
+  power cut or disk failure still loses nothing. This is "almost pure Git" with an
+  invisible safety net — a history presentable even alongside a team.
+
+  > **Honest caveat:** with auto-seal off, routine machine-to-machine handoff becomes
+  > **manual** — your work reaches the other machine when *you* Smart-Commit (or via the
+  > manual *autosnap* recovery), not automatically every 6 h. The no-data-loss guarantee
+  > stays; the automatic relay does not. (A per-user live WIP that restores the automatic
+  > handoff while keeping `main` clean is planned.)
+
 ## Limitations
 
 SincroGit has a deliberately narrow scope. What it does **not** do:
@@ -285,3 +308,25 @@ overridable per repo):
 | `extra_includes` | — | patterns versioned even if binary (e.g. `**/*.docx`) |
 | `max_include_bytes` | 26214400 | size cap (25 MB) for `extra_includes` |
 | `pandoc_path` | `pandoc` | **(top-level)** path to pandoc for readable `.docx` diffs |
+
+### Disabling an interval or limit
+
+Any interval or size threshold can be **turned off** by setting it to `inf` (or `off`,
+`none`, `never`): the action then **never fires** and the limit becomes **unlimited**.
+It works for `snapshot_interval_sec`, `seal_interval_min`, `pull_interval_min`,
+`autosnap_interval_min`, `debounce_sec`, `max_file_bytes` and `max_include_bytes`. The
+headline use is **purist mode**: `seal_interval_min: inf` (no automatic seal — you commit
+by hand). For example:
+
+```yaml
+defaults:
+  seal_interval_min: inf     # purist mode: never auto-seal (commit manually)
+  pull_interval_min: off     # don't pull automatically
+```
+
+> ⚠️ **Disabling a *size* limit is dangerous.** `max_file_bytes: inf` (or
+> `max_include_bytes: inf`) removes the size guard entirely, so SincroGit may
+> auto-commit **huge files** — multi-GB binaries, build outputs, datasets — and Git
+> keeps **every version forever**, bloating the repo irreversibly. Prefer a high
+> explicit number (e.g. `max_file_bytes: 10485760` for 10 MB) over `inf` unless you
+> truly mean "no limit at all".

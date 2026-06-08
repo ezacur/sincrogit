@@ -1,10 +1,16 @@
 # SincroGit — example configuration.
 # Copy this file to config.yaml and adjust the 'repos' list.
+#
+# Disabling: any interval/size below can be turned OFF with `inf` (or off/none/never)
+# -> the action never fires / the limit is unlimited. Headline use: `seal_interval_min:
+# inf` = PURIST MODE (no auto-seal; you commit by hand with Smart Commit). WARNING:
+# `max_file_bytes: inf` removes the size guard and may auto-commit huge files forever —
+# prefer a high explicit number unless you truly mean "no limit". See the README.
 
 defaults:
   snapshot_interval_sec: 300      # how often the WIP (Work In Progress) is amended (5 min)
   debounce_sec: 25                # wait after the last change before a snapshot
-  seal_interval_min: 360          # "real" permanent commit + push every 6h
+  seal_interval_min: 360          # "real" permanent commit + push every 6h ("inf" = purist mode)
   pull_interval_min: 10           # fetch every 10 min; pull only if there's something new
   max_file_bytes: 1048576         # 1 MB: only text below this size is versioned
   push: true                      # push sealed commits to the remote

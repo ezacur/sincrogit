@@ -267,6 +267,21 @@ repos:
 - **Operaciones git manuales mías** mientras corre el daemon (rebase, checkout de rama, etc.): la herramienta debe detectar `HEAD` cambiado/`rebase en curso`/índice ocupado y **ceder** (saltarse ese ciclo) en vez de pelearse. Detectar `.git/MERGE_HEAD`, `.git/rebase-*`, lock del índice.
 - **El push solo empuja `HEAD~1`**: garantiza que nunca subo el WIP transitorio.
 - **Nunca `--force`** en el flujo automático.
+- **Mantenimiento:** `git gc --auto` tras cada sello **y al menos una vez al día**
+  (`Engine.GC_INTERVAL_SEC`, en un worker en segundo plano), para empaquetar los objetos
+  huérfanos que dejan los amends. El disparador diario está **desacoplado del sellado a
+  propósito**: en modo purista (`seal_interval_min: inf`) el sello no se dispara nunca, así
+  que sin él un WIP de larga vida acumularía objetos sueltos sin límite.
+- **Desactivar intervalos/límites:** cualquier intervalo (`*_interval_*`, `debounce_sec`)
+  o umbral de tamaño (`max_file_bytes`, `max_include_bytes`) acepta un *centinela de
+  desactivación* (`inf`/`off`/`none`/`never`, también `None`/`False`), normalizado a
+  `math.inf` en `RepoConfig.__post_init__`. `inf` fluye por la aritmética de plazos sin
+  tocar nada (un plazo de `inf` nunca se alcanza; `min(x, inf) == x`), así que el motor no
+  necesita ningún caso especial. El uso estrella es el **modo purista**
+  (`seal_interval_min: inf`): sin sellado automático — el historial permanente lo
+  construye solo el **Smart Commit** manual, mientras el WIP + `autosnap` siguen dando la
+  red de seguridad. (YAML solo entiende `.inf` como float; un `inf`/`off` pelado llega como
+  string/bool, de ahí la normalización.)
 
 ---
 

@@ -235,6 +235,33 @@ El coste que aceptamos: el historial se lee como bloques de tiempo en vez de com
 perfectamente atómicos, y un fallo total de disco puede perder hasta ~30 min — a cambio
 de backup versionado sin esfuerzo y sincronización secuencial entre máquinas.
 
+### Pragmática vs purista: tú decides qué significa un commit
+
+La filosofía purista de Git dice que un commit narra una **unidad lógica de trabajo**
+(un feature, un fix), **no el paso del tiempo**. El historial permanente está para que
+un humano lo lea después y entienda *por qué* cambió el código. SincroGit viene en modo
+*pragmático* por defecto —sella por reloj para que el olvidadizo tenga gratis un
+historial decente— pero puedes pasarlo a *purista* manteniendo intacta la misma red de
+seguridad por debajo:
+
+- **Pragmática (por defecto).** Auto-sella cada 6 h: la máquina escribe tu línea
+  temporal, tú no haces nada. Ideal para proyectos personales donde no te importan los
+  commits atómicos.
+- **Purista.** Pon `seal_interval_min: inf` (ver *[Desactivar un intervalo o límite](#desactivar-un-intervalo-o-límite)*).
+  El sellado automático no se dispara nunca, así que la rama queda **inmaculada** — cada
+  commit permanente es uno que hiciste *tú*, cuando una tarea está de verdad terminada,
+  vía **Smart Commit** (Conventional Commits propuesto por IA). El WIP y el `autosnap`
+  siguen funcionando por debajo, así que un corte de luz o un fallo de disco siguen sin
+  perder nada. Es "Git casi puro" con una red de seguridad invisible — un historial
+  presentable incluso junto a un equipo.
+
+  > **Letra pequeña honesta:** con el auto-seal apagado, el relevo rutinario entre
+  > máquinas pasa a ser **manual** — tu trabajo llega a la otra máquina cuando *tú* haces
+  > Smart Commit (o vía la recuperación manual de *autosnap*), no automáticamente cada
+  > 6 h. La garantía de "cero pérdida" se mantiene; el relevo automático no. (Está
+  > previsto un WIP vivo por usuario que recupere ese relevo automático manteniendo
+  > `main` limpia.)
+
 ## Limitaciones
 
 SincroGit tiene un alcance deliberadamente acotado. Lo que **no** hace:
@@ -304,3 +331,25 @@ sobreescribibles por repo):
 | `extra_includes` | — | patrones versionados aunque sean binarios (p. ej. `**/*.docx`) |
 | `max_include_bytes` | 26214400 | tope de tamaño (25 MB) para `extra_includes` |
 | `pandoc_path` | `pandoc` | **(top-level)** ruta a pandoc para diffs legibles de `.docx` |
+
+### Desactivar un intervalo o límite
+
+Cualquier intervalo o umbral de tamaño se puede **apagar** poniéndolo en `inf` (o `off`,
+`none`, `never`): la acción **no se dispara nunca** y el límite pasa a ser **ilimitado**.
+Funciona para `snapshot_interval_sec`, `seal_interval_min`, `pull_interval_min`,
+`autosnap_interval_min`, `debounce_sec`, `max_file_bytes` y `max_include_bytes`. El uso
+estrella es el **modo purista**: `seal_interval_min: inf` (sin sellado automático —
+commiteas a mano). Por ejemplo:
+
+```yaml
+defaults:
+  seal_interval_min: inf     # modo purista: nunca auto-sella (commit manual)
+  pull_interval_min: off     # no hacer pull automático
+```
+
+> ⚠️ **Desactivar un límite de *tamaño* es peligroso.** `max_file_bytes: inf` (o
+> `max_include_bytes: inf`) elimina por completo la guarda de tamaño, así que SincroGit
+> podría auto-commitear **ficheros enormes** — binarios de varios GB, salidas de build,
+> datasets — y Git guarda **cada versión para siempre**, hinchando el repo de forma
+> irreversible. Prefiere un número alto explícito (p. ej. `max_file_bytes: 10485760` para
+> 10 MB) antes que `inf`, salvo que de verdad quieras decir "sin límite alguno".

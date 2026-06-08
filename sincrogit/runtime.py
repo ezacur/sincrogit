@@ -27,11 +27,14 @@ _HANDSHAKE_ACK = b"SINCROGIT:ok"
 DEFAULT_CONFIG_TEMPLATE = """\
 # SincroGit configuration.
 # Add repos from the GUI (Status -> "Add repo..."), or list them under 'repos:'.
+# Tip: any interval/size below can be disabled with `inf` (or off/none/never) -> never
+# fires / no limit. `seal_interval_min: inf` = purist mode (commit by hand). Beware
+# `max_file_bytes: inf`: it drops the size guard and may commit huge files forever.
 
 defaults:
   snapshot_interval_sec: 300      # how often the WIP is amended (5 min)
   debounce_sec: 25                # wait after the last change before a snapshot
-  seal_interval_min: 360          # "real" permanent commit + push every 6h
+  seal_interval_min: 360          # "real" permanent commit + push every 6h ("inf" = purist)
   pull_interval_min: 10           # fetch every 10 min; pull only if there's something new
   max_file_bytes: 1048576         # 1 MB: only text below this size is versioned
   push: true

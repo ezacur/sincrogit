@@ -4,11 +4,40 @@ Each repo inherits the values from `defaults` and may override them.
 See the example in config.example.yaml and §8 of DESIGN.md.
 """
 
+import math
 import os
 import re
 from dataclasses import dataclass, field
 
 import yaml
+
+# Words (any case) that disable an interval/threshold, i.e. "never fire" / "no
+# limit". They normalize to math.inf, which flows through the engine's deadline
+# arithmetic untouched (a due-time of inf is never reached, and min(x, inf)==x),
+# so disabling needs NO special-casing in the loop. NOTE: YAML only parses '.inf'
+# (with the dot) as a float; a bare 'inf'/'off' arrives here as a string/bool,
+# which is exactly why this normalization exists.
+_DISABLE_TOKENS = {"inf", "infinity", "none", "never", "off", "false", "disabled"}
+
+# Fields where "disable" makes sense: scheduling intervals (never fire) and size
+# thresholds (no limit). git_timeout_sec and booleans keep their own semantics.
+_DISABLEABLE_FIELDS = (
+    "snapshot_interval_sec", "debounce_sec", "seal_interval_min",
+    "pull_interval_min", "autosnap_interval_min",
+    "max_file_bytes", "max_include_bytes",
+)
+
+
+def _disabled_to_inf(value):
+    """Map a disable sentinel (inf/off/none/never as a string, Python None/False,
+    or an already-infinite float) to math.inf. Any real number passes through."""
+    if value is None or value is False:
+        return math.inf
+    if isinstance(value, str) and value.strip().lower() in _DISABLE_TOKENS:
+        return math.inf
+    if isinstance(value, float) and math.isinf(value):
+        return math.inf
+    return value
 
 # Keys a repo can inherit from `defaults` or override.
 _INHERITABLE = [
@@ -52,16 +81,24 @@ class RepoConfig:
                                           # remote -> disk-failure RPO ~= autosnap_interval
     autosnap_interval_min: int = 30       # how often the live mirror is force-pushed
 
+    def __post_init__(self):
+        # Normalize disable sentinels (inf/off/none/never, None, False) to
+        # math.inf for the interval/threshold fields, so 'seal_interval_min: inf'
+        # (purist mode: no auto-seal) or 'max_file_bytes: off' (no size limit)
+        # just work. See _disabled_to_inf.
+        for f in _DISABLEABLE_FIELDS:
+            setattr(self, f, _disabled_to_inf(getattr(self, f)))
+
     @property
-    def seal_interval_sec(self) -> int:
+    def seal_interval_sec(self) -> float:
         return self.seal_interval_min * 60
 
     @property
-    def pull_interval_sec(self) -> int:
+    def pull_interval_sec(self) -> float:
         return self.pull_interval_min * 60
 
     @property
-    def autosnap_interval_sec(self) -> int:
+    def autosnap_interval_sec(self) -> float:
         return self.autosnap_interval_min * 60
 
 
