@@ -109,10 +109,11 @@ class Engine:
         self._emit_event = emit_event
         # This machine's name for the per-host autosnap ref (computed once).
         self._autosnap_host = autosnap_host()
-        # Resolve pandoc once (for readable .docx diffs via textconv); None if absent.
-        self._pandoc = resolve_pandoc(getattr(self.config, "pandoc_path", "pandoc"))
-        if self._pandoc:
-            log.info("pandoc found (%s): .docx diffs will be readable", self._pandoc)
+        # pandoc is resolved lazily, only the first time a repo that versions .docx
+        # is set up — so a config without .docx never even runs `pandoc --version`,
+        # and non-.docx repos never get the textconv `-c` on their git commands.
+        self._pandoc = None
+        self._pandoc_resolved = False
 
     # --------------------------------------------------------------- events
     _LEVELS = {"INFO": logging.INFO, "WARNING": logging.WARNING, "ERROR": logging.ERROR}
@@ -141,6 +142,22 @@ class Engine:
         """A stable copy of the repo list to iterate without racing add_repo."""
         with self._states_lock:
             return list(self.states)
+
+    @staticmethod
+    def _repo_versions_docx(rc) -> bool:
+        """Does this repo's config opt into versioning .docx (extra_includes)?
+        Only then do we need pandoc / the textconv diff driver for it."""
+        return any("docx" in p.lower() for p in (rc.extra_includes or []))
+
+    def _pandoc_cmd(self) -> str | None:
+        """Resolve pandoc once, on first need. Called only for repos that version
+        .docx, so a config without .docx never runs `pandoc --version`."""
+        if not self._pandoc_resolved:
+            self._pandoc = resolve_pandoc(getattr(self.config, "pandoc_path", "pandoc"))
+            self._pandoc_resolved = True
+            if self._pandoc:
+                log.info("pandoc found (%s): .docx diffs will be readable", self._pandoc)
+        return self._pandoc
 
     def _dirty_cb(self, st: "RepoState"):
         """Build the watcher callback for a repo: mark it dirty AND wake the main
@@ -199,7 +216,7 @@ class Engine:
     def _ensure_docx_attributes(self, st: "RepoState"):
         """If the repo versions .docx (via extra_includes), map it to the pandoc
         diff driver in .gitattributes and keep it out of EOL normalization."""
-        if not any("docx" in p.lower() for p in (st.cfg.extra_includes or [])):
+        if not self._repo_versions_docx(st.cfg):
             return
         try:
             if st.repo.ensure_gitattributes(["*.docx -text diff=pandoc"]):
@@ -329,7 +346,8 @@ class Engine:
             self._watch_ready = True
 
         for rc in self.config.repos:
-            repo = GitRepo(rc.path, pandoc=self._pandoc)
+            pandoc = self._pandoc_cmd() if self._repo_versions_docx(rc) else None
+            repo = GitRepo(rc.path, pandoc=pandoc)
             if not repo.is_git_repo():
                 log.error("Not a git repo (skipping): %s", rc.path)
                 continue
@@ -771,7 +789,8 @@ class Engine:
     def add_repo(self, rc) -> tuple:
         """Add a repo to the running engine (no restart). `rc` is a RepoConfig
         already merged with defaults. Returns (ok, message)."""
-        repo = GitRepo(rc.path, pandoc=self._pandoc)
+        pandoc = self._pandoc_cmd() if self._repo_versions_docx(rc) else None
+        repo = GitRepo(rc.path, pandoc=pandoc)
         if not repo.is_git_repo():
             return False, "not a git repository"
         with self._states_lock:
