@@ -349,6 +349,39 @@ máquinas y:
 Pon `live_handoff` por repo en `auto` (por defecto), `ask` u `off`. Necesita `autosnap`
 activo (es lo que publica el espejo que lee tu otra máquina).
 
+### Usar SincroGit en equipo (repos compartidos)
+
+SincroGit es, por defecto, una herramienta **personal y de una sola rama**. Apuntada directa
+a una rama **compartida** (todos pusheando a `main`/`develop`), el auto-rebase periódico choca
+en cuanto el push de un compañero toca tus ficheros — y SincroGit, que nunca es destructivo,
+**se pausa y te pide resolver en la terminal**. Esa interrupción recurrente mata la promesa de
+"olvídate de la terminal", así que **no lo pongas en una rama donde otros pushean.** El montaje
+para equipo es una sola opción:
+
+1. **`track_current_branch: true`** — SincroGit sigue la rama en la que estés en vez de pausarse
+   fuera de la configurada.
+2. Trabaja en **tu propia rama** (`feature/login-pepe`). SincroGit la respalda y la relevará
+   entre *tus* máquinas de forma invisible: los espejos del WIP vivo van namespaced **por
+   usuario** (`refs/autosnap/<tú>/<host>/<rama>`), así que nunca tocan las ramas de tus
+   compañeros ni sus borradores, ni los suyos los tuyos (**team-safe**).
+3. Cuando una unidad de trabajo está lista, pulsa **Smart Commit** (mensaje Conventional Commits
+   propuesto por IA) y abres un **Pull Request** a la rama compartida — un merge normal, revisado.
+
+> **La combinación más limpia:** añade **`seal_interval_min: inf`** (modo purista). Entonces
+> SincroGit **no** hace ningún commit automático en tu rama — cada commit permanente es uno que
+> hiciste *tú* vía Smart Commit — mientras el WIP + autosnap te protegen y sincronizan por
+> debajo. El historial de la rama parece hecho a mano; nadie nota que había una red de seguridad.
+
+**Nunca pierdes la capacidad de commitear por unidades lógicas.** El "cubo temporal" es solo el
+*suelo automático*, no un techo: en cualquier momento puedes sellar tú una tarea terminada con
+**Smart Commit** (la herramienta te redacta el mensaje). Y los commits automáticos llevan siempre
+el prefijo **`sincro:`**, así que los snapshots de la máquina y tus commits de verdad quedan
+trivialmente distinguibles — aplasta o descarta los `sincro:` antes de un PR, o corre en purista
+y no habrá ninguno.
+
+Sigue siendo secuencial **por rama** (una máquina a la vez en una rama dada); no fusiona a dos
+personas editando la *misma* rama a la vez.
+
 ## Limitaciones
 
 SincroGit tiene un alcance deliberadamente acotado. Lo que **no** hace:
@@ -364,7 +397,8 @@ SincroGit tiene un alcance deliberadamente acotado. Lo que **no** hace:
   destino); ambos intervalos son configurables. O sea: transparente, pero no en caliente.
 - **Secuencial, no simultáneo.** Asume una máquina a la vez. No fusiona ediciones
   simultáneas en dos máquinas — el rebase se aborta y el repo se pausa para que resuelvas
-  a mano. Es una herramienta personal, no para trabajo en equipo sobre una rama compartida.
+  a mano. Es una herramienta personal; para repos de equipo usa tu propia rama (ver
+  [Usar SincroGit en equipo](#usar-sincrogit-en-equipo-repos-compartidos)), no una compartida.
 - **Solo texto, < 1 MB.** Los binarios y ficheros grandes nunca se commitean
   automáticamente; esos van a mano. No es un backup total de la carpeta.
 - **Historial por bloques de tiempo.** Los sellados `sincro:` agrupan ~6 h de cambios

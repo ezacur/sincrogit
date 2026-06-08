@@ -327,6 +327,38 @@ teammate's). On every sync, SincroGit fetches your other machines' mirrors and:
 Set `live_handoff` per repo to `auto` (default), `ask`, or `off`. It needs `autosnap` on
 (that's what publishes the mirror your other machine reads).
 
+### Using it in a team (shared repos)
+
+SincroGit defaults to a **personal, single-branch** tool. Pointed straight at a **shared**
+branch (everyone pushing to `main`/`develop`), the periodic auto-rebase hits a conflict the
+moment a teammate's push touches your files — and SincroGit, never destructive, **pauses and
+asks you to resolve it in the terminal**. That recurring interruption defeats the "forget the
+terminal" promise, so **don't run it on a branch other people push to.** The team-friendly
+setup is one flag:
+
+1. **`track_current_branch: true`** — SincroGit follows whatever branch you're on instead of
+   pausing off the configured one.
+2. Work on **your own branch** (`feature/login-pepe`). SincroGit backs it up and hands it off
+   between *your* machines invisibly: the live-WIP mirrors are namespaced **per user**
+   (`refs/autosnap/<you>/<host>/<branch>`), so they never touch your teammates' branches or
+   their drafts, and theirs never touch yours (**team-safe**).
+3. When a unit of work is done, hit **Smart Commit** (AI-proposed Conventional Commits
+   message) and open a **Pull Request** to the shared branch — a normal, reviewed merge.
+
+> **Cleanest combo:** add **`seal_interval_min: inf`** (purist mode). Then SincroGit makes
+> **no** automatic commits on your branch — every permanent commit is one *you* made via Smart
+> Commit — while the WIP + autosnap keep protecting and syncing you underneath. The branch
+> history looks hand-crafted; nobody can tell a safety net was running.
+
+**You never lose the ability to commit by logical units.** The "time bucket" is only the
+*automatic floor*, not a ceiling: at any moment you can seal a finished task yourself with
+**Smart Commit** (the tool drafts the message for you). And automatic commits always carry the
+**`sincro:`** prefix, so machine snapshots and your real commits stay trivially distinguishable
+— squash or drop the `sincro:` ones before a PR, or just run purist mode so there are none.
+
+It's still sequential **per branch** (one machine at a time on a given branch); it doesn't
+merge two people editing the *same* branch at once.
+
 ## Limitations
 
 SincroGit has a deliberately narrow scope. What it does **not** do:
@@ -342,7 +374,8 @@ SincroGit has a deliberately narrow scope. What it does **not** do:
   pull interval); both intervals are configurable. So: transparent, but not hot-swap.
 - **Sequential, not concurrent.** It assumes one machine at a time. Simultaneous edits on
   two machines are not merged — the rebase is aborted and the repo paused for you to
-  resolve by hand. It's a personal tool, not for team work on a shared branch.
+  resolve by hand. It's a personal tool; for team repos use your own branch (see
+  [Using it in a team](#using-it-in-a-team-shared-repos)), not a shared one.
 - **Text only, < 1 MB.** Binaries and large files are never auto-committed; add those by
   hand. It is not a full backup of the folder.
 - **Time-bucket history.** `sincro:` seals group ~6 h of unrelated changes, so a
