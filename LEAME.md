@@ -24,8 +24,10 @@ trabajo te siga entre máquinas con esfuerzo casi nulo.
   ficheros guardados ya están en disco; el valor de SincroGit ahí es el *rollback*, no la
   supervivencia.
 
-> Diseño completo y decisiones en **[DISENO.md](DISENO.md)**.
-> ¿No eres experto en Git? Empieza por la **[guía para humanos](GUIA.md)**.
+> **Cómo manejarlo** (comandos CLI, acciones del panel, recetas): el
+> **[Manual de usuario](MANUAL_ES.md)** (English: [MANUAL.md](MANUAL.md)). ¿No eres experto
+> en Git o quieres el *cuándo/por qué* en lenguaje llano? La **[guía para humanos](GUIA.md)**.
+> Diseño y decisiones: **[DISENO.md](DISENO.md)**.
 
 ## Estado: Fases 1 y 2 completas
 

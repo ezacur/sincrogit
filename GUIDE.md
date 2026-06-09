@@ -12,8 +12,9 @@ machine** of your saved files, so you can always go back.*
 > It's also perfect for **scratch and experiment repos** — code that doesn't deserve a
 > hand-crafted history, but whose trail you'd hate to lose. Let it run; never lose a spike.
 
-> Want the technical detail? It's in [DESIGN.md](DESIGN.md). (Versión en español:
-> [GUIA.md](GUIA.md).) Here we keep it practical.
+> Need the exact **commands and options** (the *how*)? See the [User Manual](MANUAL.md). Want
+> the technical detail? [DESIGN.md](DESIGN.md). (Versión en español: [GUIA.md](GUIA.md).) Here
+> we keep it practical.
 
 ## 🪄 The magic underneath: three rhythms
 

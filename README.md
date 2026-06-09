@@ -22,8 +22,10 @@ follows you between machines with near-zero effort.
   and a power cut with an intact disk loses nothing either way — your saved files are
   already on disk; SincroGit's value there is the *rollback*, not the survival.
 
-> Full design and decisions in **[DESIGN.md](DESIGN.md)**. New to Git or want the
-> plain-language version? See **[GUIDE.md](GUIDE.md)** (Spanish: [GUIA.md](GUIA.md)).
+> **How to operate it** (CLI commands, panel actions, recipes): the
+> **[User Manual](MANUAL.md)** (Spanish: [MANUAL_ES.md](MANUAL_ES.md)). New to Git or want
+> the plain-language *when/why*? See **[GUIDE.md](GUIDE.md)** (Spanish: [GUIA.md](GUIA.md)).
+> Design and decisions: **[DESIGN.md](DESIGN.md)**.
 
 ## Status: Phases 1 and 2 complete
 

@@ -14,8 +14,9 @@ volver atrás.*
 > historial hecho a mano, pero cuyo rastro odiarías perder. Déjalo correr; no pierdas un
 > spike.
 
-> ¿Quieres el detalle técnico? Está en [DISENO.md](DISENO.md). (English version:
-> [GUIDE.md](GUIDE.md).) Aquí vamos a lo práctico.
+> ¿Necesitas los **comandos y opciones** exactos (el *cómo*)? El [Manual de usuario](MANUAL_ES.md).
+> ¿Quieres el detalle técnico? [DISENO.md](DISENO.md). (English version: [GUIDE.md](GUIDE.md).)
+> Aquí vamos a lo práctico.
 
 ## 🪄 La magia de fondo: tres ritmos
 
