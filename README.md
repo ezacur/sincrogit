@@ -476,3 +476,29 @@ defaults:
 > keeps **every version forever**, bloating the repo irreversibly. Prefer a high
 > explicit number (e.g. `max_file_bytes: 10485760` for 10 MB) over `inf` unless you
 > truly mean "no limit at all".
+
+### Tuning a "hot" repo
+
+Every key under `defaults:` can be **overridden per repo**, so you can keep relaxed
+defaults everywhere and make just one repo "hot" — versioned more finely and mirrored more
+often — without hammering the network for all of them:
+
+```yaml
+defaults:
+  snapshot_interval_sec: 300      # 5 min — relaxed for most repos
+  autosnap_interval_min: 30       # 30 min mirror
+
+repos:
+  - path: "C:/work/the-big-deadline"   # the hot one
+    snapshot_interval_sec: 120         # finer time machine (2 min)
+    autosnap_interval_min: 10          # smaller disk-failure window (10 min)
+  - path: "C:/work/side-project"       # stays on the relaxed defaults
+```
+
+What "hot" buys you: a **finer time machine** (smaller `snapshot_interval_sec`, local and
+cheap) and a **smaller disk-failure window** (smaller `autosnap_interval_min`). What it
+costs: more force-pushes (and remote orphan objects) for *that* repo while you're actively
+editing it — the loop stays idle when nothing changes, so a hot repo costs nothing when
+you're not touching it. Note you **don't** need this for machine-to-machine handoff: the
+[OS-event handoff](#cross-machine-handoff-live-wip) already makes that prompt regardless of
+the interval — "hot" is for finer undo and a tighter disk-failure RPO.

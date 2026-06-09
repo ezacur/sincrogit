@@ -502,3 +502,29 @@ defaults:
 > datasets — y Git guarda **cada versión para siempre**, hinchando el repo de forma
 > irreversible. Prefiere un número alto explícito (p. ej. `max_file_bytes: 10485760` para
 > 10 MB) antes que `inf`, salvo que de verdad quieras decir "sin límite alguno".
+
+### Afinar un repo "en caliente"
+
+Cada clave de `defaults:` se puede **sobreescribir por repo**, así que puedes mantener
+defaults relajados en todo y poner solo un repo "en caliente" —versionado más fino y espejado
+más a menudo— sin martillear la red con todos:
+
+```yaml
+defaults:
+  snapshot_interval_sec: 300      # 5 min — relajado para la mayoría
+  autosnap_interval_min: 30       # espejo cada 30 min
+
+repos:
+  - path: "C:/trabajo/deadline-gordo"  # el caliente
+    snapshot_interval_sec: 120         # máquina del tiempo más fina (2 min)
+    autosnap_interval_min: 10          # ventana de fallo de disco menor (10 min)
+  - path: "C:/trabajo/proyecto-lateral"  # se queda con los defaults relajados
+```
+
+Qué te da "en caliente": una **máquina del tiempo más fina** (`snapshot_interval_sec` menor,
+local y barato) y una **ventana de fallo de disco menor** (`autosnap_interval_min` menor). Qué
+cuesta: más force-pushes (y objetos huérfanos en el remoto) para *ese* repo mientras lo editas
+activamente — el loop está inactivo cuando nada cambia, así que un repo caliente no cuesta nada
+cuando no lo tocas. Ojo: **no** lo necesitas para el relevo entre máquinas: el
+[relevo por eventos de SO](#relevo-entre-máquinas-wip-vivo) ya lo hace pronto sea cual sea el
+intervalo — "en caliente" es para un undo más fino y un RPO de disco más ajustado.
