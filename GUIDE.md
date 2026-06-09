@@ -42,18 +42,17 @@ laptop lid without `push`ing).
 2. You code for three hours. No sign of the console.
 3. Lunch break. You get up and leave **without touching anything**.
 
-**Before switching machines:** nothing you *must* do — your work mirrors itself. Just know
-it's a relay with a **few minutes' delay** (not instant): your desktop mirrors its state
-every ~30 min and the laptop checks every ~10 min, so worst case it's up to ~40 min behind.
-Want the laptop ready **the second** you sit down? Do a **Smart Commit** before you leave —
-that pushes immediately and the laptop picks it up on its next check (≈10 min). (Or shrink
-those intervals in the config.)
+**Before switching machines:** nothing you *must* do — your work mirrors itself. Best part:
+when you **lock the screen or close the lid**, SincroGit pushes your latest state to the
+remote right then. So if you leave the way you normally do, the handoff is **seconds**, not
+minutes. (If you just walk away without locking, it still catches up on its own within ~30
+min. And a **Smart Commit** before you go is always instant.)
 
 **In the afternoon, on the laptop:**
-- You open it and, within a few minutes, SincroGit spots your desktop's newer work and
-  **fast-forwards you to it automatically** — you carry on where you left off. No commit, no
-  pull, nothing. (You get a small heads-up notification, so it's never silent. Rather press
-  a button yourself before your files change? Set `live_handoff: ask`.)
+- You open it (unlock / wake it) and SincroGit **immediately** spots your desktop's newer
+  work and **fast-forwards you to it** — you carry on where you left off. No commit, no pull,
+  nothing. (You get a small heads-up notification, so it's never silent. Rather press a
+  button yourself before your files change? Set `live_handoff: ask`.)
 
 > 🤝 **"Your machines diverged"?** That only happens if you changed things on **both**
 > machines without syncing in between. SincroGit won't guess how to blend two piles of

@@ -160,6 +160,23 @@ Corre al final del ciclo de sync (necesita `pull` o `push` activo) y dentro del 
 del repo. Niveles (a)+(b) de la Fase 2; un modo de auto-merge real queda fuera de alcance a
 propósito.
 
+**Acelerado por eventos del SO (baja la latencia de ~40 min a segundos).** Dos mitades, sobre
+los momentos que enmarcan un cambio de máquina:
+- **Irse** (sesión Windows **lock** o **suspend**): `Engine.flush_now()` fuerza snapshot +
+  push de autosnap *ya* (ignorando el intervalo) en un hilo de fondo, así el espejo remoto
+  queda fresco en segundos. Best-effort al suspender (~2 s antes de que muera la red; el
+  intervalo normal de autosnap es el backstop); fiable al bloquear.
+- **Llegar** (**unlock** / **resume**): `Engine.sync_soon()` deja un fetch/pull/relevo debido
+  en el próximo tick y despierta el loop, así el trabajo del peer se recoge al instante.
+
+Los disparadores: un `QAbstractNativeEventFilter` de Windows (en la app de bandeja) capta
+`WM_WTSSESSION_CHANGE` (lock/unlock, vía `WTSRegisterSessionNotification` sobre el HWND del
+panel) y `WM_POWERBROADCAST` (suspend/resume); irse→`flush_now`, llegar→`sync_soon`,
+debounced (lock suele preceder a suspend; resume a unlock). Un **detector de salto de reloj de
+pared** en el loop del motor (sin dependencias) también dispara la parte de "llegar" tras
+cualquier suspensión larga — así el lado del despertar funciona también en headless (los
+relojes monotónicos pueden congelarse al suspender; el de pared no).
+
 ---
 
 ## 5. Filtro de ficheros: solo código

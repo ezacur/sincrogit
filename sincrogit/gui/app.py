@@ -13,9 +13,10 @@ interface; the engine serializes them per repo with each repo's op_lock.
 import os
 import sys
 import threading
+import time
 
 import yaml
-from PyQt5.QtCore import QObject, QTimer, pyqtSignal
+from PyQt5.QtCore import QAbstractNativeEventFilter, QObject, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from ..config import append_repo, load_config
@@ -25,6 +26,58 @@ from ..log import setup_logging
 from ..runtime import serve_activation
 from . import icon as iconmod
 from .control_panel import ControlPanel
+
+# --- Windows session/power messages (Phase 3: cut cross-machine handoff latency) ---
+_WM_WTSSESSION_CHANGE = 0x02B1
+_WTS_SESSION_LOCK = 0x7
+_WTS_SESSION_UNLOCK = 0x8
+_WM_POWERBROADCAST = 0x0218
+_PBT_APMSUSPEND = 0x0004
+_PBT_APMRESUMESUSPEND = 0x0007
+_PBT_APMRESUMEAUTOMATIC = 0x0012
+_NOTIFY_FOR_THIS_SESSION = 0
+
+
+class _WinSessionEventFilter(QAbstractNativeEventFilter):
+    """Catches Windows lock/unlock + suspend/resume so SincroGit can flush its WIP to
+    the remote when you LEAVE a machine and sync when you ARRIVE — collapsing the
+    machine-to-machine handoff latency from minutes to seconds. Windows-only; built
+    only when installed, so the module still imports on other platforms."""
+
+    def __init__(self, on_leave, on_arrive):
+        super().__init__()
+        self._on_leave = on_leave
+        self._on_arrive = on_arrive
+        import ctypes
+        from ctypes import wintypes
+
+        class _MSG(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wintypes.HWND), ("message", wintypes.UINT),
+                ("wParam", wintypes.WPARAM), ("lParam", wintypes.LPARAM),
+                ("time", wintypes.DWORD), ("pt_x", wintypes.LONG), ("pt_y", wintypes.LONG),
+            ]
+
+        self._MSG = _MSG
+
+    def nativeEventFilter(self, etype, message):
+        try:
+            if etype == b"windows_generic_MSG":
+                import ctypes
+                msg = ctypes.cast(int(message), ctypes.POINTER(self._MSG)).contents
+                if msg.message == _WM_WTSSESSION_CHANGE:
+                    if msg.wParam == _WTS_SESSION_LOCK:
+                        self._on_leave("lock")
+                    elif msg.wParam == _WTS_SESSION_UNLOCK:
+                        self._on_arrive("unlock")
+                elif msg.message == _WM_POWERBROADCAST:
+                    if msg.wParam == _PBT_APMSUSPEND:
+                        self._on_leave("suspend")
+                    elif msg.wParam in (_PBT_APMRESUMEAUTOMATIC, _PBT_APMRESUMESUSPEND):
+                        self._on_arrive("resume")
+        except Exception:  # noqa: BLE001 — a native event filter must never raise into Qt
+            pass
+        return False, 0
 
 
 class _Bridge(QObject):
@@ -67,10 +120,64 @@ class TrayApp:
         # Listen for "show panel" requests from a second launch.
         self._start_activation_listener()
 
+        # OS session/power hooks: flush on leave (lock/suspend), sync on arrive
+        # (unlock/resume), so the cross-machine handoff is prompt. Windows-only.
+        self._install_session_hooks()
+
         # First run (config just created): open the panel on the Config tab.
         if open_config:
             self.show_panel()
             self.panel.select_config_tab()
+
+    # ----------------------------------------- OS session/power hooks (Phase 3)
+    def _install_session_hooks(self):
+        """Windows: flush the WIP to the remote on lock/suspend (you're LEAVING) and
+        sync on unlock/resume (you've ARRIVED), so machine-to-machine handoff drops
+        from minutes to seconds. No-op off Windows; failures are non-fatal (the
+        periodic autosnap/pull intervals remain the fallback)."""
+        self._session_filter = None
+        self._session_hwnd = None
+        self._last_leave_mono = 0.0
+        self._last_arrive_mono = 0.0
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            self._session_filter = _WinSessionEventFilter(
+                self._on_machine_leave, self._on_machine_arrive
+            )
+            self.qapp.installNativeEventFilter(self._session_filter)
+            hwnd = int(self.panel.winId())  # forces native window creation (stable HWND)
+            ctypes.windll.wtsapi32.WTSRegisterSessionNotification(hwnd, _NOTIFY_FOR_THIS_SESSION)
+            self._session_hwnd = hwnd
+        except Exception as e:  # noqa: BLE001 — non-fatal; the intervals still cover us
+            self._session_filter = None
+            self._on_engine_event("", "info", f"OS session hooks unavailable: {e}", "WARNING")
+
+    def _remove_session_hooks(self):
+        if sys.platform == "win32" and self._session_hwnd is not None:
+            try:
+                import ctypes
+                ctypes.windll.wtsapi32.WTSUnRegisterSessionNotification(self._session_hwnd)
+            except Exception:  # noqa: BLE001
+                pass
+            self._session_hwnd = None
+
+    def _on_machine_leave(self, reason):
+        # Debounce: lock usually precedes suspend — don't flush twice in a row.
+        if time.monotonic() - self._last_leave_mono < 10:
+            return
+        self._last_leave_mono = time.monotonic()
+        self._on_engine_event("", "flush", f"machine {reason}: flushing latest state", "INFO")
+        self.engine.flush_now()
+
+    def _on_machine_arrive(self, reason):
+        # Debounce: resume usually precedes unlock — don't sync twice in a row.
+        if time.monotonic() - self._last_arrive_mono < 10:
+            return
+        self._last_arrive_mono = time.monotonic()
+        self._on_engine_event("", "resume", f"machine {reason}: syncing to catch up", "INFO")
+        self.engine.sync_soon()
 
     def _start_activation_listener(self):
         if not self._lock_socket:
@@ -163,6 +270,7 @@ class TrayApp:
 
     def quit(self):
         self._timer.stop()
+        self._remove_session_hooks()
         self.engine.stop()
         if self._engine_thread:
             self._engine_thread.join(timeout=15)
@@ -172,6 +280,7 @@ class TrayApp:
 
     def restart(self):
         """Relaunches the process to apply the new config."""
+        self._remove_session_hooks()
         self.engine.stop()
         if self._engine_thread:
             self._engine_thread.join(timeout=15)

@@ -64,6 +64,10 @@ follows you between machines with near-zero effort.
   *other* machine's live work and fast-forwards to it when that's loss-free; on divergence
   it never auto-merges — it notifies and leaves both intact for you to resolve. See
   [Cross-machine handoff](#cross-machine-handoff-live-wip). Toggle: `live_handoff`.
+- ✅ **OS-event handoff** (Windows): locking/suspending **flushes** your latest state to the
+  remote, unlocking/resuming **syncs** it — so "lock here → unlock there" hands off in
+  seconds instead of waiting out the ~30 min mirror interval (+ a wall-clock-gap resume
+  detector that also works headless).
 - ✅ **Branch guard**: if you `git checkout` another branch, SincroGit yields that repo
   (no snapshot/seal/push on the wrong branch) until you switch back. Or set
   `track_current_branch: true` to **follow** the current branch instead (feature-branch
@@ -327,6 +331,13 @@ teammate's). On every sync, SincroGit fetches your other machines' mirrors and:
 Set `live_handoff` per repo to `auto` (default), `ask`, or `off`. It needs `autosnap` on
 (that's what publishes the mirror your other machine reads).
 
+**Made prompt by OS events (Windows).** Rather than wait out the intervals, SincroGit hooks
+the session: **locking the screen or suspending** (you're leaving) **flushes** your latest
+state to the remote immediately, and **unlocking or resuming** (you've arrived) **syncs** it
+immediately. So "lock here → unlock there" hands off in seconds. (A long suspend that cuts
+the network mid-flush falls back to the next autosnap; a wall-clock-gap detector also forces
+a sync after any resume, so it works headless too for the wake side.)
+
 ### Using it in a team (shared repos)
 
 SincroGit defaults to a **personal, single-branch** tool. Pointed straight at a **shared**
@@ -367,11 +378,14 @@ SincroGit has a deliberately narrow scope. What it does **not** do:
   disk loses nothing either way (your saved files are on disk); SincroGit's value there is
   the *rollback* to an earlier saved state, not crash survival. It does **not** rescue
   work you never saved — that's your editor's autosave.
-- **Multi-machine sync is delayed, not instant.** Your work reaches the other machine
-  within minutes, not seconds: the source mirrors its WIP every `autosnap_interval_min`
-  (~30 min) and the target picks it up every `pull_interval_min` (~10 min) — so up to
-  ~40 min worst case. A **Smart Commit** before you switch makes it prompt (≤ the target's
-  pull interval); both intervals are configurable. So: transparent, but not hot-swap.
+- **Multi-machine sync isn't real-time, but it's usually seconds.** On Windows, locking
+  the screen / closing the lid **flushes** your latest state to the remote at once, and
+  unlocking / waking the other machine **syncs** it at once — so the normal "lock here,
+  unlock there" flow hands off in **seconds** (see [Cross-machine handoff](#cross-machine-handoff-live-wip)).
+  If you just walk away **without** locking, it falls back to the periodic mirror
+  (`autosnap_interval_min` ~30 min) + pull (`pull_interval_min` ~10 min) — up to ~40 min.
+  A **Smart Commit** before you switch is always instant (it goes via the branch). It is
+  never a real-time, keystroke-level sync.
 - **Sequential, not concurrent.** It assumes one machine at a time. Simultaneous edits on
   two machines are not merged — the rebase is aborted and the repo paused for you to
   resolve by hand. It's a personal tool; for team repos use your own branch (see

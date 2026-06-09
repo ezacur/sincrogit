@@ -68,6 +68,10 @@ trabajo te siga entre máquinas con esfuerzo casi nulo.
   trabajo vivo de tu *otra* máquina y hace fast-forward si es sin pérdida; ante divergencia
   nunca auto-fusiona — avisa y deja ambos estados intactos. Ver
   [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo). Interruptor: `live_handoff`.
+- ✅ **Relevo por eventos del SO** (Windows): bloquear/suspender **vuelca** tu último estado
+  al remoto, desbloquear/reanudar lo **sincroniza** — así "bloqueo aquí → desbloqueo allá"
+  releva en segundos en vez de esperar los ~30 min del intervalo del espejo (+ un detector de
+  salto de reloj que también funciona en headless).
 - ✅ **Guarda de rama**: si haces `git checkout` a otra rama, SincroGit se inhibe en ese
   repo (no snapshot/seal/push en la rama equivocada) hasta que vuelvas. O pon
   `track_current_branch: true` para **seguir** la rama actual (flujo de feature branches;
@@ -349,6 +353,14 @@ máquinas y:
 Pon `live_handoff` por repo en `auto` (por defecto), `ask` u `off`. Necesita `autosnap`
 activo (es lo que publica el espejo que lee tu otra máquina).
 
+**Acelerado por eventos del SO (Windows).** En vez de esperar los intervalos, SincroGit
+engancha la sesión: **bloquear la pantalla o suspender** (te vas) **vuelca** tu último estado
+al remoto al instante, y **desbloquear o reanudar** (has llegado) lo **sincroniza** al
+instante. Así "bloqueo aquí → desbloqueo allá" releva en segundos. (Una suspensión larga que
+corta la red a mitad del volcado cae al siguiente autosnap; un detector de salto de reloj
+también fuerza un sync tras cualquier reanudación, así que también funciona en headless para
+el lado del despertar.)
+
 ### Usar SincroGit en equipo (repos compartidos)
 
 SincroGit es, por defecto, una herramienta **personal y de una sola rama**. Apuntada directa
@@ -390,11 +402,13 @@ SincroGit tiene un alcance deliberadamente acotado. Lo que **no** hace:
   disco intacto no pierde nada de todos modos (tus ficheros guardados están en disco); el
   valor de SincroGit ahí es el *rollback* a un estado guardado anterior, no sobrevivir al
   crash. **No** rescata trabajo que nunca guardaste — eso es el autosave de tu editor.
-- **La sincro multi-máquina es diferida, no instantánea.** Tu trabajo llega a la otra
-  máquina en minutos, no segundos: la fuente espeja su WIP cada `autosnap_interval_min`
-  (~30 min) y el destino lo recoge cada `pull_interval_min` (~10 min) — hasta ~40 min en el
-  peor caso. Un **Smart Commit** antes de cambiar lo hace pronto (≤ el intervalo de pull del
-  destino); ambos intervalos son configurables. O sea: transparente, pero no en caliente.
+- **La sincro multi-máquina no es en tiempo real, pero suele ser de segundos.** En Windows,
+  bloquear la pantalla / cerrar la tapa **vuelca** tu último estado al remoto al instante, y
+  desbloquear / despertar la otra máquina lo **sincroniza** al instante — así el flujo normal
+  "bloqueo aquí, desbloqueo allá" releva en **segundos** (ver [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo)).
+  Si te vas **sin** bloquear, cae al espejo periódico (`autosnap_interval_min` ~30 min) + pull
+  (`pull_interval_min` ~10 min) — hasta ~40 min. Un **Smart Commit** antes de cambiar es
+  siempre instantáneo (va por la rama). Nunca es una sincro en tiempo real al nivel de tecla.
 - **Secuencial, no simultáneo.** Asume una máquina a la vez. No fusiona ediciones
   simultáneas en dos máquinas — el rebase se aborta y el repo se pausa para que resuelvas
   a mano. Es una herramienta personal; para repos de equipo usa tu propia rama (ver

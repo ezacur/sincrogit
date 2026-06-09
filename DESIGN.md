@@ -160,6 +160,22 @@ Runs at the end of the sync cycle (so it needs `pull` or `push` on to fire) and 
 repo's `op_lock`. Phase 2 levels (a)+(b); a true auto-merge mode is intentionally out of
 scope.
 
+**Made prompt by OS events (cuts the interval latency from ~40 min to seconds).** Two halves,
+keyed off the moments that bracket a machine switch:
+- **Leaving** (Windows session **lock** or **suspend**): `Engine.flush_now()` forces a
+  snapshot + autosnap push *now* (ignoring the interval) on a background thread, so the remote
+  mirror is fresh in seconds. Best-effort on suspend (~2 s before the network dies; the normal
+  autosnap interval is the backstop); reliable on lock.
+- **Arriving** (**unlock** / **resume**): `Engine.sync_soon()` makes a fetch/pull/handoff due
+  on the next tick and wakes the loop, so the peer's work is picked up at once.
+
+The triggers: a Windows `QAbstractNativeEventFilter` (in the tray app) catches
+`WM_WTSSESSION_CHANGE` (lock/unlock, via `WTSRegisterSessionNotification` on the panel's HWND)
+and `WM_POWERBROADCAST` (suspend/resume); leave→`flush_now`, arrive→`sync_soon`, debounced
+(lock often precedes suspend; resume precedes unlock). A **wall-clock-gap detector** in the
+engine loop (dependency-free) also fires the arrive path after any long suspend — so the wake
+side works headless too (monotonic clocks may freeze across suspend; the wall clock doesn't).
+
 ---
 
 ## 5. File filter: code only

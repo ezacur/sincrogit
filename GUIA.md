@@ -45,17 +45,16 @@ portátil sin hacer `push`).
 3. Te llaman a comer. Te levantas y te vas **sin tocar nada**.
 
 **Antes de cambiar de máquina:** nada que *tengas* que hacer — tu trabajo se replica solo.
-Pero que sepas que es un relevo **con unos minutos de retardo** (no instantáneo): tu
-sobremesa espeja su estado cada ~30 min y el portátil mira cada ~10 min, así que en el peor
-caso va hasta ~40 min por detrás. ¿Quieres el portátil listo **al segundo** de sentarte?
-Haz un **Smart Commit** antes de irte — eso sube ya, y el portátil lo recoge en su próxima
-revisión (≈10 min). (O baja esos intervalos en la config.)
+Lo mejor: cuando **bloqueas la pantalla o cierras la tapa**, SincroGit sube tu último estado
+al remoto justo en ese momento. Así que si te vas como sueles, el relevo es de **segundos**,
+no de minutos. (Si te vas sin bloquear, igual se pone al día solo en ~30 min. Y un **Smart
+Commit** antes de irte es siempre instantáneo.)
 
 **Por la tarde, en el portátil:**
-- Lo abres y, en unos minutos, SincroGit detecta el trabajo más nuevo del sobremesa y **te
-  adelanta hasta él automáticamente** — sigues donde lo dejaste. Sin commit, sin pull, sin
-  nada. (Recibes un pequeño aviso, así que nunca es silencioso. ¿Prefieres pulsar un botón
-  tú antes de que cambien tus ficheros? Pon `live_handoff: ask`.)
+- Lo abres (lo desbloqueas / despiertas) y SincroGit detecta **al instante** el trabajo más
+  nuevo del sobremesa y **te adelanta hasta él** — sigues donde lo dejaste. Sin commit, sin
+  pull, sin nada. (Recibes un pequeño aviso, así que nunca es silencioso. ¿Prefieres pulsar
+  un botón tú antes de que cambien tus ficheros? Pon `live_handoff: ask`.)
 
 > 🤝 **¿"Tus máquinas han divergido"?** Eso solo pasa si cambiaste cosas en **las dos**
 > máquinas sin sincronizar entre medias. SincroGit no adivina cómo mezclar dos montones de

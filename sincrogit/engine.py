@@ -105,6 +105,9 @@ class Engine:
     # Distinct filtered-out files in ONE top-level folder before we suggest excluding
     # it (Smart Ignore). High enough that a normal refactor never trips it.
     NOISE_SUGGEST_THRESHOLD = 50
+    # Wall-clock seconds BEYOND the intended sleep that mark a suspend/resume (so the
+    # idle loop reacts to a laptop waking up). Large enough to ignore scheduling jitter.
+    RESUME_GAP_SEC = 90
 
     def __init__(self, config, emit_event=None):
         self.config = config
@@ -511,10 +514,67 @@ class Engine:
                 # capped at MAX_TICK_SEC. The watcher (and stop/resume/worker
                 # completion) set _wake to interrupt early, so an idle laptop barely
                 # spins while changes are still handled at once.
-                self._wake.wait(self._wait_seconds())
+                wait = self._wait_seconds()
+                before_wall = time.time()
+                self._wake.wait(wait)
                 self._wake.clear()
+                # Wall-clock-gap resume detector (dependency-free, cross-platform):
+                # if far more WALL time passed than we meant to sleep, the machine was
+                # suspended (laptop lid) — and monotonic clocks may have frozen, so the
+                # snapshot/pull deadlines won't notice. Force a sync to pick up the
+                # other machine's work right away (the "arrived" half of the handoff).
+                if time.time() - before_wall > wait + self.RESUME_GAP_SEC:
+                    self._on_resume()
         finally:
             self.shutdown()
+
+    def _on_resume(self):
+        """Woke from a long suspend (or the OS told us we unlocked/resumed): make a
+        fetch/pull/handoff due now for every repo so we catch up to the other machine
+        promptly instead of waiting out the pull interval. See sync_soon."""
+        self._emit("", "resume", "resumed; syncing to catch up")
+        self.sync_soon()
+
+    def sync_soon(self):
+        """Make a fetch/pull/handoff due on the NEXT tick for every repo and wake the
+        loop now (non-blocking). Used on an 'arrived at this machine' OS event
+        (unlock/resume) and by the resume detector."""
+        for st in self._states_snapshot():
+            st.last_pull_mono = 0.0  # monotonic in the distant past -> sync is due
+        self._wake.set()
+
+    def flush_now(self):
+        """Force a snapshot + autosnap push of every (on-branch) repo NOW, ignoring
+        the intervals, so the remote mirror is fresh — the 'leaving this machine' OS
+        event (lock/suspend). Runs on a background thread (never blocks the caller).
+        Best-effort: a suspend may cut the network before the push finishes; the
+        normal autosnap interval is the backstop. See §4.2/§11 of DESIGN.md."""
+        if self._paused.is_set():
+            return
+
+        def worker():
+            for st in self._states_snapshot():
+                if st.paused or st.user_paused:
+                    continue
+                ok, _ = self._branch_ok(st)  # sets active_branch; yields off-branch/detached
+                if not ok:
+                    continue
+                try:
+                    with st.op_lock:
+                        if st.repo.is_busy():
+                            continue
+                        if self._do_snapshot(st):
+                            st.last_snapshot_wall = time.time()
+                            self._mark_action(st, "snapshot")
+                        if (st.cfg.autosnap and st.autosnap_pending
+                                and st.repo.has_remote(st.cfg.remote)):
+                            self._do_autosnap(st)  # synchronous push (already off-thread)
+                            st.last_autosnap_mono = time.monotonic()
+                except GitError as e:
+                    log.error("[%s] flush failed: %s", st.cfg.name, e)
+            self._emit("", "flush", "flushed latest state to the remote (leaving machine)")
+
+        threading.Thread(target=worker, name="sincrogit-flush", daemon=True).start()
 
     def _wait_seconds(self) -> float:
         """How long to sleep before the next tick: the time until the soonest
