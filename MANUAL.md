@@ -52,6 +52,10 @@ same repos' WIPs would race each other's git work. A second instance refuses to 
 Anything other than `--tray`/no-args is a **one-shot**: it runs, prints to the terminal, and
 exits. Every one-shot needs a config (auto-discovered, or `--config PATH`).
 
+> If the daemon (tray or headless) is running, one-shots **refuse to start** — a second
+> process would race the daemon's git work on the same repos. Use the panel/tray actions
+> instead, quit or pause the daemon, or pass `--force` if you know it's safe.
+
 | Command | Purpose |
 |---------|---------|
 | `--config`, `-c PATH` | Use a specific `config.yaml` (otherwise auto-discovered, see §7). |
@@ -67,6 +71,7 @@ exits. Every one-shot needs a config (auto-discovered, or `--config PATH`).
 | `--pick N` | With `--history`: restore version N non-interactively. |
 | `--autosnaps` | Fetch + list the per-machine autosnap recovery points for every repo. |
 | `--apply-handoff REPO` | Apply your other machine's pending live work to REPO. |
+| `--force` | Run a one-shot even while the daemon is running (skips the safety refusal). |
 | `--help`, `-h` | Show usage and exit. |
 
 ### Manual commit — `--commit REPO`

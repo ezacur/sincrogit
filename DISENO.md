@@ -345,7 +345,9 @@ repos:
   mutex (solo perdemos ese canal IPC). La guarda aplica a la bandeja **y** a `--headless`
   (un segundo demonio competiría por git en los mismos repos; rehúsa arrancar, código de
   salida 2). Un demonio headless sigue respondiendo el handshake de activación, así un
-  lanzamiento posterior de la bandeja lo detecta y se retira.
+  lanzamiento posterior de la bandeja lo detecta y se retira. Los disparos únicos de CLI
+  consultan la misma guarda (ping de presencia sin efectos secundarios) y rehúsan correr
+  junto a un demonio vivo — la misma carrera — salvo con `--force`.
 - **Carga del watcher.** El handler de watchdog descarta eventos de los internos de `.git`
   **y** de rutas que casan los excludes del repo (`FileFilter.is_excluded`, un chequeo de
   pathspec barato, sin tocar disco) — así una ráfaga tipo `npm install` bajo `node_modules/`

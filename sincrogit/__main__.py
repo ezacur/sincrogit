@@ -33,6 +33,7 @@ from .runtime import (
     attach_parent_console,
     ensure_config,
     find_config,
+    ping_existing_instance,
     serve_activation,
     signal_existing_instance,
 )
@@ -256,6 +257,18 @@ def _commit_command(engine, repo_name: str, message, assume_yes: bool) -> int:
     return 0
 
 
+def _daemon_running() -> bool:
+    """Is a SincroGit daemon (tray or headless) already running? Side-effect-free
+    detection for CLI one-shots: the Windows named mutex is authoritative; the
+    presence ping covers other platforms (and an app squatting the port answers
+    nothing, so it never false-positives). If no daemon runs, we end up HOLDING
+    the mutex for the rest of this short-lived process — which conveniently also
+    keeps a daemon from starting mid-command."""
+    if acquire_instance_mutex():
+        return True
+    return ping_existing_instance()
+
+
 def _serve_activation_pings(lock) -> None:
     """Answer the single-instance handshake on the lock socket. A headless daemon
     has no panel to show, but replying the ACK is what tells a second launch
@@ -349,6 +362,9 @@ def main(argv=None) -> int:
                         help="With --commit: accept the AI proposal without editing.")
     parser.add_argument("--apply-handoff", metavar="REPO",
                         help="Apply your other machine's pending live work to REPO (handoff).")
+    parser.add_argument("--force", action="store_true",
+                        help="Run a one-shot even if a SincroGit daemon is already running "
+                             "(risk of racing its git work on the same repos).")
     args = parser.parse_args(argv)
 
     if args.tray:
@@ -370,6 +386,20 @@ def main(argv=None) -> int:
         return 2
 
     logger = setup_logging(config.log.file, config.log.level)
+
+    # One-shots run their own Engine on the same repos: against a live daemon the
+    # two processes would race git (amend vs. amend, TOCTOU over index.lock).
+    # Refuse by default; --force overrides (e.g. you know the repos are paused).
+    one_shot = bool(args.history or args.autosnaps or args.commit or args.apply_handoff
+                    or args.snapshot_once or args.seal_once or args.sync_once)
+    if one_shot and not args.force and _daemon_running():
+        print(
+            "A SincroGit daemon is already running; this one-shot would race its git "
+            "work on the same repos. Use the control panel / tray actions instead, "
+            "quit or pause the daemon, or re-run with --force.",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.history:
         engine = Engine(config)

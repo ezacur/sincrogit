@@ -21,8 +21,10 @@ _LOCK_HOST = "127.0.0.1"
 _LOCK_PORT = 29677
 # Tiny handshake so we can tell a real SincroGit from an unrelated app that happens
 # to hold the port (still possible, just unlikely now). Only a peer that replies with
-# the ACK counts as "us".
+# the ACK counts as "us". The "ping" variant is a pure presence probe (no panel pops):
+# CLI one-shots use it to detect a running daemon before touching the same repos.
 _HANDSHAKE_REQ = b"SINCROGIT:show"
+_HANDSHAKE_PING = b"SINCROGIT:ping"
 _HANDSHAKE_ACK = b"SINCROGIT:ok"
 
 # Template written on first run when no config is found anywhere.
@@ -196,15 +198,33 @@ def signal_existing_instance(port: int = _LOCK_PORT) -> bool:
         return False
 
 
+def ping_existing_instance(port: int = _LOCK_PORT) -> bool:
+    """Is a real SincroGit holding the lock port? Like signal_existing_instance,
+    but a pure presence probe — it does NOT ask the daemon to show its panel.
+    Used by CLI one-shots to detect a running daemon before racing its git work."""
+    try:
+        with socket.create_connection((_LOCK_HOST, port), timeout=2) as c:
+            c.sendall(_HANDSHAKE_PING)
+            c.settimeout(3)
+            reply = c.recv(64)
+        return reply.startswith(_HANDSHAKE_ACK)
+    except OSError:
+        return False
+
+
 def serve_activation(conn) -> bool:
     """Handle one inbound connection on the lock socket (server side).
 
     Returns True if it was a valid SincroGit activation request (the caller should
-    then show the panel); False for anything else that hit the port. Always closes
-    the connection.
+    then show the panel); False for anything else that hit the port — including a
+    presence ping, which is ACKed but must not pop the panel. Always closes the
+    connection.
     """
     try:
         data = conn.recv(64)
+        if data.startswith(_HANDSHAKE_PING):
+            conn.sendall(_HANDSHAKE_ACK)  # presence probe: acknowledge, no panel
+            return False
         if data.startswith(_HANDSHAKE_REQ):
             conn.sendall(_HANDSHAKE_ACK)
             return True

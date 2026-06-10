@@ -53,6 +53,10 @@ rehúsa arrancar (código de salida 2).
 Cualquier cosa distinta de `--tray`/sin-args es un **disparo único**: se ejecuta, imprime en la
 terminal y sale. Todo disparo necesita una config (autodetectada, o `--config PATH`).
 
+> Si el demonio (bandeja o headless) está corriendo, los disparos únicos **rehúsan arrancar** —
+> un segundo proceso competiría con el demonio por git en los mismos repos. Usa las acciones del
+> panel/bandeja, para o pausa el demonio, o pasa `--force` si sabes que es seguro.
+
 | Comando | Para qué |
 |---------|----------|
 | `--config`, `-c PATH` | Usar un `config.yaml` concreto (si no, autodetectado, ver §7). |
@@ -68,6 +72,7 @@ terminal y sale. Todo disparo necesita una config (autodetectada, o `--config PA
 | `--pick N` | Con `--history`: restaurar la versión N sin interacción. |
 | `--autosnaps` | Bajar + listar los puntos de recuperación autosnap (por máquina) de cada repo. |
 | `--apply-handoff REPO` | Aplicar a REPO el trabajo vivo pendiente de tu otra máquina. |
+| `--force` | Ejecutar un disparo único aunque el demonio esté corriendo (salta el rechazo de seguridad). |
 | `--help`, `-h` | Mostrar el uso y salir. |
 
 ### Commit manual — `--commit REPO`
