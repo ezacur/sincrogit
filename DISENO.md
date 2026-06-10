@@ -368,7 +368,10 @@ repos:
   en el WIP (el mismo stage+amend que hace el relevo) — lo guardado desde el último
   snapshot no existe en ningún otro sitio, ni siquiera el reflog. El amend del WIP es
   `--allow-empty`: revertir a mano al contenido sellado, o restaurar el repo entero al
-  último sellado, vacía legítimamente el WIP y no debe fallar.
+  último sellado, vacía legítimamente el WIP y no debe fallar. Las restauraciones
+  respetan además la guarda de rama y el chequeo de ocupado, como toda operación
+  manual — fuera de rama la captura amendearía el WIP de la rama equivocada, y en
+  mitad de un merge/rebase pisarían un árbol en conflicto.
 - **Instancia única (que dos demonios no compitan por git).** La guarda autoritativa es un
   mutex con nombre de Windows (`acquire_instance_mutex`; sin lock-huérfano —el SO lo libera
   al morir el proceso— y no se lo puede robar una app que ocupe el puerto). El puerto local

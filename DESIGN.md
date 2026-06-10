@@ -366,7 +366,9 @@ repos:
   handoff does) — work saved since the last snapshot exists nowhere else, not even the
   reflog. The WIP amend is `--allow-empty`: a hand-revert to the sealed content, or a
   whole-repo restore to the last sealed state, legitimately empties the WIP and must
-  not fail.
+  not fail. Restores also honor the branch guard and the busy check, like every other
+  manual operation — off-branch the capture would WIP-amend the wrong branch, and
+  mid-merge/rebase they would stomp a conflicted tree.
 - **Single instance (no two daemons racing git).** Authoritative guard is a Windows
   named mutex (`acquire_instance_mutex`; no stale-lock problem — the OS releases it on
   process death — and it can't be stolen by an app squatting on the lock port). The

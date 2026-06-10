@@ -1416,7 +1416,15 @@ class Engine:
         st = self.repo_state_by_name(repo_name)
         if not st:
             return False, "repo not found"
+        try:
+            ok, cur = self._branch_ok(st)
+        except GitError as e:
+            return False, str(e)
+        if not ok:  # off-branch: the capture would WIP-amend the wrong branch
+            return False, self._branch_block_msg(st, cur)
         with st.op_lock:  # don't race with the snapshot/seal cycle
+            if st.repo.is_busy():
+                return False, "repo busy (merge/rebase in progress)"
             try:
                 # Snapshot pending edits into the WIP BEFORE overwriting: an edit
                 # saved since the last snapshot exists nowhere else — without this,
@@ -1456,7 +1464,15 @@ class Engine:
         st = self.repo_state_by_name(repo_name)
         if not st:
             return False, "repo not found"
+        try:
+            ok, cur = self._branch_ok(st)
+        except GitError as e:
+            return False, str(e)
+        if not ok:  # off-branch: the capture would WIP-amend the wrong branch
+            return False, self._branch_block_msg(st, cur)
         with st.op_lock:  # don't race with the snapshot/seal cycle
+            if st.repo.is_busy():
+                return False, "repo busy (merge/rebase in progress)"
             try:
                 self._ensure_wip(st)
                 # Snapshot pending edits into the WIP BEFORE overwriting: anything
