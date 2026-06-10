@@ -41,8 +41,10 @@ Hay cuatro formas; el binario y `python -m sincrogit` se comportan igual.
 | `--headless [--config X]` | Demonio de fondo **sin** GUI — para servidores / automatización. |
 | *(un flag de un disparo)* | Ejecuta un comando de CLI y sale (ver §3). La salida va a la terminal que lo lanzó. |
 
-La instancia única se garantiza con un mutex con nombre en Windows; solo el modo bandeja/GUI
-es de instancia única (puedes correr varios `--headless` con configs distintas).
+La instancia única se garantiza con un mutex con nombre en Windows (más un handshake por
+puerto local en otros sistemas), y aplica tanto a la bandeja **como** a `--headless` — dos
+demonios amendando los WIPs de los mismos repos competirían por git. Una segunda instancia
+rehúsa arrancar (código de salida 2).
 
 ---
 
@@ -194,9 +196,9 @@ Los comandos de un disparo son scriptables:
 
 - **0** — éxito.
 - **1** — el comando corrió pero no pudo completar (p. ej. nada que restaurar, relevo ya no
-  seguro).
-- **2** — problema de arranque (no se encontró config, config inválida, o se pidió la GUI sin
-  PyQt5 instalado).
+  seguro; también un demonio `--headless` que paró por un error inesperado del motor).
+- **2** — problema de arranque (no se encontró config, config inválida, se pidió la GUI sin
+  PyQt5 instalado, o una segunda instancia con SincroGit ya corriendo).
 
 Ejemplo (un sellado nocturno programado):
 

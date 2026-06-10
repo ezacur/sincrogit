@@ -40,8 +40,10 @@ There are four ways to start it; the binary and `python -m sincrogit` behave ide
 | `--headless [--config X]` | Background daemon **without** the GUI — for servers / automation. |
 | *(a one-shot flag)* | Runs a single CLI command and exits (see §3). Output goes to the launching terminal. |
 
-Single-instance is enforced by a named mutex on Windows; only the tray/GUI mode is
-single-instance (you can run several `--headless` daemons with different configs).
+Single-instance is enforced by a named mutex on Windows (plus a localhost-port handshake
+elsewhere), and applies to the tray **and** `--headless` alike — two daemons amending the
+same repos' WIPs would race each other's git work. A second instance refuses to start
+(exit code 2).
 
 ---
 
@@ -192,9 +194,9 @@ The one-shot commands are scriptable:
 
 - **0** — success.
 - **1** — the command ran but couldn't complete (e.g. nothing to restore, handoff no longer
-  safe).
-- **2** — startup problem (no config found, invalid config, or the GUI was requested without
-  PyQt5 installed).
+  safe; also a `--headless` daemon that stopped on an unexpected engine error).
+- **2** — startup problem (no config found, invalid config, the GUI was requested without
+  PyQt5 installed, or a second instance when SincroGit is already running).
 
 Example (a scheduled nightly seal):
 

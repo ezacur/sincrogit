@@ -21,6 +21,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime
 
 from .config import load_config
@@ -32,6 +33,7 @@ from .runtime import (
     attach_parent_console,
     ensure_config,
     find_config,
+    serve_activation,
     signal_existing_instance,
 )
 
@@ -254,6 +256,42 @@ def _commit_command(engine, repo_name: str, message, assume_yes: bool) -> int:
     return 0
 
 
+def _serve_activation_pings(lock) -> None:
+    """Answer the single-instance handshake on the lock socket. A headless daemon
+    has no panel to show, but replying the ACK is what tells a second launch
+    (tray or headless) that a real SincroGit already runs, so it backs off."""
+    def loop():
+        while True:
+            try:
+                conn, _ = lock.accept()
+            except OSError:
+                break  # socket closed at exit
+            serve_activation(conn)
+
+    threading.Thread(target=loop, name="sincrogit-activation", daemon=True).start()
+
+
+def _acquire_headless_instance():
+    """Single-instance guard for --headless, same scheme as the tray: the named
+    mutex is authoritative on Windows; the lock port covers other platforms and
+    doubles as the handshake channel. Returns (ok, lock_socket): ok=False means
+    another SincroGit (tray or headless) already runs — two daemons amending the
+    same repos' WIPs would race each other's git work."""
+    if acquire_instance_mutex():
+        return False, None
+    lock = acquire_single_instance()
+    if lock is None:
+        # Port taken: a real SincroGit answers the handshake; an unrelated app
+        # squatting the port doesn't (then proceed — on Windows the mutex above
+        # already guarantees we're alone).
+        if signal_existing_instance():
+            return False, None
+        print("Lock port held by another app; continuing.", file=sys.stderr)
+        return True, None
+    _serve_activation_pings(lock)
+    return True, lock
+
+
 def _run_headless(config, logger) -> int:
     engine = Engine(config)
 
@@ -268,7 +306,7 @@ def _run_headless(config, logger) -> int:
         pass
 
     engine.run()
-    return 0
+    return 1 if engine.crashed else 0
 
 
 def main(argv=None) -> int:
@@ -368,7 +406,22 @@ def main(argv=None) -> int:
         return 0
 
     if args.headless:
-        return _run_headless(config, logger)
+        ok, lock = _acquire_headless_instance()
+        if not ok:
+            print(
+                "SincroGit is already running (tray or headless); not starting a "
+                "second instance over the same repos.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            return _run_headless(config, logger)
+        finally:
+            if lock is not None:
+                try:
+                    lock.close()
+                except OSError:
+                    pass
 
     # Arguments given but no action: don't silently pop a GUI from a terminal.
     parser.print_usage(sys.stderr)

@@ -334,9 +334,12 @@ repos:
 - **Instancia única (que dos demonios no compitan por git).** La guarda autoritativa es un
   mutex con nombre de Windows (`acquire_instance_mutex`; sin lock-huérfano —el SO lo libera
   al morir el proceso— y no se lo puede robar una app que ocupe el puerto). El puerto local
-  (49677) queda solo como canal de "mostrar el panel"; si un ajeno lo ocupa, la instancia
-  única sigue garantizada por el mutex (solo perdemos ese canal IPC). El mutex es solo para
-  el modo bandeja (headless puede correr varios con configs distintas a propósito).
+  (29677, deliberadamente por debajo del rango efímero de Windows) hace además de canal de
+  "mostrar el panel"; si un ajeno lo ocupa, la instancia única sigue garantizada por el
+  mutex (solo perdemos ese canal IPC). La guarda aplica a la bandeja **y** a `--headless`
+  (un segundo demonio competiría por git en los mismos repos; rehúsa arrancar, código de
+  salida 2). Un demonio headless sigue respondiendo el handshake de activación, así un
+  lanzamiento posterior de la bandeja lo detecta y se retira.
 - **Carga del watcher.** El handler de watchdog descarta eventos de los internos de `.git`
   **y** de rutas que casan los excludes del repo (`FileFilter.is_excluded`, un chequeo de
   pathspec barato, sin tocar disco) — así una ráfaga tipo `npm install` bajo `node_modules/`
