@@ -4,6 +4,14 @@
 > continuity), with **zero** Git discipline required.
 > Target platform: **Windows** (interactive use, one machine at a time).
 
+> **How to read this document.** §1–§11 describe the system **as built** and are kept in
+> sync with the code (§1 keeps the original first-person goals; §9 is the deployment
+> *plan* — the one Phase-3 piece still pending). §12 (roadmap) and §13 (decision log)
+> record **history**: their entries are not rewritten retroactively — when reality moved
+> on, an explicit *(since superseded …)* note says so. For day-to-day operation see the
+> [Manual](MANUAL.md); for the configuration reference, the
+> [README](README.md#configuration).
+
 ---
 
 ## 1. Goals and scope
@@ -54,11 +62,14 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
 1. Validate it's a git repo (a missing or invalid folder skips that repo; the others keep
    running). The remote is checked lazily on each sync (`has_remote`); being on the
    configured branch is the branch guard's job (§11).
-2. **`git pull --rebase --autostash`** to bring in what the other machine left.
-   - If there is an unpushed local WIP (typical case after a crash) → it is **rebased** on top of the remote.
+2. Ensure a **WIP** exists at the tip (if not, create an empty one) and register the repo
+   with the watcher.
+3. **Initial snapshot**, before any networking: captures changes that predate this run
+   (e.g. edits made while SincroGit wasn't running, or after a reboot).
+4. **Initial sync on a background thread** — a slow network never delays the local safety
+   net: `fetch` + (only if the remote is ahead) rebase of the WIP on top
+   (`--autostash`), exactly like the periodic pull (§3.4).
    - **If there is a conflict** → `git rebase --abort`, the **autosync for that repo is paused**, the user is notified and it is logged. It is **never** resolved destructively, nor is force used. (This is rare in sequential use, but the policy is: when in doubt, don't lose data.)
-3. Ensure a WIP exists at the tip (if not, create an empty one).
-4. Start the watcher.
 
 ### 3.2 Snapshot cycle (every ~5 min, with debounce)
 - The **watcher** (filesystem events) marks the repo as *dirty* and resets a debounce (e.g. 20-30 s without changes).
@@ -118,7 +129,7 @@ Desktop: starts → pull --rebase (clean) → continues...
 
 ### 4.1 Autosnap (live mirror) — disaster recovery
 
-Since sealing every 6 h would leave up to 6 h of work off the remote, **autosnap** decouples the *remote backup* from the *history*: every **30 min** (and only if something changed) it `push --force`es `HEAD` (sealed history **+ the live WIP**) to a **per-machine** side ref `refs/autosnap/<host>/<branch>`.
+Since sealing every 6 h would leave up to 6 h of work off the remote, **autosnap** decouples the *remote backup* from the *history*: every **30 min** (and only if something changed) it `push --force`es `HEAD` (sealed history **+ the live WIP**) to a **per-user, per-machine** side ref `refs/autosnap/<user>/<host>/<branch>` (the namespace is detailed in §4.2).
 
 - **Keeps the branch clean:** nobody pulls that ref for work; `main` still receives only sealed commits → the pull is always clean. It's the deliberate exception to "the WIP never leaves the machine", scoped to a backup ref.
 - **Disk-failure RPO ≈ 30 min** (instead of 6 h). On the other machine: *Fetch autosnaps* → browse/restore the latest state (single file or whole repo).
@@ -268,7 +279,7 @@ defaults:
   snapshot_interval_sec: 300     # how often the WIP is amended (5 min)
   debounce_sec: 25               # wait after the last change before snapshotting
   seal_interval_min: 360         # "real" commit + push every 6h (permanent timeline)
-  autosnap: true                 # live mirror of HEAD to refs/autosnap/<host>/<branch>
+  autosnap: true                 # live mirror of HEAD to refs/autosnap/<user>/<host>/<branch>
   autosnap_interval_min: 30      # force-push the mirror every 30 min (only if it changed)
   pull_interval_min: 10          # fetch every 10 min; pull only if there's something new
   max_file_bytes: 1048576        # 1 MB
@@ -295,6 +306,9 @@ repos:
 ```
 
 > The **API key never goes in the YAML** → environment variable (`SINCROGIT_GEMINI_KEY`, etc.).
+>
+> *(Abridged example — the complete, commented key set lives in
+> [config.example.yaml](config.example.yaml); the README has the reference table.)*
 
 ---
 
@@ -314,6 +328,10 @@ repos:
 - Task Scheduler provides automatic restart and delayed start.
 
 `pythonw.exe` (instead of `python.exe`) avoids a console window appearing.
+
+> **Status:** this packaging is the one Phase-3 piece still pending (§12). Today you
+> launch SincroGit yourself (double-click / `--tray`) or drop a shortcut in
+> `shell:startup`; everything above is the plan for automating that.
 
 ---
 
@@ -436,7 +454,9 @@ repos:
 - ✅ Standalone single-file `SincroGit.exe` (GUI + CLI) via PyInstaller
   (`--onefile --noconsole`); CLI output attaches to the launching terminal.
 - ✅ Single-instance lock (localhost socket, no stale-lock problem): a second
-  launch asks the running one to show its panel and exits.
+  launch asks the running one to show its panel and exits. *(Since superseded: the
+  authoritative guard is now a Windows named mutex, shared by tray, headless and the
+  CLI one-shots; the port remains as the activation/ping channel. See §11.)*
 - ✅ Config resolution: next to the .exe → `%APPDATA%\SincroGit\` → cwd; a default
   is created on first run.
 - ⏳ Pending: scheduled task at log on to auto-start `SincroGit.exe`.
@@ -458,11 +478,12 @@ repos:
 - ✅ **Cloud provider: Gemini** (`gemini-2.5-flash-lite`), API key in an environment variable.
 - ✅ Filter: **text < 1 MB only**; binaries/large files by hand.
 - ✅ **Python**; git via subprocess; `watchdog`; **PyQt5** for the tray UI.
-- ✅ Background: **scheduled task at log on** with `pythonw.exe`.
+- ✅ Background: **scheduled task at log on** with `pythonw.exe`. *(Decision made;
+  implementing it is the pending Phase-3 item — §9, §12.)*
 - ✅ Working branch: **`main`** (confirm per repo).
 - ✅ **Seal every 6 h** (coarse permanent timeline); a manual seal (*Seal now* / `--seal-once` / Smart Commit) for handoff via the clean path.
 - ✅ **Periodic pull every 10 min** (`fetch` + pull only if the remote has new commits), besides the startup pull.
-- ✅ **Autosnap** (live mirror of `HEAD` to `refs/autosnap/<host>/<branch>`, force-pushed every 30 min, only if it changed): disk-failure RPO ≈ 30 min, cross-machine recovery per file or whole repo (CLI `--autosnaps` + GUI). The "fine browsable history on the remote" variant (one commit per snapshot) is still deferred.
+- ✅ **Autosnap** (live mirror of `HEAD` to `refs/autosnap/<user>/<host>/<branch>`, force-pushed every 30 min, only if it changed): disk-failure RPO ≈ 30 min, cross-machine recovery per file or whole repo (CLI `--autosnaps` + GUI). The "fine browsable history on the remote" variant (one commit per snapshot) is still deferred.
 
 ## 14. How to configure the Gemini API key
 

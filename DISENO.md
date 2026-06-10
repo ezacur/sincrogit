@@ -4,6 +4,14 @@
 > multi-máquina de bajo esfuerzo), con **cero** disciplina de Git.
 > Plataforma objetivo: **Windows** (uso interactivo, una sola máquina a la vez).
 
+> **Cómo leer este documento.** §1–§11 describen el sistema **tal como está construido**
+> y se mantienen sincronizados con el código (§1 conserva los objetivos originales en
+> primera persona; §9 es el *plan* de despliegue — la pieza de la Fase 3 aún pendiente).
+> §12 (roadmap) y §13 (registro de decisiones) registran **historia**: sus entradas no se
+> reescriben retroactivamente — cuando la realidad avanzó, lo dice una nota explícita
+> *(superado después …)*. Para el día a día, el [Manual](MANUAL_ES.md); para la referencia
+> de configuración, el [LEAME](LEAME.md#configuración).
+
 ---
 
 ## 1. Objetivos y alcance
@@ -54,11 +62,14 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 1. Validar que es repo git (una carpeta ausente o inválida salta ese repo; los demás
    siguen). El remoto se comprueba perezosamente en cada sync (`has_remote`); estar en la
    rama configurada es trabajo de la guarda de rama (§11).
-2. **`git pull --rebase --autostash`** para traer lo que dejó la otra máquina.
-   - Si hay un WIP local sin pushear (caso típico tras crash) → se **rebasa** encima de lo remoto.
+2. Asegurar que existe un **WIP** en la punta (si no, crear uno vacío) y registrar el
+   repo en el watcher.
+3. **Snapshot inicial**, antes de tocar la red: captura los cambios previos a esta
+   ejecución (p. ej. ediciones hechas con SincroGit apagado, o tras un reinicio).
+4. **Sync inicial en un hilo de fondo** — una red lenta nunca retrasa la red de
+   seguridad local: `fetch` + (solo si el remoto adelanta) rebase del WIP encima
+   (`--autostash`), exactamente como el pull periódico (§3.4).
    - **Si hay conflicto** → `git rebase --abort`, se **pausa el autosync de ese repo**, se notifica al usuario y se registra en log. **Nunca** se resuelve de forma destructiva ni se hace force. (Esto es raro en uso secuencial, pero la política es: ante la duda, no perder datos.)
-3. Asegurar que existe un WIP en la punta (si no, crear uno vacío).
-4. Arrancar el watcher.
 
 ### 3.2 Ciclo de snapshot (cada ~5 min, con debounce)
 - El **watcher** (eventos del sistema de ficheros) marca el repo como *dirty* y reinicia un debounce (p. ej. 20-30 s sin cambios).
@@ -119,7 +130,7 @@ Sobremesa: arranca → pull --rebase (limpio) → continúa...
 
 ### 4.1 Autosnap (espejo en vivo) — recuperación ante desastre
 
-Como sellar cada 6 h dejaría hasta 6 h de trabajo fuera del remoto, **autosnap** desacopla el *backup remoto* del *historial*: cada **30 min** (y solo si hubo cambios) se hace `push --force` de `HEAD` (sellados **+ el WIP vivo**) a un ref lateral **por máquina** `refs/autosnap/<host>/<rama>`.
+Como sellar cada 6 h dejaría hasta 6 h de trabajo fuera del remoto, **autosnap** desacopla el *backup remoto* del *historial*: cada **30 min** (y solo si hubo cambios) se hace `push --force` de `HEAD` (sellados **+ el WIP vivo**) a un ref lateral **por usuario y máquina** `refs/autosnap/<user>/<host>/<rama>` (el namespace se detalla en §4.2).
 
 - **No ensucia la rama:** nadie pullea ese ref para trabajar; la rama `main` sigue recibiendo solo sellados → pull siempre limpio. Es la excepción deliberada a "el WIP no sale de la máquina", acotada a un ref de backup.
 - **RPO ante fallo total de disco ≈ 30 min** (en vez de 6 h). En la otra máquina: *Fetch autosnaps* → explorar/restaurar el último estado (fichero o repo entero).
@@ -271,7 +282,7 @@ defaults:
   debounce_sec: 25               # espera tras el último cambio antes de snapshot
   seal_interval_min: 360         # commit "real" + push cada 6h (timeline permanente)
   pull_interval_min: 10          # fetch cada 10 min; pull solo si hay algo nuevo
-  autosnap: true                 # espejo en vivo de HEAD a refs/autosnap/<host>/<rama>
+  autosnap: true                 # espejo en vivo de HEAD a refs/autosnap/<user>/<host>/<rama>
   autosnap_interval_min: 30      # force-push del espejo cada 30 min (solo si cambió)
   max_file_bytes: 1048576        # 1 MB
   extra_excludes:                # además del filtro texto/tamaño
@@ -297,6 +308,9 @@ repos:
 ```
 
 > La **API key nunca va en el YAML** → variable de entorno (`SINCROGIT_GEMINI_KEY`, etc.).
+>
+> *(Ejemplo abreviado — el juego completo de claves, comentado, vive en
+> [config.example.yaml](config.example.yaml); el LEAME tiene la tabla de referencia.)*
 
 ---
 
@@ -316,6 +330,10 @@ repos:
 - Task Scheduler da reinicio automático y arranque diferido.
 
 `pythonw.exe` (en vez de `python.exe`) evita que aparezca una ventana de consola.
+
+> **Estado:** este empaquetado es la pieza de la Fase 3 aún pendiente (§12). Hoy lanzas
+> SincroGit tú mismo (doble clic / `--tray`) o con un acceso directo en `shell:startup`;
+> lo de arriba es el plan para automatizarlo.
 
 ---
 
@@ -426,9 +444,18 @@ repos:
   señales Qt; acciones manuales serializadas con un lock en el motor.
 - Arranque: `python -m sincrogit --tray` (o `pythonw` sin consola).
 
-**Fase 3 — Despliegue (pendiente):**
-- Tarea programada al inicio de sesión (`pythonw.exe -m sincrogit --tray`).
-- Comando/pestaña **`sincrogit status`** y atajo de "sellar+push ahora" (ya en el menú).
+**Fase 3 — Despliegue (parcial):**
+- ✅ `SincroGit.exe` autónomo de un solo fichero (GUI + CLI) vía PyInstaller
+  (`--onefile --noconsole`); la salida CLI se engancha a la terminal que lo lanza.
+- ✅ Lock de instancia única (socket localhost, sin lock huérfano): un segundo
+  lanzamiento pide al que corre que muestre su panel y sale. *(Superado después: la
+  guarda autoritativa es ahora un mutex con nombre de Windows, compartido por bandeja,
+  headless y los disparos únicos de CLI; el puerto queda como canal de activación/ping.
+  Ver §11.)*
+- ✅ Resolución de config: junto al .exe → `%APPDATA%\SincroGit\` → cwd; en el primer
+  arranque se crea una por defecto.
+- ⏳ Pendiente: tarea programada al iniciar sesión que auto-arranque `SincroGit.exe`.
+- ⏳ Pendiente: comando/pestaña `status` (el atajo "sellar+push ahora" ya está en el menú).
 
 **Opcional / futuro:**
 - Rama `autosnap` con commits reales cada 5 min (historial intra-ventana navegable *en el remoto*) en lugar del espejo force-push del último estado.
@@ -445,14 +472,15 @@ repos:
 - ✅ **Prefijos:** sellado automático `sincro:`; **commit manual (Smart Commit)** con mensaje Conventional Commits propuesto por IA (resumen acumulado desde el último manual) + reset del temporizador.
 - ✅ **Proveedor de nube: Gemini** (`gemini-2.5-flash-lite`), API key en variable de entorno.
 - ✅ Filtro: **solo texto < 1 MB**; binarios/grandes a mano.
-- ✅ **Python**; git vía subprocess; `watchdog`.
-- ✅ Background: **Tarea programada al iniciar sesión** con `pythonw.exe`.
+- ✅ **Python**; git vía subprocess; `watchdog`; **PyQt5** para la UI de bandeja.
+- ✅ Background: **Tarea programada al iniciar sesión** con `pythonw.exe`. *(Decisión
+  tomada; implementarla es el punto pendiente de la Fase 3 — §9, §12.)*
 - ✅ Rama de trabajo: **`main`** (confirmar por repo).
 - ✅ **Sellado cada 6 h** (timeline permanente grueso); un sellado manual (*Seal now* / `--seal-once` / Smart Commit) para el handoff por la vía limpia.
 - ✅ **Pull periódico cada 10 min** (`fetch` + pull solo si el remoto tiene commits nuevos), además del pull de arranque.
-- ✅ **Autosnap** (espejo en vivo de `HEAD` a `refs/autosnap/<host>/<rama>`, force-push cada 30 min, solo si cambió): RPO de fallo de disco ≈ 30 min, recuperación cross-machine por fichero o repo entero (CLI `--autosnaps` + GUI). La variante "historial fino navegable en el remoto" (un commit por snapshot) sigue diferida.
+- ✅ **Autosnap** (espejo en vivo de `HEAD` a `refs/autosnap/<user>/<host>/<rama>`, force-push cada 30 min, solo si cambió): RPO de fallo de disco ≈ 30 min, recuperación cross-machine por fichero o repo entero (CLI `--autosnaps` + GUI). La variante "historial fino navegable en el remoto" (un commit por snapshot) sigue diferida.
 
-## 14. Cómo configurar la API key de Gemini (pendiente al llegar a Fase 2)
+## 14. Cómo configurar la API key de Gemini
 
 1. Obtener una API key gratuita en **Google AI Studio** (`aistudio.google.com`) → *Get API key*.
 2. Guardarla como **variable de entorno de usuario** en Windows (no en el YAML, no en el repo):
