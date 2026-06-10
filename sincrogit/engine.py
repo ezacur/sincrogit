@@ -23,6 +23,7 @@ See DESIGN.md.
 """
 
 import logging
+import math
 import os
 import threading
 import time
@@ -108,6 +109,12 @@ class Engine:
     # Wall-clock seconds BEYOND the intended sleep that mark a suspend/resume (so the
     # idle loop reacts to a laptop waking up). Large enough to ignore scheduling jitter.
     RESUME_GAP_SEC = 90
+    # The debounce waits for an event burst to settle — but a source that NEVER
+    # settles (a long build, a log writer inside the repo) must not starve the
+    # snapshot forever: past this many snapshot intervals since the last snapshot,
+    # one is taken anyway, debounce or not. A disabled (inf) debounce or interval
+    # keeps its "never fire" meaning (inf flows through the arithmetic untouched).
+    SNAPSHOT_STARVATION_FACTOR = 2
 
     def __init__(self, config, emit_event=None):
         self.config = config
@@ -631,6 +638,11 @@ class Engine:
             if st.dirty:
                 snap = max(st.last_event_mono + cfg.debounce_sec,
                            st.last_snapshot_mono + cfg.snapshot_interval_sec) - now_mono
+                if math.isfinite(cfg.debounce_sec):
+                    # anti-starvation deadline (see _maybe_snapshot)
+                    snap = min(snap, st.last_snapshot_mono
+                               + self.SNAPSHOT_STARVATION_FACTOR * cfg.snapshot_interval_sec
+                               - now_mono)
                 soonest = min(soonest, snap)
             # next autosnap — only if the live mirror is stale
             if cfg.autosnap and st.autosnap_pending:
@@ -667,10 +679,18 @@ class Engine:
         dirty, last_event = st.read_dirty()
         if not dirty:
             return
-        if now_mono - last_event < st.cfg.debounce_sec:
-            return
-        if now_mono - st.last_snapshot_mono < st.cfg.snapshot_interval_sec:
-            return
+        # Anti-starvation: continuous events keep resetting the debounce, so past
+        # SNAPSHOT_STARVATION_FACTOR x the interval, snapshot regardless. Only
+        # with a *finite* debounce — `debounce_sec: inf` means "never fire" and
+        # must stay that way. See the class constant.
+        overdue = (math.isfinite(st.cfg.debounce_sec)
+                   and now_mono - st.last_snapshot_mono
+                   >= self.SNAPSHOT_STARVATION_FACTOR * st.cfg.snapshot_interval_sec)
+        if not overdue:
+            if now_mono - last_event < st.cfg.debounce_sec:
+                return
+            if now_mono - st.last_snapshot_mono < st.cfg.snapshot_interval_sec:
+                return
         # Don't block the tick if a network op holds this repo: skip and retry.
         if not st.op_lock.acquire(blocking=False):
             return
