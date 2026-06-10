@@ -498,7 +498,8 @@ repos:
   selection, return the rest to the recreated WIP; optional `commit_prefix` from the
   branch name), and a docs-only **coexistence recipe** (lazygit `customCommands`
   driving `--commit`/`--apply-handoff`, plus the "don't reword the WIP" warning for
-  git clients). See the README → TODO.
+  git clients). See the README → TODO. *(Since partially landed: the coexistence note —
+  WIP rules, GitButler — is Manual §9; the `customCommands` snippets remain pending.)*
 
 ---
 

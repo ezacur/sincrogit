@@ -212,3 +212,28 @@ Example (a scheduled nightly seal):
 ```powershell
 python -m sincrogit -c C:\repos\config.yaml --seal-once
 ```
+
+---
+
+## 9. Sharing the repo with other git tools
+
+SincroGit is designed to coexist with your other git tooling — it yields while *you*
+operate (a merge/rebase in progress, a locked index, another branch checked out) and
+resumes afterwards. The rules of the road:
+
+- **The `WIP: autosnapshot` commit at the tip is SincroGit's; everything below it is
+  yours.** Commit, branch, tag or rebase *under* it freely — the daemon detects external
+  commits and respects them as manual seals. But don't amend or reword the WIP itself
+  from another tool: rewording strips the `WIP:` prefix, so the daemon treats it as a
+  manual commit — and pushes it.
+- **Git clients (lazygit, Fork, GitKraken, VS Code, …):** fine alongside. They'll show
+  the WIP at the tip — leave that one commit alone and work as usual.
+- **GitButler (`but`):** it *takes over* a repo (checks out its own
+  `gitbutler/workspace` branch and blocks direct commits with a hook). With SincroGit's
+  default branch guard this is handled: SincroGit **yields** while GitButler is active
+  and resumes when you leave workspace mode (`but teardown` / checkout your branch).
+  Do **not** combine it with `track_current_branch: true` on that repo — SincroGit would
+  follow (and push) GitButler's workspace branch. In general: one tool *managing* a
+  given repo at a time.
+- **Dropbox / OneDrive / Drive:** never keep the repo inside another sync tool's folder —
+  it can corrupt `.git` (see [README → Limitations](README.md#limitations)).

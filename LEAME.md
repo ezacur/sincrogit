@@ -14,6 +14,11 @@ trabajo te siga entre máquinas con esfuerzo casi nulo.
 - **Repos de prueba y experimentales.** Código que no merece un historial curado pero cuyo
   *rastro* odiarías perder — spikes, pruebas, desechables. Historial recuperable completo,
   cero ceremonia. (Posiblemente su punto más fuerte.)
+- **Una red de seguridad para agentes de código (IA).** Un agente editando tu repo es el
+  usuario definitivo de "no va a commitear a mano": muchos ficheros, rápido, revisión a
+  posteriori. SincroGit te da el rastro y el rollback de todo lo que hizo — con **cero
+  integración**, el agente no cambia su forma de trabajar (ver
+  [Una red de seguridad para agentes de código](#una-red-de-seguridad-para-agentes-de-código)).
 - **Continuidad multi-máquina de bajo esfuerzo.** Cambias entre el ordenador de la oficina
   y el de casa y tu trabajo te sigue — *con un retardo de minutos, no instantáneo* (ver
   [relevo](#relevo-entre-máquinas-wip-vivo)); un **Smart Commit** antes de irte hace el
@@ -183,12 +188,11 @@ cliente git en el panel):
   sigue siendo trabajo de lazygit. Bonus de paso: un `commit_prefix` opcional (regex
   sobre el nombre de la rama → prefijo del mensaje, p. ej. `feature/AB-123` →
   `[AB-123]`) aplicado a las propuestas de Smart Commit.
-- **Receta de convivencia con clientes git (solo docs).** Una receta en el MANUAL con
-  snippets de `customCommands` de lazygit para manejar SincroGit desde dentro
-  (`--commit REPO -y`, `--apply-handoff REPO`, inspeccionar `refs/autosnap/...`), más
-  la nota que hoy falta de "convivir con otros clientes git": no amendees ni rewordees
-  tú el commit `WIP: autosnapshot` — un reword le quita el prefijo, así que el demonio
-  lo trataría como un commit manual (y lo pushearía).
+- **Snippets de `customCommands` para lazygit (solo docs).** Una receta en el MANUAL
+  para manejar SincroGit desde dentro de lazygit (`--commit REPO -y`,
+  `--apply-handoff REPO`, inspeccionar `refs/autosnap/...`). *(La nota de "compartir el
+  repo con otras herramientas git" — no rewordear el WIP, reglas con GitButler — ya
+  existe: [MANUAL §9](MANUAL_ES.md#9-compartir-el-repo-con-otras-herramientas-git).)*
 
 ### TODO — técnico (para desarrolladores)
 
@@ -496,6 +500,31 @@ y no habrá ninguno.
 
 Sigue siendo secuencial **por rama** (una máquina a la vez en una rama dada); no fusiona a dos
 personas editando la *misma* rama a la vez.
+
+### Una red de seguridad para agentes de código
+
+Un agente de código con IA (Claude Code, Cursor, Codex, …) es el usuario definitivo de
+"no va a commitear a mano": cambia muchos ficheros, rápido, y la revisión llega a
+posteriori. Pon SincroGit en los repos donde trabajan tus agentes y obtienes, con **cero
+integración**:
+
+- **El rastro completo.** Cada pocos minutos de trabajo del agente se vuelven un punto de
+  rollback. Para sesiones intensas, afina la resolución (`snapshot_interval_sec: 60`) en
+  ese repo — ver [Afinar un repo "en caliente"](#afinar-un-repo-en-caliente).
+- **Rollback de cualquier cosa que hiciera.** ¿Una mala edición del agente de hace una
+  hora? *File history* → restaura el fichero (o el repo entero) a justo antes.
+- **Separación limpia de tu trabajo.** Usa el **modo purista** (`seal_interval_min: inf`):
+  el historial permanente queda 100 % tuyo (tus Smart Commits), mientras el WIP + autosnap
+  registran en silencio todo lo que el agente hace entre medias. O quédate en pragmático y
+  deja que los sellados `sincro:` fechen el progreso del agente cada pocas horas.
+
+Las herramientas emergentes de control de versiones para agentes (p. ej. las skills de
+GitButler) funcionan enseñando al agente sus propios comandos en vez de git. SincroGit
+toma el enfoque opuesto: es **invisible** — nada que instalar en el agente, nada que el
+agente deba hacer distinto — así que funciona con cualquier agente, el de hoy o el del
+año que viene. Aviso honesto: registra una *línea temporal*, no un log de auditoría. No
+atribuye cambios a "agente vs. tú" más allá de lo que separen tus propios Smart Commits,
+y los estados *entre* snapshots (dentro de la ventana de ~5 min) no se capturan.
 
 ## Cómo se compara con las herramientas vecinas
 

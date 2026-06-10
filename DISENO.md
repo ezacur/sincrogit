@@ -497,7 +497,9 @@ repos:
   con checkboxes — commitea la selección y devuelve el resto al WIP recreado;
   `commit_prefix` opcional desde el nombre de la rama), y una **receta de convivencia**
   solo-docs (`customCommands` de lazygit invocando `--commit`/`--apply-handoff`, más el
-  aviso de "no rewordees el WIP" para clientes git). Ver el LEAME → TODO.
+  aviso de "no rewordees el WIP" para clientes git). Ver el LEAME → TODO. *(Superado en
+  parte después: la nota de convivencia — reglas del WIP, GitButler — es el Manual §9;
+  los snippets de `customCommands` siguen pendientes.)*
 
 ---
 

@@ -13,6 +13,11 @@ follows you between machines with near-zero effort.
 - **Scratch & experiment repos.** Code that doesn't deserve a curated history but whose
   *trail* you'd hate to lose — spikes, tests, throwaways. Full recoverable history, zero
   ceremony. (Arguably its sweet spot.)
+- **A safety net for AI coding agents.** An agent editing your repo is the ultimate
+  "won't commit by hand" user: many files, fast, review after the fact. SincroGit gives
+  you the trail and the rollback of everything it did — with **zero integration**, the
+  agent doesn't change how it works (see
+  [A safety net for AI coding agents](#a-safety-net-for-ai-coding-agents)).
 - **Low-effort multi-machine continuity.** Move between your office and home machines and
   your work follows you — *delayed by minutes, not instant* (see
   [handoff](#cross-machine-handoff-live-wip)); a **Smart Commit** before you leave makes
@@ -172,12 +177,11 @@ client in the panel):
   split into logical commits. Hunk/line granularity stays lazygit's job. Bonus while in
   there: an optional `commit_prefix` (regex on the branch name → message prefix, e.g.
   `feature/AB-123` → `[AB-123]`) applied to Smart Commit proposals.
-- **Coexistence recipe for git clients (docs-only).** A MANUAL recipe with lazygit
-  `customCommands` snippets to drive SincroGit from inside it (`--commit REPO -y`,
-  `--apply-handoff REPO`, inspecting `refs/autosnap/...`), plus the missing "playing
-  nice with other git clients" note: don't amend or reword the `WIP: autosnapshot`
-  commit yourself — rewording strips the prefix, so the daemon would treat it as a
-  manual commit (and push it).
+- **lazygit `customCommands` snippets (docs-only).** A MANUAL recipe to drive SincroGit
+  from inside lazygit (`--commit REPO -y`, `--apply-handoff REPO`, inspecting
+  `refs/autosnap/...`). *(The "sharing the repo with other git tools" note — don't
+  reword the WIP, GitButler hand-off rules — already exists:
+  [MANUAL §9](MANUAL.md#9-sharing-the-repo-with-other-git-tools).)*
 
 ### TODO — technical (for developers)
 
@@ -466,6 +470,30 @@ setup is one flag:
 
 It's still sequential **per branch** (one machine at a time on a given branch); it doesn't
 merge two people editing the *same* branch at once.
+
+### A safety net for AI coding agents
+
+An AI coding agent (Claude Code, Cursor, Codex, …) is the ultimate "won't commit by
+hand" user: it changes many files, fast, and review happens after the fact. Run
+SincroGit on the repos your agents work in and you get, with **zero integration**:
+
+- **A full trail.** Every few minutes of agent work becomes a rollback point. For heavy
+  agent sessions, tune the resolution finer (`snapshot_interval_sec: 60`) on that repo —
+  see [Tuning a "hot" repo](#tuning-a-hot-repo).
+- **Rollback of anything it did.** A bad agent edit from an hour ago? *File history* →
+  restore the file (or the whole repo) to right before it happened.
+- **A clean separation of your work.** Run **purist mode** (`seal_interval_min: inf`):
+  the permanent history stays 100 % yours (your Smart Commits), while the WIP + autosnap
+  silently record everything the agent does in between. Or stay pragmatic and let the
+  `sincro:` seals timestamp the agent's progress every few hours.
+
+The emerging agent-VC tools (e.g. GitButler's agent skills) work by teaching the agent
+their own commands instead of git. SincroGit takes the opposite approach: it is
+**invisible** — nothing to install in the agent, nothing the agent must do differently —
+so it works with any agent, today's or next year's. Honest caveat: it records a
+*timeline*, not an audit log. It doesn't attribute changes to "agent vs. you" beyond
+what your own Smart Commits separate, and states *between* snapshots (within the ~5 min
+window) aren't captured.
 
 ## How it compares with neighboring tools
 

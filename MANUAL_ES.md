@@ -214,3 +214,29 @@ Ejemplo (un sellado nocturno programado):
 ```powershell
 python -m sincrogit -c C:\repos\config.yaml --seal-once
 ```
+
+---
+
+## 9. Compartir el repo con otras herramientas git
+
+SincroGit está diseñado para convivir con el resto de tus herramientas git — se inhibe
+mientras *tú* operas (un merge/rebase en curso, el índice bloqueado, otra rama
+checkouteada) y se reanuda después. Las reglas de tráfico:
+
+- **El commit `WIP: autosnapshot` de la punta es de SincroGit; todo lo de abajo es
+  tuyo.** Commitea, crea ramas, etiqueta o rebasa *por debajo* con libertad — el demonio
+  detecta los commits externos y los respeta como sellados manuales. Pero no amendees ni
+  rewordees el WIP desde otra herramienta: un reword le quita el prefijo `WIP:`, así que
+  el demonio lo trataría como un commit manual — y lo pushearía.
+- **Clientes git (lazygit, Fork, GitKraken, VS Code, …):** sin problema en paralelo.
+  Mostrarán el WIP en la punta — deja ese único commit en paz y trabaja como siempre.
+- **GitButler (`but`):** *toma el control* del repo (hace checkout de su propia rama
+  `gitbutler/workspace` y bloquea commits directos con un hook). Con la guarda de rama
+  por defecto de SincroGit esto está cubierto: SincroGit **se inhibe** mientras GitButler
+  está activo y se reanuda cuando sales del modo workspace (`but teardown` / checkout de
+  tu rama). **No** lo combines con `track_current_branch: true` en ese repo — SincroGit
+  seguiría (y pushearia) la rama workspace de GitButler. En general: una sola herramienta
+  *gestionando* un repo dado a la vez.
+- **Dropbox / OneDrive / Drive:** nunca metas el repo dentro de la carpeta de otra
+  herramienta de sincronización — puede corromper `.git` (ver
+  [LEAME → Limitaciones](LEAME.md#limitaciones)).
