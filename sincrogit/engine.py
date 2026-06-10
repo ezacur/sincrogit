@@ -628,6 +628,16 @@ class Engine:
             # waking for it (avoids busy-polling while a fetch/push is in flight).
             if st.paused or st.user_paused or st.off_branch or st.net_busy:
                 continue
+            # A busy repo (manual merge/rebase in progress) can't act on its
+            # deadlines either — without this, an overdue seal would spin the
+            # loop at 1 Hz for the whole merge. Cheap: is_busy is os.path.exists
+            # once the git dir is cached. MAX_TICK_SEC is the backstop that
+            # notices when the repo frees up.
+            try:
+                if st.repo.is_busy():
+                    continue
+            except GitError:
+                continue  # repo folder vanished; the tick path will log it
             cfg = st.cfg
             # next permanent seal
             soonest = min(soonest, st.last_seal_epoch + cfg.seal_interval_sec - now_epoch)

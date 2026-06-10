@@ -101,6 +101,10 @@ class GitRepo:
         # unless/until a .docx shows up; after that the result is fixed.
         self._pandoc_provider = pandoc_provider
         self._pandoc_resolved = pandoc is not None  # an explicit value is "resolved"
+        # The .git dir is stable for the repo's lifetime: cache it so is_busy()
+        # is pure os.path.exists after the first call (the idle-wait computation
+        # consults it every tick — it must not spawn a subprocess).
+        self._git_dir_cache = None
 
     def _ensure_pandoc(self):
         """Resolve pandoc on first actual .docx use (lazy, once). After this call
@@ -227,9 +231,11 @@ class GitRepo:
         return None
 
     def _git_dir(self) -> str:
-        res = self._run(["rev-parse", "--git-dir"], check=False)
-        gd = res.stdout.strip() or ".git"
-        return gd if os.path.isabs(gd) else os.path.join(self.path, gd)
+        if self._git_dir_cache is None:
+            res = self._run(["rev-parse", "--git-dir"], check=False)
+            gd = res.stdout.strip() or ".git"
+            self._git_dir_cache = gd if os.path.isabs(gd) else os.path.join(self.path, gd)
+        return self._git_dir_cache
 
     def is_busy(self) -> bool:
         """Is there a manual git operation in progress? (merge/rebase/cherry-pick/lock)
