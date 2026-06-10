@@ -8,8 +8,14 @@ __pycache__/
 /*.spec
 /app.ico
 
-# Local config / runtime data (do not version secrets or per-machine paths)
+# Local config / runtime data (do not version secrets or per-machine paths).
+# Covers the REAL generated names: sincrogit.config.yaml (runtime.CONFIG_NAME),
+# the rotating backups of sincrogit.log (.1-.5) and events.jsonl (.1) — without
+# these, SincroGit running on its own repo would auto-commit its config and logs.
 /config.yaml
+/sincrogit.config.yaml
 /sincrogit.log
+/sincrogit.log.*
 /log.txt
 /events.jsonl
+/events.jsonl.*
