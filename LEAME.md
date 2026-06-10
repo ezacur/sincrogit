@@ -143,13 +143,52 @@ Por orden de prioridad:
    ese montaje es la barrera de entrada real, no el demonio. Plan: un flujo guiado en
    "Add repo…" que cree/conecte un remoto privado (GitHub/GitLab), lo verifique con un
    push de prueba y aplique defaults sensatos — sin que el usuario tenga que saber qué
-   es un remoto.
+   es un remoto. Su pieza compañera: un chequeo de salud `sincrogit doctor` (git
+   presente, remoto accesible, credenciales verificadas con un push de prueba, pandoc,
+   Ollama) para diagnosticar un montaje roto con un solo comando.
 2. **Arranque automático al iniciar sesión** (la pieza de la Fase 3 que falta). La
    promesa de "cero disciplina" se rompe si hay que acordarse de lanzar la red de
    seguridad: un aviso en el primer arranque (o un paso del instalador) debería
    registrar la tarea programada de Windows (`SincroGit.exe --tray` /
    `pythonw.exe -m sincrogit --tray` al iniciar sesión — ver [DISENO.md §9](DISENO.md)).
 3. **Comando `sincrogit status`** (el menú de bandeja ya cubre las acciones comunes).
+
+### TODO — mensajes IA (la tanda inspirada en aicommit2)
+
+Adoptado tras estudiar [aicommit2](https://github.com/tak-bro/aicommit2), manteniendo
+intactos los tres contratos de SincroGit: el commit/sellado nunca se bloquea por un fallo
+de la IA, privacidad por defecto (`cloud_send_content`) y cero dependencias nuevas
+(`ai.py` sigue siendo `urllib` de la librería estándar).
+
+- **Endpoint genérico OpenAI-compatible** (`ai.cloud_provider: compatible` +
+  `ai.cloud_url`): un único cliente HTTP extra cubre OpenRouter, DeepSeek, Together,
+  LM Studio, llama.cpp, Anthropic… en vez de mantener un cliente a medida por
+  proveedor. Las API keys siguen en variables de entorno (nunca en el YAML).
+- **`ai.locale`**: mensajes de sellado y Smart Commit en el idioma del usuario (p. ej.
+  español) — un parámetro a nivel de prompt.
+- **Overrides de `ai:` por repo**: p. ej. un repo sensible fijado a `mode: local` (solo
+  Ollama) mientras el resto puede usar la nube — coherente con los overrides por repo
+  existentes.
+
+### TODO — la tanda inspirada en lazygit
+
+De estudiar [lazygit](https://github.com/jesseduffield/lazygit) — el cockpit natural
+para usar *junto a* SincroGit (complemento, no donante: a propósito no reconstruimos un
+cliente git en el panel):
+
+- **Smart Commit parcial.** Una lista de ficheros con checkboxes en el diálogo de Smart
+  Commit (el primo a nivel de fichero del staging interactivo de lazygit): commitea los
+  ficheros marcados como commit curado y devuelve el resto al WIP recreado — así una
+  ventana de trabajo puede partirse en commits lógicos. La granularidad de hunk/línea
+  sigue siendo trabajo de lazygit. Bonus de paso: un `commit_prefix` opcional (regex
+  sobre el nombre de la rama → prefijo del mensaje, p. ej. `feature/AB-123` →
+  `[AB-123]`) aplicado a las propuestas de Smart Commit.
+- **Receta de convivencia con clientes git (solo docs).** Una receta en el MANUAL con
+  snippets de `customCommands` de lazygit para manejar SincroGit desde dentro
+  (`--commit REPO -y`, `--apply-handoff REPO`, inspeccionar `refs/autosnap/...`), más
+  la nota que hoy falta de "convivir con otros clientes git": no amendees ni rewordees
+  tú el commit `WIP: autosnapshot` — un reword le quita el prefijo, así que el demonio
+  lo trataría como un commit manual (y lo pushearía).
 
 ### TODO — técnico (para desarrolladores)
 

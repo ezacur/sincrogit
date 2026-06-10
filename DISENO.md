@@ -464,8 +464,10 @@ repos:
   sin ella, la promesa de "cero disciplina" depende de acordarse de lanzar la herramienta.
 - ⏳ Pendiente: comando/pestaña `status` (el atajo "sellar+push ahora" ya está en el menú).
 - ⏳ Pendiente: onboarding guiado en "Add repo" (crear/conectar un remoto privado y
-  verificarlo con un push de prueba, desde la GUI) — para el público sin Git, el montaje
-  de remoto/credenciales es la barrera de entrada real, no el demonio.
+  verificarlo con un push de prueba, desde la GUI), más un chequeo de salud
+  `sincrogit doctor` (git, acceso al remoto, credenciales, pandoc, Ollama) — para el
+  público sin Git, el montaje de remoto/credenciales es la barrera de entrada real, no
+  el demonio.
 
 **Pendiente — técnico (sin feature visible para el usuario):**
 - ⏳ Batería de tests automatizados — **hoy no existe ninguna**; todos los caminos de
@@ -477,6 +479,19 @@ repos:
 **Opcional / futuro:**
 - Rama `autosnap` con commits reales cada 5 min (historial intra-ventana navegable *en el remoto*) en lugar del espejo force-push del último estado.
 - Variante "espejo en vivo" (force-with-lease del WIP) si el backup remoto en tiempo real se vuelve necesario.
+- Tanda de IA, inspirada en aicommit2 (contratos intactos: nunca bloquear el sellado,
+  privacidad por defecto, solo `urllib` estándar): **endpoint genérico
+  OpenAI-compatible** (`ai.cloud_provider: compatible` + `ai.cloud_url`) que cubre
+  OpenRouter/DeepSeek/LM Studio/Anthropic/… con un único cliente (las keys siguen en
+  variables de entorno); **`ai.locale`** para mensajes en el idioma del usuario;
+  **overrides de `ai:` por repo** (p. ej. un repo sensible fijado a `mode: local`).
+  Ver el LEAME → TODO.
+- Tanda inspirada en lazygit (lazygit es el complemento, no un donante — no se
+  reconstruye un cliente git en el panel): **Smart Commit parcial** (lista de ficheros
+  con checkboxes — commitea la selección y devuelve el resto al WIP recreado;
+  `commit_prefix` opcional desde el nombre de la rama), y una **receta de convivencia**
+  solo-docs (`customCommands` de lazygit invocando `--commit`/`--apply-handoff`, más el
+  aviso de "no rewordees el WIP" para clientes git). Ver el LEAME → TODO.
 
 ---
 

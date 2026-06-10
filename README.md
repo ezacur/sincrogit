@@ -132,13 +132,52 @@ In priority order:
    is the least equipped to create a remote and wire up credentials — today that setup is
    the real entry barrier, not the daemon. Planned: a guided "Add repo…" flow that
    creates/connects a private remote (GitHub/GitLab), verifies it with a test push, and
-   applies sensible defaults — without the user needing to know what a remote is.
+   applies sensible defaults — without the user needing to know what a remote is. Its
+   companion piece: a `sincrogit doctor` health check (git present, remote reachable,
+   credentials verified with a test push, pandoc, Ollama) to diagnose a broken setup in
+   one command.
 2. **Start at log-on, automatically** (the missing Phase-3 piece). The "zero discipline"
    promise breaks if you have to remember to launch the safety net: a first-run prompt
    (or installer step) should register the Windows scheduled task
    (`SincroGit.exe --tray` / `pythonw.exe -m sincrogit --tray` at log-on — see
    [DESIGN.md §9](DESIGN.md)).
 3. **`sincrogit status` command** (the tray menu already covers the common actions).
+
+### TODO — AI messages (the aicommit2-inspired batch)
+
+Adopted after surveying [aicommit2](https://github.com/tak-bro/aicommit2), keeping
+SincroGit's three contracts intact: the commit/seal is never blocked by an AI failure,
+privacy by default (`cloud_send_content`), and no new dependencies (`ai.py` stays
+stdlib-`urllib`).
+
+- **Generic OpenAI-compatible endpoint** (`ai.cloud_provider: compatible` +
+  `ai.cloud_url`): one extra HTTP client covers OpenRouter, DeepSeek, Together,
+  LM Studio, llama.cpp, Anthropic… instead of maintaining a bespoke client per
+  provider. API keys stay in environment variables (never in the YAML).
+- **`ai.locale`**: seal and Smart Commit messages in the user's language (e.g.
+  Spanish) — a prompt-level parameter.
+- **Per-repo `ai:` overrides**: e.g. a sensitive repo pinned to `mode: local`
+  (Ollama-only) while the rest may use the cloud — consistent with the existing
+  per-repo defaults.
+
+### TODO — the lazygit-inspired batch
+
+From surveying [lazygit](https://github.com/jesseduffield/lazygit) — the natural cockpit
+to use *alongside* SincroGit (complement, not donor: we deliberately don't rebuild a git
+client in the panel):
+
+- **Partial Smart Commit.** A file checkbox list in the Smart Commit dialog (the
+  file-level cousin of lazygit's interactive staging): commit the selected files as the
+  curated commit and return the rest to the recreated WIP — so one work window can be
+  split into logical commits. Hunk/line granularity stays lazygit's job. Bonus while in
+  there: an optional `commit_prefix` (regex on the branch name → message prefix, e.g.
+  `feature/AB-123` → `[AB-123]`) applied to Smart Commit proposals.
+- **Coexistence recipe for git clients (docs-only).** A MANUAL recipe with lazygit
+  `customCommands` snippets to drive SincroGit from inside it (`--commit REPO -y`,
+  `--apply-handoff REPO`, inspecting `refs/autosnap/...`), plus the missing "playing
+  nice with other git clients" note: don't amend or reword the `WIP: autosnapshot`
+  commit yourself — rewording strips the prefix, so the daemon would treat it as a
+  manual commit (and push it).
 
 ### TODO — technical (for developers)
 

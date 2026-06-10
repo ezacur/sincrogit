@@ -468,8 +468,9 @@ repos:
   "zero discipline" promise depends on remembering to launch the tool.
 - ⏳ Pending: `status` command/tab (the "seal+push now" shortcut is already in the menu).
 - ⏳ Pending: guided "Add repo" onboarding (create/connect a private remote and verify it
-  with a test push, from the GUI) — for the non-Git audience the remote/credentials
-  setup is the real entry barrier, not the daemon.
+  with a test push, from the GUI), plus a `sincrogit doctor` health check (git, remote
+  reachability, credentials, pandoc, Ollama) — for the non-Git audience the
+  remote/credentials setup is the real entry barrier, not the daemon.
 
 **Pending — technical (no user-visible feature):**
 - ⏳ Automated test suite — **none exists today**; every safety path has been verified
@@ -480,6 +481,18 @@ repos:
 **Optional / future:**
 - `autosnap` branch with real commits every 5 min (browsable intra-window history *on the remote*) instead of the force-push mirror of the latest state.
 - "Live mirror" variant (force-with-lease of the WIP) if real-time remote backup becomes necessary.
+- AI batch, aicommit2-inspired (contracts kept: never block the seal, privacy by
+  default, stdlib-`urllib` only): a generic **OpenAI-compatible endpoint**
+  (`ai.cloud_provider: compatible` + `ai.cloud_url`) covering
+  OpenRouter/DeepSeek/LM Studio/Anthropic/… with a single client (keys stay in env
+  vars); **`ai.locale`** for messages in the user's language; **per-repo `ai:`
+  overrides** (e.g. a sensitive repo pinned to `mode: local`). See the README → TODO.
+- lazygit-inspired batch (lazygit is the complement, not a donor — no git client gets
+  rebuilt in the panel): **partial Smart Commit** (file checkbox list — commit the
+  selection, return the rest to the recreated WIP; optional `commit_prefix` from the
+  branch name), and a docs-only **coexistence recipe** (lazygit `customCommands`
+  driving `--commit`/`--apply-handoff`, plus the "don't reword the WIP" warning for
+  git clients). See the README → TODO.
 
 ---
 
