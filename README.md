@@ -296,9 +296,11 @@ teammate's). On every sync, SincroGit fetches your other machines' mirrors and:
 
 - **Safe fast-forward (the common case).** If the other machine's work *contains all of
   yours* (typically: you did nothing here since you left), it's a loss-free fast-forward (it
-  only ever discards an empty WIP, reversible via the reflog) — and it's **skipped** if it
-  would overwrite an untracked file (you're warned instead). What happens then depends on
-  `live_handoff`:
+  only ever discards an empty WIP, reversible via the reflog) — and it's **skipped** (you're
+  notified instead) if it would overwrite an untracked file **or** if you have local edits
+  auto-snapshot can't capture (a tracked file now too large / binary / excluded): those
+  exist nowhere in git, so applying would destroy them — commit them by hand first. What
+  happens otherwise depends on `live_handoff`:
   - **`auto`** (default): applied automatically — you just sit down and continue. It is
     **never silent**: you get a tray notification ("caught up to *Desktop-PC*"), so you
     always know your files moved.

@@ -318,8 +318,11 @@ máquinas y:
 
 - **Fast-forward seguro (el caso común).** Si el trabajo de la otra máquina *contiene todo
   el tuyo* (típico: aquí no tocaste nada desde que te fuiste), es un fast-forward sin pérdida
-  (solo descarta un WIP vacío, reversible vía el reflog) — y se **omite** si fuera a
-  sobrescribir un fichero untracked (te avisa). Qué pasa entonces depende de `live_handoff`:
+  (solo descarta un WIP vacío, reversible vía el reflog) — y se **omite** (te avisa) si fuera
+  a sobrescribir un fichero untracked **o** si tienes ediciones locales que el auto-snapshot
+  no puede capturar (un fichero rastreado que ahora es demasiado grande / binario /
+  excluido): esas no existen en ningún sitio de git, así que aplicarlo las destruiría —
+  commitéalas a mano primero. En caso contrario, qué pasa depende de `live_handoff`:
   - **`auto`** (por defecto): se aplica solo — te sientas y sigues. **Nunca en silencio**:
     recibes una notificación de bandeja ("te puse al día con *Desktop-PC*"), así siempre
     sabes que tus ficheros se movieron.

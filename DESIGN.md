@@ -142,8 +142,11 @@ design points:
 Behavior — `live_handoff` is a 3-state knob (`auto` default | `ask` | `off`):
 - **`theirs_contains` → safe fast-forward** (`git reset --hard` to the peer): provably
   loss-free (the peer holds all my changed-path content; only an empty WIP is dropped),
-  reversible via the reflog, and **refused** if it would clobber an untracked file
-  (`untracked_collisions`). In `auto` it's applied immediately **and a tray notification is
+  reversible via the reflog, and **refused (with a notification)** if it would clobber an
+  untracked file (`untracked_collisions`) **or** if there are local edits the snapshot could
+  not capture (`modified_unstaged`: a tracked file that grew past the size limit, turned
+  binary, or matches an exclude — those edits exist nowhere in git, not even the reflog, so
+  the reset would destroy them). In `auto` it's applied immediately **and a tray notification is
   fired** (level b is never *silent* — the working tree changing under you is a surprise even
   when nothing is lost). In `ask` it is NOT applied: the candidate is recorded
   (`pending_handoff`, surfaced in `status()` and the panel), the user is notified, and a

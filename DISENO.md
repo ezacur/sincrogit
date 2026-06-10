@@ -142,8 +142,11 @@ dispara). Dos puntos de diseño:
 Comportamiento — `live_handoff` es un mando de 3 estados (`auto` por defecto | `ask` | `off`):
 - **`theirs_contains` → fast-forward seguro** (`git reset --hard` al peer): demostrablemente
   sin pérdida (el peer tiene todo mi contenido de las rutas que cambié; solo se descarta un
-  WIP vacío), reversible vía reflog, y se **rechaza** si pisara un fichero untracked
-  (`untracked_collisions`). En `auto` se aplica al momento **y se lanza una notificación de
+  WIP vacío), reversible vía reflog, y se **rechaza (con notificación)** si pisara un fichero
+  untracked (`untracked_collisions`) **o** si hay ediciones locales que el snapshot no pudo
+  capturar (`modified_unstaged`: un fichero rastreado que creció más del límite, se volvió
+  binario o casa un exclude — esas ediciones no existen en ningún sitio de git, ni siquiera
+  el reflog, así que el reset las destruiría). En `auto` se aplica al momento **y se lanza una notificación de
   bandeja** (el nivel b nunca es *silencioso* — que el working tree cambie bajo tus pies
   sorprende aunque no se pierda nada). En `ask` NO se aplica: se registra el candidato
   (`pending_handoff`, expuesto en `status()` y el panel), se notifica, y un **Apply** de un

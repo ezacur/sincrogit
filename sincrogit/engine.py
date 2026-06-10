@@ -948,7 +948,21 @@ class Engine:
                 self._warn_handoff_once(
                     st, peer["sha"],
                     f"newer work on '{peer['host']}' NOT applied: it would overwrite "
-                    f"untracked file(s). Move/commit them first.")
+                    f"untracked file(s). Move/commit them first.", notify_user=True)
+                return
+            # Refuse if there are local edits the snapshot could NOT capture (file
+            # too large / binary / excluded): they live only in the working tree, so
+            # the reset would destroy them beyond even the reflog's reach.
+            unstaged = repo.modified_unstaged()
+            if unstaged:
+                st.pending_handoff = None
+                sample = ", ".join(unstaged[:3]) + ("…" if len(unstaged) > 3 else "")
+                self._warn_handoff_once(
+                    st, peer["sha"],
+                    f"newer work on '{peer['host']}' NOT applied: you have local "
+                    f"edits that auto-snapshot can't capture ({sample}). Applying "
+                    f"would destroy them — commit them by hand, then sync.",
+                    notify_user=True)
                 return
             if cfg.live_handoff == "ask":
                 # Don't touch the working tree; record it + notify once for one-click Apply.
@@ -1024,6 +1038,11 @@ class Engine:
                     return False, f"can no longer fast-forward safely (now '{rel}'); resolve by hand"
                 if repo.untracked_collisions(peer["sha"]):
                     return False, "would overwrite untracked file(s); move them first"
+                unstaged = repo.modified_unstaged()
+                if unstaged:
+                    return False, (f"local edits in {len(unstaged)} file(s) auto-snapshot "
+                                   f"can't capture (e.g. '{unstaged[0]}'); commit or "
+                                   f"revert them first")
                 self._apply_handoff(st, peer["sha"], peer["host"])
         except GitError as e:
             return False, str(e)

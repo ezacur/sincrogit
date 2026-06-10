@@ -718,11 +718,22 @@ class GitRepo:
         ).stdout.split("\0")
         return sorted(untracked.intersection(p for p in in_tree if p))
 
+    def modified_unstaged(self) -> list:
+        """Tracked files whose working-tree content differs from the index, AFTER a
+        snapshot pass: i.e. local edits stage_changes refused (the file grew past
+        the size limit, turned binary, or matches an exclude). These edits exist
+        NOWHERE in git — not even the reflog — so a hard reset would silently
+        destroy them. Used to refuse a handoff fast-forward."""
+        out = self._run(["diff", "--name-only", "-z"], check=False).stdout
+        return sorted(p for p in out.split("\0") if p)
+
     def fast_forward_wip(self, sha: str):
         """Move the current branch (and working tree) to `sha`. Caller MUST have
         verified this is loss-free — work_relationship(HEAD, sha) == 'theirs_contains',
         so `sha` matches my content on every path I changed — and that there are no
-        untracked_collisions. Reversible via the reflog. Raises GitError."""
+        untracked_collisions and no modified_unstaged edits (those live only in the
+        working tree, so the reflog can NOT recover them). Committed work stays
+        reversible via the reflog. Raises GitError."""
         self._run(["reset", "--hard", sha])
 
     def restore_tree(self, sha: str):
