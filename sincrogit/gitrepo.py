@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 
 log = logging.getLogger("sincrogit.git")
 
@@ -655,6 +656,47 @@ class GitRepo:
             })
         out.sort(key=lambda e: e["epoch"], reverse=True)
         return out
+
+    def local_branches(self) -> set:
+        """Names of the local branches (refs/heads/*)."""
+        res = self._run(["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+                        check=False)
+        return {b.strip() for b in res.stdout.splitlines() if b.strip()}
+
+    # Minimum mirror age before a stale autosnap ref may be pruned. Generous so a
+    # freshly re-cloned repo (disaster recovery) never prunes states for branches
+    # it simply hasn't recreated yet.
+    AUTOSNAP_PRUNE_AGE_SEC = 7 * 86400
+
+    def prune_autosnap_refs(self, remote: str, user: str, host: str,
+                            min_age_sec: int = AUTOSNAP_PRUNE_AGE_SEC,
+                            timeout: float | None = None) -> list:
+        """Delete THIS machine's remote autosnap refs whose branch no longer exists
+        locally (e.g. a deleted feature branch), so the remote doesn't accumulate
+        dead mirrors forever. Conservative on purpose:
+          - only refs/autosnap/<user>/<host>/* — this host is their sole writer,
+            so the delete can't race anyone, and other machines' recovery states
+            are never touched;
+          - only mirrors at least `min_age_sec` old (see AUTOSNAP_PRUNE_AGE_SEC).
+        Returns the pruned branch names. Best-effort (network)."""
+        if not self.fetch_autosnaps(remote, user=user, timeout=timeout):
+            return []
+        branches = self.local_branches()
+        now = time.time()
+        removed = []
+        for r in self.list_autosnap_refs():
+            if r["user"] != user or r["host"] != host:
+                continue  # never touch other machines' (or teammates') states
+            if r["branch"] in branches:
+                continue  # the branch is alive here: the mirror is current
+            if r["epoch"] and now - r["epoch"] < min_age_sec:
+                continue  # too recent — might just not be recreated yet
+            res = self._run(["push", remote, "--delete", r["ref"]],
+                            check=False, timeout=timeout)
+            if res.returncode == 0:
+                self._run(["update-ref", "-d", r["ref"]], check=False)  # local copy
+                removed.append(r["branch"])
+        return removed
 
     # ------------------------------------------------------ cross-machine handoff
     def head_sha(self) -> str | None:

@@ -215,7 +215,12 @@ class ControlPanel(QMainWindow):
                     continue
                 item.setText(text)
                 if col == 2:
-                    item.setForeground(QColor(color) if color else QColor())
+                    if color:
+                        item.setForeground(QColor(color))
+                    else:
+                        # Clear the role: an invalid QColor() would paint black,
+                        # wrong under a non-default/dark palette.
+                        item.setData(Qt.ForegroundRole, None)
             w = self._row_widgets.get(r["name"])
             if w:
                 paused = r["user_paused"] or r["conflict_paused"]

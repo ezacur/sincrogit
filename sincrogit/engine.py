@@ -50,6 +50,8 @@ class RepoState:
         self.last_event_mono = 0.0
         self.last_snapshot_mono = time.monotonic()
         self.last_seal_epoch = time.time()
+        self.has_sealed = False  # a sealed (non-WIP) commit exists; if not, the
+                                 # panel shows "—" instead of time-since-startup
         self.last_pull_mono = time.monotonic()
         self.net_busy = False     # a network task (fetch/pull/push/autosnap) is in flight
         self.autosnap_pending = False  # HEAD changed since the last autosnap push
@@ -269,6 +271,7 @@ class Engine:
         if st.repo.ensure_wip():
             sealed = st.repo.last_sealed_time()
             st.last_seal_epoch = float(sealed) if sealed else time.time()
+            st.has_sealed = sealed is not None
             self._emit(st.cfg.name, "info", "external commit detected; seal clock reset")
 
     def _ensure_docx_attributes(self, st: "RepoState"):
@@ -417,7 +420,7 @@ class Engine:
                 "off_branch": st.off_branch,
                 "pending_handoff": (st.pending_handoff or {}).get("host"),
                 "last_snapshot": st.last_snapshot_wall,
-                "last_seal": st.last_seal_epoch,
+                "last_seal": st.last_seal_epoch if st.has_sealed else None,
                 "last_action": st.last_action,
                 "last_action_ts": st.last_action_ts,
                 "push": st.cfg.push,
@@ -481,6 +484,7 @@ class Engine:
 
         sealed = repo.last_sealed_time()
         st.last_seal_epoch = float(sealed) if sealed else time.time()
+        st.has_sealed = sealed is not None
         st.user = repo.sincro_user()
 
         with self._states_lock:
@@ -587,6 +591,7 @@ class Engine:
             return
 
         def worker():
+            did = 0  # snapshots + mirror pushes actually performed
             for st in self._states_snapshot():
                 if st.paused or st.user_paused:
                     continue
@@ -600,13 +605,18 @@ class Engine:
                         if self._do_snapshot(st):
                             st.last_snapshot_wall = time.time()
                             self._mark_action(st, "snapshot")
+                            did += 1
                         if (st.cfg.autosnap and st.autosnap_pending
                                 and st.repo.has_remote(st.cfg.remote)):
                             self._do_autosnap(st)  # synchronous push (already off-thread)
                             st.last_autosnap_mono = time.monotonic()
+                            did += 1
                 except GitError as e:
                     log.error("[%s] flush failed: %s", st.cfg.name, e)
-            self._emit("", "flush", "flushed latest state to the remote (leaving machine)")
+            # Only claim a flush when something actually moved (a no-op flush on
+            # every lock/suspend would just be log noise).
+            if did:
+                self._emit("", "flush", "flushed latest state to the remote (leaving machine)")
 
         threading.Thread(target=worker, name="sincrogit-flush", daemon=True).start()
 
@@ -788,6 +798,7 @@ class Engine:
         st.repo.seal(title, body)
         st.repo.new_wip()
         st.last_seal_epoch = now_epoch
+        st.has_sealed = True
         st.autosnap_pending = True  # HEAD moved (new WIP) -> refresh the live mirror
         self._mark_action(st, "seal")
         self._emit(st.cfg.name, "seal", title)
@@ -868,8 +879,20 @@ class Engine:
             return
 
         def _gc():
-            if not st.repo.is_busy():
-                st.repo.gc_auto()
+            if st.repo.is_busy():
+                return
+            st.repo.gc_auto()
+            # Housekeeping: delete THIS machine's remote autosnap refs for branches
+            # deleted locally — single-writer refs, so it's race-free, and an age
+            # guard keeps a freshly re-cloned repo from pruning states it hasn't
+            # recovered yet. See GitRepo.prune_autosnap_refs.
+            if st.cfg.autosnap and st.repo.has_remote(st.cfg.remote):
+                removed = st.repo.prune_autosnap_refs(
+                    st.cfg.remote, st.user, self._autosnap_host,
+                    timeout=st.cfg.git_timeout_sec)
+                if removed:
+                    self._emit(st.cfg.name, "gc",
+                               f"pruned stale autosnap ref(s): {', '.join(removed)}")
 
         # Advance only on a real dispatch (a busy repo retries next interval).
         if self._dispatch_network(st, "gc", _gc):
@@ -1021,6 +1044,7 @@ class Engine:
         st.repo.fast_forward_wip(sha)
         sealed = st.repo.last_sealed_time()
         st.last_seal_epoch = float(sealed) if sealed else st.last_seal_epoch
+        st.has_sealed = sealed is not None or st.has_sealed
         st.autosnap_pending = True       # my own ref should now track the new HEAD
         st._handoff_warned_sha = None
         st.pending_handoff = None
@@ -1144,7 +1168,7 @@ class Engine:
             try:
                 ok, cur = self._branch_ok(st)
                 if not ok:
-                    log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
+                    log.info("[%s] skipped: %s", st.cfg.name, self._branch_block_msg(st, cur))
                     continue
                 with st.op_lock:
                     if st.repo.is_busy():
@@ -1165,7 +1189,7 @@ class Engine:
             try:
                 ok, cur = self._branch_ok(st)
                 if not ok:
-                    log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
+                    log.info("[%s] skipped: %s", st.cfg.name, self._branch_block_msg(st, cur))
                     continue
                 # Push synchronously: this is a manual / CLI one-shot action (off
                 # the tick thread), so the push must finish before we return —
@@ -1181,7 +1205,7 @@ class Engine:
             try:
                 ok, cur = self._branch_ok(st)
                 if not ok:
-                    log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
+                    log.info("[%s] skipped: %s", st.cfg.name, self._branch_block_msg(st, cur))
                     continue
                 with st.op_lock:
                     self._do_sync(st)
@@ -1210,6 +1234,7 @@ class Engine:
             repo.ensure_wip()
             sealed = repo.last_sealed_time()
             st.last_seal_epoch = float(sealed) if sealed else time.time()
+            st.has_sealed = sealed is not None
             st.branch = repo.current_branch()
             st.user = repo.sincro_user()
         except GitError as e:

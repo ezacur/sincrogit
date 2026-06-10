@@ -375,7 +375,12 @@ repos:
   (`Engine.GC_INTERVAL_SEC`, en un worker en segundo plano), para empaquetar los objetos
   huérfanos que dejan los amends. El disparador diario está **desacoplado del sellado a
   propósito**: en modo purista (`seal_interval_min: inf`) el sello no se dispara nunca, así
-  que sin él un WIP de larga vida acumularía objetos sueltos sin límite.
+  que sin él un WIP de larga vida acumularía objetos sueltos sin límite. El mismo worker
+  diario también **poda los refs autosnap rancios de esta máquina** en el remoto — refs
+  cuya rama ya no existe localmente y cuyo espejo tiene ≥ 7 días. Refs de escritor único,
+  así que el borrado no compite con nadie; los estados de recuperación de otras máquinas
+  no se tocan nunca, y la guarda de edad evita que un repo recién re-clonado (recuperación
+  de desastre) pode estados que aún no ha recreado.
 - **Desactivar intervalos/límites:** cualquier intervalo (`*_interval_*`, `debounce_sec`)
   o umbral de tamaño (`max_file_bytes`, `max_include_bytes`) acepta un *centinela de
   desactivación* (`inf`/`off`/`none`/`never`, también `None`/`False`), normalizado a

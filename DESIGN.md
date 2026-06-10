@@ -374,7 +374,11 @@ repos:
   (`Engine.GC_INTERVAL_SEC`, on a background worker), to pack the orphan objects left by
   the amends. The daily trigger is **decoupled from sealing on purpose**: in purist mode
   (`seal_interval_min: inf`) the seal never fires, so without it a long-lived WIP would
-  accumulate loose objects unbounded.
+  accumulate loose objects unbounded. The same daily worker also **prunes this machine's
+  own stale autosnap refs** on the remote — refs whose branch no longer exists locally
+  and whose mirror is ≥ 7 days old. Single-writer refs, so the delete is race-free; other
+  machines' recovery states are never touched, and the age guard keeps a freshly
+  re-cloned repo (disaster recovery) from pruning states it hasn't recreated yet.
 - **Disabling intervals/limits:** any interval (`*_interval_*`, `debounce_sec`) or size
   threshold (`max_file_bytes`, `max_include_bytes`) accepts a *disable sentinel*
   (`inf`/`off`/`none`/`never`, also bare `None`/`False`), normalized to `math.inf` in
