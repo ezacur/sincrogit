@@ -45,16 +45,25 @@ class Event:
 
 
 class EventLog:
+    # Rotate the JSONL once it grows past this (one .1 backup is kept). Keeps the
+    # on-disk history bounded, so the GUI's full reload stays fast forever.
+    MAX_JSONL_BYTES = 5_000_000
+
     def __init__(self, jsonl_path: str | None = None, capacity: int = 2000):
         self._buf: deque[Event] = deque(maxlen=capacity)
         self._lock = threading.Lock()
         self._jsonl_path = jsonl_path
+        self._jsonl_bytes = 0  # tracked in-process to avoid a stat per event
         self._listeners = []  # callables(Event) -> None
 
         if jsonl_path:
             d = os.path.dirname(os.path.abspath(jsonl_path))
             if d:
                 os.makedirs(d, exist_ok=True)
+            try:
+                self._jsonl_bytes = os.path.getsize(jsonl_path)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------- writing
     def add(self, repo: str, action: str, message: str, level: str = "INFO") -> Event:
@@ -63,8 +72,12 @@ class EventLog:
             self._buf.append(ev)
             if self._jsonl_path:
                 try:
+                    line = json.dumps(ev.as_dict(), ensure_ascii=False) + "\n"
                     with open(self._jsonl_path, "a", encoding="utf-8") as fh:
-                        fh.write(json.dumps(ev.as_dict(), ensure_ascii=False) + "\n")
+                        fh.write(line)
+                    self._jsonl_bytes += len(line.encode("utf-8"))
+                    if self._jsonl_bytes > self.MAX_JSONL_BYTES:
+                        self._rotate_jsonl()
                 except OSError:
                     pass  # don't break the engine over a log write failure
         for cb in list(self._listeners):
@@ -73,6 +86,15 @@ class EventLog:
             except Exception:  # noqa: BLE001 — a listener must not take down the engine
                 pass
         return ev
+
+    def _rotate_jsonl(self):
+        """Move the JSONL aside (one .1 backup, replaced) so it never grows
+        unbounded. Caller holds self._lock."""
+        try:
+            os.replace(self._jsonl_path, self._jsonl_path + ".1")
+        except OSError:
+            return  # e.g. another handle holds the file; retried on a later add
+        self._jsonl_bytes = 0
 
     def add_listener(self, callback) -> None:
         """Register a callback invoked with each new Event (on the thread that

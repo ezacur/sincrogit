@@ -186,7 +186,8 @@ Ver la tabla completa y ambos idiomas en el **[LEAME → Configuración](LEAME.m
 
 - **Config:** `sincrogit.config.yaml`, buscado junto al ejecutable, luego en
   `%APPDATA%\SincroGit\`, luego el directorio de trabajo; sobreescribe con `--config PATH`.
-- **Log:** `sincrogit.log` (rotativo) junto a la config; eventos estructurados en `events.jsonl`.
+- **Log:** `sincrogit.log` (rotativo) junto a la config; eventos estructurados en `events.jsonl`
+  (también rotativo, un backup `.1`).
 - **`.gitattributes`:** SincroGit puede añadir `* text=auto` (finales de línea consistentes
   entre máquinas) y, en repos con `.docx`, `*.docx -text diff=pandoc` — ambos commiteados, así
   que viajan con el repo.

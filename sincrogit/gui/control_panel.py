@@ -75,6 +75,10 @@ class ControlPanel(QMainWindow):
     def __init__(self, controller):
         super().__init__()
         self.c = controller
+        # In-memory event cache for the Log tab: the JSONL file is read ONCE per
+        # open/Refresh (reload_log); filter changes only re-filter this list, so
+        # typing in the search box never re-reads the file from disk.
+        self._events_cache = []
         self.setWindowTitle("SincroGit — Control panel")
         self.resize(880, 560)
         try:
@@ -95,7 +99,7 @@ class ControlPanel(QMainWindow):
         self._timer.timeout.connect(self.refresh_status)
 
         self.refresh_status()
-        self.refresh_log()
+        self.reload_log()
 
     # =============================================================== STATUS
     _COLS = ["Repo", "Branch", "State", "Since last seal", "Last action", "Actions"]
@@ -288,7 +292,7 @@ class ControlPanel(QMainWindow):
         filt.addWidget(self.ed_search, 1)
 
         btn_refresh = QPushButton("Refresh")
-        btn_refresh.clicked.connect(self.refresh_log)
+        btn_refresh.clicked.connect(self.reload_log)
         filt.addWidget(btn_refresh)
         v.addLayout(filt)
 
@@ -320,8 +324,14 @@ class ControlPanel(QMainWindow):
             return False
         return True
 
+    def reload_log(self):
+        """Re-read the full event history from disk (on open / the Refresh
+        button). Filter changes go through refresh_log, which reuses the cache."""
+        self._events_cache = list(self.c.events_all())
+        self.refresh_log()
+
     def refresh_log(self):
-        events = self.c.events_all()
+        events = self._events_cache
 
         # Repopulate the repo dropdown, preserving the selection.
         repos = sorted({e.repo for e in events if e.repo})
@@ -349,6 +359,9 @@ class ControlPanel(QMainWindow):
 
     def append_event(self, ev):
         """Append a new event live if it passes the current filter (Qt signal)."""
+        self._events_cache.append(ev)
+        if len(self._events_cache) > 60_000:  # bound a very long session
+            del self._events_cache[:20_000]
         # If the repo isn't in the dropdown, add it.
         if ev.repo and self.cb_repo.findText(ev.repo) < 0:
             self.cb_repo.addItem(ev.repo)
@@ -443,7 +456,7 @@ class ControlPanel(QMainWindow):
     def showEvent(self, e):
         super().showEvent(e)
         self.refresh_status()
-        self.refresh_log()
+        self.reload_log()
         self._timer.start()
 
     def hideEvent(self, e):

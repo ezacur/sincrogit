@@ -184,7 +184,8 @@ table and both idioms in the **[README → Configuration](README.md#configuratio
 
 - **Config:** `sincrogit.config.yaml`, looked up next to the executable, then in
   `%APPDATA%\SincroGit\`, then the working directory; override with `--config PATH`.
-- **Log:** `sincrogit.log` (rotating) next to the config; structured events in `events.jsonl`.
+- **Log:** `sincrogit.log` (rotating) next to the config; structured events in `events.jsonl`
+  (also rotating, one `.1` backup).
 - **`.gitattributes`:** SincroGit may add `* text=auto` (consistent line endings across
   machines) and, for `.docx` repos, `*.docx -text diff=pandoc` — both committed, so they
   travel with the repo.
