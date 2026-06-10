@@ -67,6 +67,11 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
   2. `git add <solo los candidatos>`.
   3. Si hay algo staged: `git commit --amend --no-edit` (mensaje WIP estático tipo `WIP: autosnapshot`).
 - Sin cambios → no se hace nada.
+- **Anti-inanición:** una fuente que nunca se asienta (un build largo, un log que escribe
+  dentro del repo) reinicia el debounce sin parar — así que pasadas **2× el intervalo de
+  snapshot** desde el último, se toma uno igualmente, con o sin debounce
+  (`Engine.SNAPSHOT_STARVATION_FACTOR`). `debounce_sec: inf` conserva su significado de
+  "no disparar nunca".
 
 ### 3.3 Sellado (cada 6 h)
 **Único disparador automático:** temporizador de **6 h desde el último sellado**.

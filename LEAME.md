@@ -148,6 +148,7 @@ pip install -r requirements.txt
 | `--autosnaps` | fetch + listado de puntos de recuperación autosnap (por máquina) |
 | `--commit REPO [-m MSG \| -y]` | commit manual de REPO: edita el mensaje propuesto por IA en `$EDITOR` y sella+pushea |
 | `--apply-handoff REPO` | aplica a REPO el trabajo vivo pendiente de tu otra máquina (relevo) |
+| `--force` | ejecuta un disparo único aunque el demonio esté corriendo (por defecto rehúsan, para no competir con su git — ver el [Manual](MANUAL_ES.md)) |
 
 ### Mensajes con IA (opcional)
 
@@ -485,6 +486,10 @@ sobreescribibles por repo):
 | `extra_includes` | — | patrones versionados aunque sean binarios (p. ej. `**/*.docx`) |
 | `max_include_bytes` | 26214400 | tope de tamaño (25 MB) para `extra_includes` |
 | `pandoc_path` | `pandoc` | **(top-level)** ruta a pandoc para diffs legibles de `.docx` |
+
+Los valores se **validan al cargar**: los campos numéricos aceptan números o strings
+numéricos (`"300"`), y un booleano, un negativo o un valor sin sentido fallan al arrancar
+con un error claro por campo — nunca como un crash dentro del motor horas después.
 
 ### Desactivar un intervalo o límite
 

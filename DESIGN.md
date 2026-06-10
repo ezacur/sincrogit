@@ -67,6 +67,10 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
   2. `git add <only the candidates>`.
   3. If something is staged: `git commit --amend --no-edit` (static WIP message like `WIP: autosnapshot`).
 - No changes → nothing happens.
+- **Anti-starvation:** a source that never settles (a long build, a log writer inside the
+  repo) keeps resetting the debounce — so past **2× the snapshot interval** since the last
+  snapshot, one is taken anyway, debounce or not (`Engine.SNAPSHOT_STARVATION_FACTOR`).
+  `debounce_sec: inf` keeps its "never fire" meaning.
 
 ### 3.3 Sealing (every 6 h)
 **Only automatic trigger:** a timer of **6 h since the last seal**.

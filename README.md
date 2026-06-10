@@ -139,6 +139,7 @@ pip install -r requirements.txt
 | `--autosnaps` | fetch & list autosnap recovery points (per machine) |
 | `--commit REPO [-m MSG \| -y]` | manual commit of REPO: edit the AI-proposed message in `$EDITOR`, then seal+push |
 | `--apply-handoff REPO` | apply your other machine's pending live work to REPO (cross-machine handoff) |
+| `--force` | run a one-shot even while the daemon is running (by default they refuse, to avoid racing its git work — see the [Manual](MANUAL.md)) |
 
 ### AI messages (optional)
 
@@ -458,6 +459,10 @@ overridable per repo):
 | `extra_includes` | — | patterns versioned even if binary (e.g. `**/*.docx`) |
 | `max_include_bytes` | 26214400 | size cap (25 MB) for `extra_includes` |
 | `pandoc_path` | `pandoc` | **(top-level)** path to pandoc for readable `.docx` diffs |
+
+Values are **validated at load**: numeric fields accept numbers or numeric strings
+(`"300"`), and booleans, negatives or garbage fail at startup with a clear per-field
+error — never as a crash inside the engine hours later.
 
 ### Disabling an interval or limit
 
