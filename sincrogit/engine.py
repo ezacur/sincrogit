@@ -458,6 +458,9 @@ class Engine:
                 # E.g. the folder is gone (unplugged drive, moved cloud folder):
                 # skip this repo and keep the engine alive for the others.
                 self._emit(rc.name, "startup", f"setup failed, repo skipped: {e}", "ERROR")
+            except Exception as e:  # noqa: BLE001 — one bad repo must not stop the rest
+                log.exception("[%s] unexpected setup failure; repo skipped", rc.name)
+                self._emit(rc.name, "startup", f"setup failed, repo skipped: {e}", "ERROR")
 
     def _setup_repo(self, rc):
         """Initialize and register ONE repo (setup's per-repo body). Raises
@@ -490,7 +493,11 @@ class Engine:
         with self._states_lock:
             self.states.append(st)
         if self._watch_ready:
-            self.watch.watch(rc.path, self._dirty_cb(st), ignore=st.file_filter.is_excluded)
+            try:
+                self.watch.watch(rc.path, self._dirty_cb(st), ignore=st.file_filter.is_excluded)
+            except Exception:  # noqa: BLE001 — watching is best-effort (matches add_repo)
+                log.warning("[%s] could not start the watcher; automatic change "
+                            "detection is OFF for this repo", rc.name)
 
         branch = repo.current_branch()
         st.branch = branch
@@ -610,7 +617,8 @@ class Engine:
                                 and st.repo.has_remote(st.cfg.remote)):
                             self._do_autosnap(st)  # synchronous push (already off-thread)
                             st.last_autosnap_mono = time.monotonic()
-                            did += 1
+                            if not st.autosnap_pending:  # cleared only on a SUCCESSFUL push
+                                did += 1
                 except GitError as e:
                     log.error("[%s] flush failed: %s", st.cfg.name, e)
             # Only claim a flush when something actually moved (a no-op flush on

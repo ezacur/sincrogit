@@ -689,8 +689,8 @@ class GitRepo:
                 continue  # never touch other machines' (or teammates') states
             if r["branch"] in branches:
                 continue  # the branch is alive here: the mirror is current
-            if r["epoch"] and now - r["epoch"] < min_age_sec:
-                continue  # too recent — might just not be recreated yet
+            if not r["epoch"] or now - r["epoch"] < min_age_sec:
+                continue  # too recent — or age UNKNOWN: never prune blind
             res = self._run(["push", remote, "--delete", r["ref"]],
                             check=False, timeout=timeout)
             if res.returncode == 0:

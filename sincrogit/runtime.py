@@ -162,6 +162,8 @@ def acquire_instance_mutex(name: str = "Local\\SincroGit-tray-instance") -> bool
         kernel32 = ctypes.windll.kernel32
         handle = kernel32.CreateMutexW(None, False, name)
         already = (kernel32.GetLastError() == 183)  # ERROR_ALREADY_EXISTS
+        if not handle:
+            return already  # creation failed (NULL): nothing to keep or close
         if _instance_mutex_handle is None:
             _instance_mutex_handle = handle  # keep alive (the ONE per-process handle)
         else:

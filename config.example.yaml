@@ -57,7 +57,7 @@ ai:
 
 log:
   file: sincrogit.log
-  level: DEBUG                    # DEBUG | INFO | WARNING | ERROR
+  level: INFO                     # DEBUG | INFO | WARNING | ERROR
 
 repos:
   - path: "C:/path/to/your/repo"
