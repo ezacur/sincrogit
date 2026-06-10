@@ -27,7 +27,7 @@ follows you between machines with near-zero effort.
 > the plain-language *when/why*? See **[GUIDE.md](GUIDE.md)** (Spanish: [GUIA.md](GUIA.md)).
 > Design and decisions: **[DESIGN.md](DESIGN.md)**.
 
-## Status: Phases 1 and 2 complete
+## Status: Phases 1, 2 and 4 complete (Phase 3, deployment: partial)
 
 **Phase 1 (local core):**
 

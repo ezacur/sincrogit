@@ -6,7 +6,8 @@ See §7 of DESIGN.md.
 
 Two-tier model (see §2 of DESIGN.md):
   - WIP (snapshot): a single commit at HEAD that is amended every few minutes.
-  - Sealed: every 2h the WIP is "frozen" with a descriptive message and a new WIP is born.
+  - Sealed: periodically (seal_interval_min, default 6 h) the WIP is "frozen" with a
+    descriptive message and a new WIP is born.
 """
 
 import logging

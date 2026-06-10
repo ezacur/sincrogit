@@ -257,7 +257,7 @@ class Engine:
     def _ensure_wip(self, st: "RepoState"):
         """Ensure HEAD is a WIP. If a WIP had to be created, HEAD was a non-WIP
         commit — typically the user committed manually. We respect that as a
-        "manual seal" and reset the 2h clock to count from that commit.
+        "manual seal" and reset the seal clock to count from that commit.
         """
         if st.repo.ensure_wip():
             sealed = st.repo.last_sealed_time()

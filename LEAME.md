@@ -29,7 +29,7 @@ trabajo te siga entre máquinas con esfuerzo casi nulo.
 > en Git o quieres el *cuándo/por qué* en lenguaje llano? La **[guía para humanos](GUIA.md)**.
 > Diseño y decisiones: **[DISENO.md](DISENO.md)**.
 
-## Estado: Fases 1 y 2 completas
+## Estado: Fases 1, 2 y 4 completas (Fase 3, despliegue: parcial)
 
 **Fase 1 (núcleo local):**
 

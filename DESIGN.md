@@ -51,7 +51,9 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
 ## 3. Detailed flow
 
 ### 3.1 Service startup (per repo)
-1. Validate: it's a git repo, the configured remote and branch exist.
+1. Validate it's a git repo (a missing or invalid folder skips that repo; the others keep
+   running). The remote is checked lazily on each sync (`has_remote`); being on the
+   configured branch is the branch guard's job (§11).
 2. **`git pull --rebase --autostash`** to bring in what the other machine left.
    - If there is an unpushed local WIP (typical case after a crash) → it is **rebased** on top of the remote.
    - **If there is a conflict** → `git rebase --abort`, the **autosync for that repo is paused**, the user is notified and it is logged. It is **never** resolved destructively, nor is force used. (This is rare in sequential use, but the policy is: when in doubt, don't lose data.)
@@ -75,7 +77,7 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
 4. Create a new empty WIP on top: `git commit --allow-empty -m "WIP: autosnapshot"`.
 5. **Push** (§4).
 
-> There is no sealing on idle or on shutdown. To force a one-off seal+push (e.g. right before I head to the laptop) there will be a manual `sincrogit sync` command (§12).
+> There is no sealing on idle or on shutdown. To force a one-off seal+push (e.g. right before I head to the laptop): *Seal now* / per-repo *Seal+Push* in the tray, `--seal-once` from the CLI, or a Smart Commit.
 
 ### 3.4 Periodic pull (every 10 min)
 Besides the startup pull (§3.1), the daemon checks the remote every **10 min** to bring in what the other machine left, **without** having to log back in or pull by hand.
@@ -95,19 +97,20 @@ Besides the startup pull (§3.1), the daemon checks the remote every **10 min** 
 
 **Golden rule: only sealed commits are pushed; the WIP never leaves the machine.**
 
-- Push: push **`HEAD~1`** (the last sealed), never the live WIP:
-  `git push origin HEAD~1:<branch>` → this way the remote receives immutable history and the local WIP stays 1 commit ahead.
+- Push: push the **last sealed commit** — the newest non-WIP commit, resolved by message
+  rather than the positional `HEAD~1` (see §11) — never the live WIP:
+  `git push origin <sealed-sha>:refs/heads/<branch>` → this way the remote receives immutable history and the local WIP stays ahead of it.
 - Because sealed commits are immutable and never rewritten, **the push is always fast-forward** and the **other machine's pull is always clean**. No force-push is needed in any normal-flow case.
 
 **Handoff between machines (sequential use):**
 
 ```
-Desktop: works → every 6h (or manual `sincrogit sync`) seal + push  ──►  remote up to date
+Desktop: works → every 6h (or a manual Seal now / Smart Commit) seal + push  ──►  remote up to date
 Laptop:  starts → pull --rebase (clean) → works → seal + push ──► remote up to date
 Desktop: starts → pull --rebase (clean) → continues...
 ```
 
-**Normal handoff (clean branch):** the laptop does `pull --rebase` and starts from the **sealed** state (up to 6 h old). For a mid-window handoff, run **`sincrogit sync`** before getting up (seal + push) so the laptop starts with everything via the clean path.
+**Normal handoff (clean branch):** the laptop does `pull --rebase` and starts from the **sealed** state (up to 6 h old). For a mid-window handoff, run a manual seal (**Seal now** / `--seal-once` / Smart Commit) before getting up so the laptop starts with everything via the clean path.
 
 ### 4.1 Autosnap (live mirror) — disaster recovery
 
@@ -447,7 +450,7 @@ repos:
 - ✅ **Python**; git via subprocess; `watchdog`; **PyQt5** for the tray UI.
 - ✅ Background: **scheduled task at log on** with `pythonw.exe`.
 - ✅ Working branch: **`main`** (confirm per repo).
-- ✅ **Seal every 6 h** (coarse permanent timeline); manual `sincrogit sync` for handoff via the clean path.
+- ✅ **Seal every 6 h** (coarse permanent timeline); a manual seal (*Seal now* / `--seal-once` / Smart Commit) for handoff via the clean path.
 - ✅ **Periodic pull every 10 min** (`fetch` + pull only if the remote has new commits), besides the startup pull.
 - ✅ **Autosnap** (live mirror of `HEAD` to `refs/autosnap/<host>/<branch>`, force-pushed every 30 min, only if it changed): disk-failure RPO ≈ 30 min, cross-machine recovery per file or whole repo (CLI `--autosnaps` + GUI). The "fine browsable history on the remote" variant (one commit per snapshot) is still deferred.
 

@@ -51,7 +51,9 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 ## 3. Flujo detallado
 
 ### 3.1 Arranque del servicio (por repo)
-1. Validar: es repo git, existe el remoto y la rama configurados.
+1. Validar que es repo git (una carpeta ausente o inválida salta ese repo; los demás
+   siguen). El remoto se comprueba perezosamente en cada sync (`has_remote`); estar en la
+   rama configurada es trabajo de la guarda de rama (§11).
 2. **`git pull --rebase --autostash`** para traer lo que dejó la otra máquina.
    - Si hay un WIP local sin pushear (caso típico tras crash) → se **rebasa** encima de lo remoto.
    - **Si hay conflicto** → `git rebase --abort`, se **pausa el autosync de ese repo**, se notifica al usuario y se registra en log. **Nunca** se resuelve de forma destructiva ni se hace force. (Esto es raro en uso secuencial, pero la política es: ante la duda, no perder datos.)
@@ -75,7 +77,7 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 4. Crear WIP nuevo vacío encima: `git commit --allow-empty -m "WIP: autosnapshot"`.
 5. **Push** (§4).
 
-> No hay sellado por inactividad ni por apagado. Para forzar un sellado+push puntual (p. ej. justo antes de irme al portátil) habrá un comando manual `sincrogit sync` (§12).
+> No hay sellado por inactividad ni por apagado. Para forzar un sellado+push puntual (p. ej. justo antes de irme al portátil): *Seal now* / *Seal+Push* por repo en la bandeja, `--seal-once` desde la CLI, o un Smart Commit.
 
 ### 3.4 Pull periódico (cada 10 min)
 Además del pull de arranque (§3.1), el demonio comprueba el remoto cada **10 min** para traer lo que dejó la otra máquina, **sin** que tenga que reiniciar sesión ni pullear a mano.
@@ -95,19 +97,20 @@ Además del pull de arranque (§3.1), el demonio comprueba el remoto cada **10 m
 
 **Regla de oro: solo se pushean commits sellados; el WIP nunca sale de la máquina.**
 
-- Push: empujar **`HEAD~1`** (el último sellado), nunca el WIP vivo:
-  `git push origin HEAD~1:<rama>` → así el remoto recibe historia inmutable y el WIP local se queda 1 commit por delante.
+- Push: empujar el **último commit sellado** — el commit no-WIP más reciente, resuelto por
+  mensaje y no por el `HEAD~1` posicional (ver §11) — nunca el WIP vivo:
+  `git push origin <sha-sellado>:refs/heads/<rama>` → así el remoto recibe historia inmutable y el WIP local se queda por delante.
 - Como los sellados son inmutables y nunca se reescriben, **el push es siempre fast-forward** y el **pull de la otra máquina es siempre limpio**. No hace falta force-push en ningún caso del flujo normal.
 
 **Handoff entre máquinas (uso secuencial):**
 
 ```
-Sobremesa: trabaja → cada 6h (o `sincrogit sync` manual) sella + push  ──►  remoto al día
+Sobremesa: trabaja → cada 6h (o un Seal now / Smart Commit manual) sella + push  ──►  remoto al día
 Portátil:  arranca → pull --rebase (limpio) → trabaja → sella + push ──► remoto al día
 Sobremesa: arranca → pull --rebase (limpio) → continúa...
 ```
 
-**Handoff normal (rama limpia):** el portátil hace `pull --rebase` de la rama y arranca con lo **sellado** (hasta 6 h atrás). Para un handoff a media ventana, lanza **`sincrogit sync`** antes de levantarte (sella + push) y el portátil arrancará con todo por la vía limpia.
+**Handoff normal (rama limpia):** el portátil hace `pull --rebase` de la rama y arranca con lo **sellado** (hasta 6 h atrás). Para un handoff a media ventana, lanza un sellado manual (**Seal now** / `--seal-once` / Smart Commit) antes de levantarte y el portátil arrancará con todo por la vía limpia.
 
 ### 4.1 Autosnap (espejo en vivo) — recuperación ante desastre
 
@@ -330,7 +333,10 @@ repos:
 - **Privacidad del código en la nube:** por defecto en modo híbrido se prioriza Ollama (local); si cae a nube, `cloud_send_content: false` envía solo estadísticas. La API key vive en variable de entorno.
 - **Operaciones git manuales mías** mientras corre el daemon (rebase, checkout de rama, etc.): la herramienta debe detectar `HEAD` cambiado/`rebase en curso`/índice ocupado y **ceder** (saltarse ese ciclo) en vez de pelearse. Detectar `.git/MERGE_HEAD`, `.git/rebase-*`, lock del índice.
 - **Guarda de rama / seguir rama.** Por defecto, cuando HEAD no está en la `branch` configurada, el repo **cede** (sin snapshot/seal/autosnap/push en la rama equivocada) — `_ensure_on_branch`, rate-limited. Con **`track_current_branch: true`** en su lugar **sigue** la rama actual: cada operación con rama usa `st.active_branch` (la rama viva de HEAD) en vez de `cfg.branch`, así snapshot/autosnap/relevo/push ocurren en la rama en la que estés (cada rama tiene su `refs/autosnap/<user>/<host>/<rama>`, y el relevo solo casa la misma rama). HEAD desacoplado (detached) sigue cediendo. Se acopla con el modo purista (sin auto-seal → nada se auto-pushea donde no debe). Opt-in; el default mantiene el guard seguro.
-- **El push solo empuja `HEAD~1`**: garantiza que nunca subo el WIP transitorio.
+- **El push apunta al último commit no-WIP** (resuelto por mensaje, no el `HEAD~1`
+  posicional): si el usuario commitea a mano encima del WIP, su commit es lo que se sube —
+  nunca el WIP transitorio. El reloj de sellado también se resetea al detectar un commit
+  externo (se respeta como sello manual).
 - **Instancia única (que dos demonios no compitan por git).** La guarda autoritativa es un
   mutex con nombre de Windows (`acquire_instance_mutex`; sin lock-huérfano —el SO lo libera
   al morir el proceso— y no se lo puede robar una app que ocupe el puerto). El puerto local
@@ -430,7 +436,7 @@ repos:
 - ✅ **Python**; git vía subprocess; `watchdog`.
 - ✅ Background: **Tarea programada al iniciar sesión** con `pythonw.exe`.
 - ✅ Rama de trabajo: **`main`** (confirmar por repo).
-- ✅ **Sellado cada 6 h** (timeline permanente grueso); `sincrogit sync` manual para el handoff por la vía limpia.
+- ✅ **Sellado cada 6 h** (timeline permanente grueso); un sellado manual (*Seal now* / `--seal-once` / Smart Commit) para el handoff por la vía limpia.
 - ✅ **Pull periódico cada 10 min** (`fetch` + pull solo si el remoto tiene commits nuevos), además del pull de arranque.
 - ✅ **Autosnap** (espejo en vivo de `HEAD` a `refs/autosnap/<host>/<rama>`, force-push cada 30 min, solo si cambió): RPO de fallo de disco ≈ 30 min, recuperación cross-machine por fichero o repo entero (CLI `--autosnaps` + GUI). La variante "historial fino navegable en el remoto" (un commit por snapshot) sigue diferida.
 
