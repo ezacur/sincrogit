@@ -352,6 +352,12 @@ repos:
 - **Graceful without `watchdog`.** If the watcher library is missing, the daemon keeps
   running (GUI, manual snapshot/commit, sync, time machine) with a clear warning instead of
   crashing — only automatic change-detection is off.
+- **The engine never dies silently.** A failure to even *launch* git (e.g. the repo folder
+  vanished: unplugged drive, moved cloud folder) surfaces as `GitError`, so the per-repo
+  handling skips that repo — at startup and on every cycle — and the others keep running.
+  If the loop still hits an unexpected error, it is made visible instead of leaving a
+  zombie tray icon: logged with traceback, emitted as an ERROR event (tray balloon +
+  toast), `status()` reports not-running (gray icon), and `--headless` exits with code 1.
 - **Never `--force`** in the automatic flow.
 - **Git output language** forced to English (`LC_ALL=C`) for consistent logs (our parsing uses locale-independent porcelain/plumbing commands).
 - **Maintenance:** `git gc --auto` after each seal **and at least once a day**

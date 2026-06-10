@@ -350,6 +350,12 @@ repos:
 - **Degradación elegante sin `watchdog`.** Si falta la librería del watcher, el demonio sigue
   corriendo (GUI, snapshot/commit manual, sync, máquina del tiempo) con un aviso claro en vez
   de crashear — solo se apaga la detección automática de cambios.
+- **El motor nunca muere en silencio.** Un fallo al *lanzar* git siquiera (p. ej. la carpeta
+  del repo desapareció: disco USB desenchufado, carpeta de nube movida) aflora como
+  `GitError`, así que el manejo por-repo salta ese repo — en el arranque y en cada ciclo —
+  y los demás siguen corriendo. Si aun así el loop choca con un error inesperado, se hace
+  visible en vez de dejar un icono zombi: log con traceback, evento ERROR (globo de bandeja
+  + toast), `status()` reporta parado (icono gris), y `--headless` sale con código 1.
 - **Nunca `--force`** en el flujo automático.
 - **Mantenimiento:** `git gc --auto` tras cada sello **y al menos una vez al día**
   (`Engine.GC_INTERVAL_SEC`, en un worker en segundo plano), para empaquetar los objetos

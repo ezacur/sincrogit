@@ -389,10 +389,13 @@ class TrayApp:
         If `normalize_eol` and the repo has no .gitattributes, a '* text=auto' one
         is created so line endings stay consistent across machines.
         """
-        from ..gitrepo import GitRepo
+        from ..gitrepo import GitError, GitRepo
         path = os.path.abspath(path)
-        if not GitRepo(path).is_git_repo():
-            return False, "The selected folder is not a git repository."
+        try:
+            if not GitRepo(path).is_git_repo():
+                return False, "The selected folder is not a git repository."
+        except GitError as e:
+            return False, str(e)
         if any(os.path.abspath(r["path"]) == path for r in self.engine.status()["repos"]):
             return False, "That repo is already added."
         entry = {

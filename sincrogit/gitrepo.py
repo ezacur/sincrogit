@@ -148,18 +148,25 @@ class GitRepo:
         # subprocess.run only kills the direct child (git.exe), and on Windows its
         # children (ssh.exe, git-remote-https.exe) would linger as orphans holding
         # the network connection (and potentially a lock). See §11 of DESIGN.md.
-        proc = subprocess.Popen(
-            cmd,
-            cwd=self.path,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-            creationflags=_NO_WINDOW,  # no console flash on Windows
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=self.path,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                creationflags=_NO_WINDOW,  # no console flash on Windows
+            )
+        except OSError as e:
+            # The repo folder vanished (unplugged drive, moved cloud folder) or git
+            # itself isn't runnable. Surface it as GitError — the engine's per-repo
+            # error handling catches GitError, while a raw OSError would kill the
+            # whole engine thread (silently, under the windowed GUI).
+            raise GitError(f"`git {' '.join(args)}` could not start: {e}") from e
         try:
             out, err = proc.communicate(input=stdin_data, timeout=timeout)
         except subprocess.TimeoutExpired:

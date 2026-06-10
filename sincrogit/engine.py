@@ -114,6 +114,7 @@ class Engine:
         self.states: list[RepoState] = []
         self.watch = None
         self._watch_ready = False
+        self.crashed = False  # the loop died on an unexpected error (see run)
         self._stop = threading.Event()
         self._paused = threading.Event()  # GLOBAL pause (from the tray)
         # Set by the watcher (a change arrived) or by stop()/resume() to wake the
@@ -441,53 +442,82 @@ class Engine:
                 )
 
         for rc in self.config.repos:
-            # Hand the repo a lazy pandoc resolver (only for .docx repos): it stays
-            # unresolved until a .docx actually shows up, so a repo that never sees
-            # a .docx never runs `pandoc --version`. See GitRepo._ensure_pandoc.
-            provider = self._pandoc_cmd if self._repo_versions_docx(rc) else None
-            repo = GitRepo(rc.path, pandoc_provider=provider)
-            if not repo.is_git_repo():
-                log.error("Not a git repo (skipping): %s", rc.path)
-                continue
-
-            ff = FileFilter(rc.max_file_bytes, rc.extra_excludes,
-                            rc.extra_includes, rc.max_include_bytes)
-            st = RepoState(repo, rc, ff)
-
             try:
-                if repo.ensure_wip():
-                    log.info("[%s] initial WIP created", rc.name)
+                self._setup_repo(rc)
             except GitError as e:
-                log.error("[%s] could not initialize the WIP: %s", rc.name, e)
-                continue
+                # E.g. the folder is gone (unplugged drive, moved cloud folder):
+                # skip this repo and keep the engine alive for the others.
+                self._emit(rc.name, "startup", f"setup failed, repo skipped: {e}", "ERROR")
 
-            sealed = repo.last_sealed_time()
-            st.last_seal_epoch = float(sealed) if sealed else time.time()
-            st.user = repo.sincro_user()
+    def _setup_repo(self, rc):
+        """Initialize and register ONE repo (setup's per-repo body). Raises
+        GitError if its git work fails — e.g. the folder no longer exists."""
+        # Hand the repo a lazy pandoc resolver (only for .docx repos): it stays
+        # unresolved until a .docx actually shows up, so a repo that never sees
+        # a .docx never runs `pandoc --version`. See GitRepo._ensure_pandoc.
+        provider = self._pandoc_cmd if self._repo_versions_docx(rc) else None
+        repo = GitRepo(rc.path, pandoc_provider=provider)
+        if not repo.is_git_repo():
+            log.error("Not a git repo (skipping): %s", rc.path)
+            return
 
-            with self._states_lock:
-                self.states.append(st)
-            if self._watch_ready:
-                self.watch.watch(rc.path, self._dirty_cb(st), ignore=st.file_filter.is_excluded)
+        ff = FileFilter(rc.max_file_bytes, rc.extra_excludes,
+                        rc.extra_includes, rc.max_include_bytes)
+        st = RepoState(repo, rc, ff)
 
-            branch = repo.current_branch()
-            st.branch = branch
-            if rc.track_current_branch:
-                # Follow mode: operate on whatever branch we start on (no pausing).
-                if branch and branch != "HEAD":
-                    st.active_branch = branch
-            elif branch and branch != rc.branch:
-                st.off_branch = True  # the branch guard keeps autosync paused until you switch
-                log.warning(
-                    "[%s] current branch '%s' != configured '%s'; autosync will wait "
-                    "until you switch to it",
-                    rc.name, branch, rc.branch,
-                )
-            self._ensure_docx_attributes(st)
-            self._emit(rc.name, "startup", f"watching '{rc.path}' (branch {branch})")
+        try:
+            if repo.ensure_wip():
+                log.info("[%s] initial WIP created", rc.name)
+        except GitError as e:
+            log.error("[%s] could not initialize the WIP: %s", rc.name, e)
+            return
+
+        sealed = repo.last_sealed_time()
+        st.last_seal_epoch = float(sealed) if sealed else time.time()
+        st.user = repo.sincro_user()
+
+        with self._states_lock:
+            self.states.append(st)
+        if self._watch_ready:
+            self.watch.watch(rc.path, self._dirty_cb(st), ignore=st.file_filter.is_excluded)
+
+        branch = repo.current_branch()
+        st.branch = branch
+        if rc.track_current_branch:
+            # Follow mode: operate on whatever branch we start on (no pausing).
+            if branch and branch != "HEAD":
+                st.active_branch = branch
+        elif branch and branch != rc.branch:
+            st.off_branch = True  # the branch guard keeps autosync paused until you switch
+            log.warning(
+                "[%s] current branch '%s' != configured '%s'; autosync will wait "
+                "until you switch to it",
+                rc.name, branch, rc.branch,
+            )
+        self._ensure_docx_attributes(st)
+        self._emit(rc.name, "startup", f"watching '{rc.path}' (branch {branch})")
 
     # ---------------------------------------------------------- loop / life
     def run(self):
+        try:
+            self._run()
+        except Exception as e:  # noqa: BLE001 — never die silently under the GUI
+            # An unexpected (non-GitError) failure must be VISIBLE: log it, emit an
+            # ERROR event (the tray shows a balloon) and toast — and the finally
+            # below sets _stop, so status() reports not-running (gray tray icon)
+            # instead of pretending the autosync is still alive.
+            self.crashed = True
+            log.exception("engine crashed")
+            self._emit("", "error", f"engine stopped unexpectedly: {e}; autosync is "
+                                    f"OFF until SincroGit restarts", "ERROR")
+            notify("SincroGit: engine stopped",
+                   f"Unexpected error: {e}. Autosync is OFF until you restart SincroGit.",
+                   level="error")
+        finally:
+            self._stop.set()  # status() must reflect that the loop is gone
+            self.shutdown()
+
+    def _run(self):
         self.setup(with_watcher=True)
         # Keep running even with 0 repos: repos can be added later from the GUI.
         if not self.states:
@@ -505,28 +535,25 @@ class Engine:
         threading.Thread(
             target=self._initial_sync, name="sincrogit-initsync", daemon=True
         ).start()
-        try:
-            while not self._stop.is_set():
-                self.tick()
-                if self._stop.is_set():
-                    break
-                # Sleep until the next action is actually due (see _wait_seconds),
-                # capped at MAX_TICK_SEC. The watcher (and stop/resume/worker
-                # completion) set _wake to interrupt early, so an idle laptop barely
-                # spins while changes are still handled at once.
-                wait = self._wait_seconds()
-                before_wall = time.time()
-                self._wake.wait(wait)
-                self._wake.clear()
-                # Wall-clock-gap resume detector (dependency-free, cross-platform):
-                # if far more WALL time passed than we meant to sleep, the machine was
-                # suspended (laptop lid) — and monotonic clocks may have frozen, so the
-                # snapshot/pull deadlines won't notice. Force a sync to pick up the
-                # other machine's work right away (the "arrived" half of the handoff).
-                if time.time() - before_wall > wait + self.RESUME_GAP_SEC:
-                    self._on_resume()
-        finally:
-            self.shutdown()
+        while not self._stop.is_set():
+            self.tick()
+            if self._stop.is_set():
+                break
+            # Sleep until the next action is actually due (see _wait_seconds),
+            # capped at MAX_TICK_SEC. The watcher (and stop/resume/worker
+            # completion) set _wake to interrupt early, so an idle laptop barely
+            # spins while changes are still handled at once.
+            wait = self._wait_seconds()
+            before_wall = time.time()
+            self._wake.wait(wait)
+            self._wake.clear()
+            # Wall-clock-gap resume detector (dependency-free, cross-platform):
+            # if far more WALL time passed than we meant to sleep, the machine was
+            # suspended (laptop lid) — and monotonic clocks may have frozen, so the
+            # snapshot/pull deadlines won't notice. Force a sync to pick up the
+            # other machine's work right away (the "arrived" half of the handoff).
+            if time.time() - before_wall > wait + self.RESUME_GAP_SEC:
+                self._on_resume()
 
     def _on_resume(self):
         """Woke from a long suspend (or the OS told us we unlocked/resumed): make a
@@ -556,10 +583,10 @@ class Engine:
             for st in self._states_snapshot():
                 if st.paused or st.user_paused:
                     continue
-                ok, _ = self._branch_ok(st)  # sets active_branch; yields off-branch/detached
-                if not ok:
-                    continue
                 try:
+                    ok, _ = self._branch_ok(st)  # sets active_branch; yields off-branch/detached
+                    if not ok:
+                        continue
                     with st.op_lock:
                         if st.repo.is_busy():
                             continue
@@ -632,6 +659,8 @@ class Engine:
                 self._maybe_gc(st, now_mono)        # daily repo packing; background worker
             except GitError as e:
                 log.error("[%s] error in the cycle: %s", st.cfg.name, e)
+            except Exception:  # noqa: BLE001 — one bad repo must not stop the others
+                log.exception("[%s] unexpected error in the cycle", st.cfg.name)
 
     # ----------------------------------------------------------- operations
     def _maybe_snapshot(self, st: RepoState, now_mono: float):
@@ -660,9 +689,9 @@ class Engine:
 
     def _initial_snapshot(self):
         for st in self._states_snapshot():
-            if not self._branch_ok(st)[0]:
-                continue  # on another branch: don't snapshot it (see _ensure_on_branch)
             try:
+                if not self._branch_ok(st)[0]:
+                    continue  # on another branch: don't snapshot it (see _ensure_on_branch)
                 with st.op_lock:
                     if st.repo.is_busy():
                         continue
@@ -820,12 +849,12 @@ class Engine:
         # Runs on its own thread at startup. Per-repo op_lock keeps each repo's
         # sync from racing the tick (which simply skips a repo that's busy).
         for st in self._states_snapshot():
-            if self._branch_ok(st)[0]:
-                try:
+            try:
+                if self._branch_ok(st)[0]:
                     with st.op_lock:
                         self._do_sync(st)
-                except GitError as e:
-                    log.error("[%s] error in initial sync: %s", st.cfg.name, e)
+            except GitError as e:
+                log.error("[%s] error in initial sync: %s", st.cfg.name, e)
             st.last_pull_mono = time.monotonic()
 
     def _maybe_sync(self, st: RepoState, now_mono: float):
@@ -963,35 +992,41 @@ class Engine:
         st = self.repo_state_by_name(name)
         if not st:
             return False, "repo not found"
-        ok, cur = self._branch_ok(st)
+        try:
+            ok, cur = self._branch_ok(st)
+        except GitError as e:
+            return False, str(e)
         if not ok:
             return False, self._branch_block_msg(st, cur)
         repo = st.repo
-        with st.op_lock:
-            if repo.is_busy():
-                return False, "repo busy (merge/rebase in progress)"
-            if not repo.has_remote(st.cfg.remote):
-                return False, "no remote configured"
-            repo.fetch_autosnaps(st.cfg.remote, user=st.user, timeout=st.cfg.git_timeout_sec)
-            peer = repo.peer_wip(st.user, self._autosnap_host, st.active_branch)
-            if not peer:
-                st.pending_handoff = None
-                return False, "the other machine's work is no longer available"
-            # Snapshot local edits, then re-check the relationship from scratch.
-            self._ensure_wip(st)
-            if self._stage(st) and repo.has_staged_changes():
-                repo.amend_keep_message()
-            head = repo.head_sha()
-            if head == peer["sha"]:
-                st.pending_handoff = None
-                return True, "already up to date"
-            rel = repo.work_relationship(head, peer["sha"])
-            if rel != "theirs_contains":
-                st.pending_handoff = None
-                return False, f"can no longer fast-forward safely (now '{rel}'); resolve by hand"
-            if repo.untracked_collisions(peer["sha"]):
-                return False, "would overwrite untracked file(s); move them first"
-            self._apply_handoff(st, peer["sha"], peer["host"])
+        try:
+            with st.op_lock:
+                if repo.is_busy():
+                    return False, "repo busy (merge/rebase in progress)"
+                if not repo.has_remote(st.cfg.remote):
+                    return False, "no remote configured"
+                repo.fetch_autosnaps(st.cfg.remote, user=st.user, timeout=st.cfg.git_timeout_sec)
+                peer = repo.peer_wip(st.user, self._autosnap_host, st.active_branch)
+                if not peer:
+                    st.pending_handoff = None
+                    return False, "the other machine's work is no longer available"
+                # Snapshot local edits, then re-check the relationship from scratch.
+                self._ensure_wip(st)
+                if self._stage(st) and repo.has_staged_changes():
+                    repo.amend_keep_message()
+                head = repo.head_sha()
+                if head == peer["sha"]:
+                    st.pending_handoff = None
+                    return True, "already up to date"
+                rel = repo.work_relationship(head, peer["sha"])
+                if rel != "theirs_contains":
+                    st.pending_handoff = None
+                    return False, f"can no longer fast-forward safely (now '{rel}'); resolve by hand"
+                if repo.untracked_collisions(peer["sha"]):
+                    return False, "would overwrite untracked file(s); move them first"
+                self._apply_handoff(st, peer["sha"], peer["host"])
+        except GitError as e:
+            return False, str(e)
         return True, f"applied '{peer['host']}'"
 
     def _warn_handoff_once(self, st: RepoState, peer_sha: str, message: str,
@@ -1057,11 +1092,11 @@ class Engine:
     # op_lock so they can't race the tick or a network worker on the same repo.)
     def snapshot_all_now(self):
         for st in self._states_snapshot():
-            ok, cur = self._branch_ok(st)
-            if not ok:
-                log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
-                continue
             try:
+                ok, cur = self._branch_ok(st)
+                if not ok:
+                    log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
+                    continue
                 with st.op_lock:
                     if st.repo.is_busy():
                         log.info("[%s] repo busy, skipped", st.cfg.name)
@@ -1078,11 +1113,11 @@ class Engine:
     def seal_all_now(self):
         now = time.time()
         for st in self._states_snapshot():
-            ok, cur = self._branch_ok(st)
-            if not ok:
-                log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
-                continue
             try:
+                ok, cur = self._branch_ok(st)
+                if not ok:
+                    log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
+                    continue
                 # Push synchronously: this is a manual / CLI one-shot action (off
                 # the tick thread), so the push must finish before we return —
                 # otherwise `--seal-once` would exit before the push completes.
@@ -1094,11 +1129,11 @@ class Engine:
 
     def sync_all_now(self):
         for st in self._states_snapshot():
-            ok, cur = self._branch_ok(st)
-            if not ok:
-                log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
-                continue
             try:
+                ok, cur = self._branch_ok(st)
+                if not ok:
+                    log.info("[%s] on '%s' != configured '%s', skipped", st.cfg.name, cur, st.cfg.branch)
+                    continue
                 with st.op_lock:
                     self._do_sync(st)
             except GitError as e:
@@ -1110,8 +1145,11 @@ class Engine:
         already merged with defaults. Returns (ok, message)."""
         provider = self._pandoc_cmd if self._repo_versions_docx(rc) else None
         repo = GitRepo(rc.path, pandoc_provider=provider)
-        if not repo.is_git_repo():
-            return False, "not a git repository"
+        try:
+            if not repo.is_git_repo():
+                return False, "not a git repository"
+        except GitError as e:
+            return False, str(e)
         with self._states_lock:
             if any(os.path.abspath(st.cfg.path) == os.path.abspath(rc.path) for st in self.states):
                 return False, "repo already added"
@@ -1121,12 +1159,12 @@ class Engine:
                                             rc.extra_includes, rc.max_include_bytes))
         try:
             repo.ensure_wip()
+            sealed = repo.last_sealed_time()
+            st.last_seal_epoch = float(sealed) if sealed else time.time()
+            st.branch = repo.current_branch()
+            st.user = repo.sincro_user()
         except GitError as e:
             return False, str(e)
-        sealed = repo.last_sealed_time()
-        st.last_seal_epoch = float(sealed) if sealed else time.time()
-        st.branch = repo.current_branch()
-        st.user = repo.sincro_user()
         with self._states_lock:
             self.states.append(st)
         if self._watch_ready and self.watch is not None:
@@ -1145,7 +1183,10 @@ class Engine:
         st = self.repo_state_by_name(name)
         if not st:
             return False, "repo not found"
-        ok, cur = self._branch_ok(st)
+        try:
+            ok, cur = self._branch_ok(st)
+        except GitError as e:
+            return False, str(e)
         if not ok:
             return False, self._branch_block_msg(st, cur)
         with st.op_lock:
@@ -1171,7 +1212,10 @@ class Engine:
         st = self.repo_state_by_name(name)
         if not st:
             return False, "", "", "repo not found"
-        ok, cur = self._branch_ok(st)
+        try:
+            ok, cur = self._branch_ok(st)
+        except GitError as e:
+            return False, "", "", str(e)
         if not ok:
             return False, "", "", self._branch_block_msg(st, cur)
 
@@ -1213,7 +1257,10 @@ class Engine:
         st = self.repo_state_by_name(name)
         if not st:
             return False, "repo not found"
-        ok, cur = self._branch_ok(st)
+        try:
+            ok, cur = self._branch_ok(st)
+        except GitError as e:
+            return False, str(e)
         if not ok:
             return False, self._branch_block_msg(st, cur)
         repo, cfg = st.repo, st.cfg
