@@ -162,10 +162,33 @@ def acquire_instance_mutex(name: str = "Local\\SincroGit-tray-instance") -> bool
         kernel32 = ctypes.windll.kernel32
         handle = kernel32.CreateMutexW(None, False, name)
         already = (kernel32.GetLastError() == 183)  # ERROR_ALREADY_EXISTS
-        _instance_mutex_handle = handle  # keep alive
+        if _instance_mutex_handle is None:
+            _instance_mutex_handle = handle  # keep alive (the ONE per-process handle)
+        else:
+            # Repeat call in the same process: don't leak/overwrite — extra live
+            # handles would keep the mutex alive past release_instance_mutex().
+            kernel32.CloseHandle(handle)
         return already
     except Exception:  # noqa: BLE001 — if the mutex can't be created, fall back to the port
         return False
+
+
+def release_instance_mutex() -> None:
+    """Release the named mutex explicitly (Windows; no-op elsewhere/if unheld).
+
+    Needed right before a self-restart (os.execv): the dying parent could
+    otherwise still hold the mutex when the child checks it, making the child
+    conclude another instance runs and exit — leaving no SincroGit at all.
+    Normal shutdown doesn't need this (the OS releases it on process death)."""
+    global _instance_mutex_handle
+    if sys.platform != "win32" or _instance_mutex_handle is None:
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.CloseHandle(_instance_mutex_handle)
+    except Exception:  # noqa: BLE001 — releasing is best-effort
+        pass
+    _instance_mutex_handle = None
 
 
 def acquire_single_instance(port: int = _LOCK_PORT):

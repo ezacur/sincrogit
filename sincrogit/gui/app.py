@@ -23,7 +23,7 @@ from ..config import append_repo, load_config
 from ..engine import Engine
 from ..events import EventLog
 from ..log import setup_logging
-from ..runtime import serve_activation
+from ..runtime import release_instance_mutex, serve_activation
 from . import icon as iconmod
 from .control_panel import ControlPanel
 
@@ -285,6 +285,10 @@ class TrayApp:
         if self._engine_thread:
             self._engine_thread.join(timeout=15)
         self._release_lock()  # free the single-instance port before re-launching
+        # Also release the named mutex NOW: os.execv spawns the child while this
+        # process is still dying — if it still held the mutex, the child would
+        # see "already running" and exit, leaving no SincroGit at all.
+        release_instance_mutex()
         self.tray.hide()
         if getattr(sys, "frozen", False):
             args = [sys.executable, "--tray", "-c", self.config_path]
