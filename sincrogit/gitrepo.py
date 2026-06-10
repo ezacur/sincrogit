@@ -751,6 +751,28 @@ class GitRepo:
         parts = (line.split("\t", 2) + ["", "", ""])[:3]
         return parts[0], parts[1], parts[2]
 
+    def _blobs_at(self, shas: list, relpath: str) -> dict:
+        """{sha: blob_oid} of `relpath` at each commit, resolved in ONE
+        `cat-file --batch-check` call — one subprocess per commit (the old
+        rev-parse loop) made opening a file's history take many seconds once
+        the reflog filled up. Commits where the path is absent (or is a
+        directory) are simply left out."""
+        if not shas:
+            return {}
+        data = "".join(f"{sha}:{relpath}\n" for sha in shas)
+        res = self._run(
+            ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+            check=False, stdin_data=data,
+        )
+        out = {}
+        # One output line per input line, in order: "<oid> blob" on success,
+        # "<input> missing" (or an error tag) otherwise.
+        for sha, line in zip(shas, res.stdout.splitlines()):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "blob":
+                out[sha] = parts[0]
+        return out
+
     def file_history(self, relpath: str, limit: int = 50) -> list:
         """Distinct versions of a file, newest first.
 
@@ -790,14 +812,14 @@ class GitRepo:
             info.setdefault(sha, (r["epoch"], f"autosnap: {r['host']}"))
             autosnap_label[sha] = r["host"]
 
-        # Resolve the file blob at each commit (skip commits where it's absent).
-        # The kind is derived from the source: autosnap refs first, then WIP
-        # commits are snapshots, the rest are sealed (permanent) commits.
+        # Resolve the file blob at each commit (skip commits where it's absent),
+        # all in a single git call (see _blobs_at). The kind is derived from the
+        # source: autosnap refs first, then WIP commits are snapshots, the rest
+        # are sealed (permanent) commits.
+        blob_at = self._blobs_at(list(info.keys()), relpath)
         entries = []
         for sha, (epoch, subj) in info.items():
-            blob = self._run(
-                ["rev-parse", "--verify", "--quiet", f"{sha}:{relpath}"], check=False
-            ).stdout.strip()
+            blob = blob_at.get(sha)
             if not blob:
                 continue
             if sha in autosnap_label:
