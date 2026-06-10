@@ -477,9 +477,23 @@ An AI coding agent (Claude Code, Cursor, Codex, …) is the ultimate "won't comm
 hand" user: it changes many files, fast, and review happens after the fact. Run
 SincroGit on the repos your agents work in and you get, with **zero integration**:
 
-- **A full trail.** Every few minutes of agent work becomes a rollback point. For heavy
-  agent sessions, tune the resolution finer (`snapshot_interval_sec: 60`) on that repo —
-  see [Tuning a "hot" repo](#tuning-a-hot-repo).
+- **A full trail — turn the resolution up.** For an agent, the default 5 min bucket is
+  coarse: it can rewrite half the repo in that window. Turn **both** knobs down on that
+  repo. With continuous writes, snapshots land every `snapshot_interval_sec` to 2× that
+  (the anti-starvation cap), and `debounce_sec` aligns each snapshot to the end of an
+  agent's write burst:
+
+  ```yaml
+  repos:
+    - path: "C:/work/agent-playground"
+      snapshot_interval_sec: 30   # a rollback point every ~30-60 s of agent churn
+      debounce_sec: 5             # agents write in bursts; settle fast
+  ```
+
+  Snapshots are local amends (no network), so the finer cadence costs nothing remotely —
+  the daily `git gc` packs the extra loose objects. You can push it to near
+  per-burst (`snapshot_interval_sec: 5`; the floor is really the debounce) at the cost
+  of a noisier reflog. See [Tuning a "hot" repo](#tuning-a-hot-repo).
 - **Rollback of anything it did.** A bad agent edit from an hour ago? *File history* →
   restore the file (or the whole repo) to right before it happened.
 - **A clean separation of your work.** Run **purist mode** (`seal_interval_min: inf`):
@@ -492,8 +506,8 @@ their own commands instead of git. SincroGit takes the opposite approach: it is
 **invisible** — nothing to install in the agent, nothing the agent must do differently —
 so it works with any agent, today's or next year's. Honest caveat: it records a
 *timeline*, not an audit log. It doesn't attribute changes to "agent vs. you" beyond
-what your own Smart Commits separate, and states *between* snapshots (within the ~5 min
-window) aren't captured.
+what your own Smart Commits separate, and states *between* snapshots aren't captured —
+the window is whatever you tune (~5 min by default, ~30-60 s with the profile above).
 
 ## How it compares with neighboring tools
 

@@ -508,9 +508,24 @@ Un agente de código con IA (Claude Code, Cursor, Codex, …) es el usuario defi
 posteriori. Pon SincroGit en los repos donde trabajan tus agentes y obtienes, con **cero
 integración**:
 
-- **El rastro completo.** Cada pocos minutos de trabajo del agente se vuelven un punto de
-  rollback. Para sesiones intensas, afina la resolución (`snapshot_interval_sec: 60`) en
-  ese repo — ver [Afinar un repo "en caliente"](#afinar-un-repo-en-caliente).
+- **El rastro completo — sube la resolución.** Para un agente, el cubo de 5 min por
+  defecto es grueso: puede reescribir medio repo en esa ventana. Baja **los dos** mandos
+  en ese repo. Con escritura continua, los snapshots caen entre `snapshot_interval_sec`
+  y 2× eso (el tope anti-inanición), y `debounce_sec` alinea cada snapshot con el final
+  de una ráfaga de escritura del agente:
+
+  ```yaml
+  repos:
+    - path: "C:/trabajo/agent-playground"
+      snapshot_interval_sec: 30   # un punto de rollback cada ~30-60 s de actividad
+      debounce_sec: 5             # los agentes escriben a ráfagas; asienta rápido
+  ```
+
+  Los snapshots son amends locales (cero red), así que la cadencia fina no cuesta nada
+  en remoto — el `git gc` diario empaqueta los objetos sueltos extra. Puedes apurar
+  hasta casi un snapshot por ráfaga (`snapshot_interval_sec: 5`; el suelo real es el
+  debounce) a cambio de un reflog más ruidoso. Ver
+  [Afinar un repo "en caliente"](#afinar-un-repo-en-caliente).
 - **Rollback de cualquier cosa que hiciera.** ¿Una mala edición del agente de hace una
   hora? *File history* → restaura el fichero (o el repo entero) a justo antes.
 - **Separación limpia de tu trabajo.** Usa el **modo purista** (`seal_interval_min: inf`):
@@ -524,7 +539,8 @@ toma el enfoque opuesto: es **invisible** — nada que instalar en el agente, na
 agente deba hacer distinto — así que funciona con cualquier agente, el de hoy o el del
 año que viene. Aviso honesto: registra una *línea temporal*, no un log de auditoría. No
 atribuye cambios a "agente vs. tú" más allá de lo que separen tus propios Smart Commits,
-y los estados *entre* snapshots (dentro de la ventana de ~5 min) no se capturan.
+y los estados *entre* snapshots no se capturan — la ventana es la que tú afines (~5 min
+por defecto, ~30-60 s con el perfil de arriba).
 
 ## Cómo se compara con las herramientas vecinas
 
