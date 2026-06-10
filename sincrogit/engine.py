@@ -1134,6 +1134,14 @@ class Engine:
         if repo.rebase_onto_remote(cfg.remote, st.active_branch):
             self._mark_action(st, "pull")
             self._emit(cfg.name, "pull", f"integrated {behind} commit(s) from the remote")
+            # A never-sealed repo may have just pulled sealed commits: reflect it
+            # in the panel ("since last seal") and base the seal clock on the real
+            # one (the extra git call only happens until the first seal is seen).
+            if not st.has_sealed:
+                sealed = repo.last_sealed_time()
+                if sealed is not None:
+                    st.has_sealed = True
+                    st.last_seal_epoch = float(sealed)
             return True
         st.paused = True
         notify(

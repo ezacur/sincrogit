@@ -32,6 +32,7 @@ class AddRepoDialog(QDialog):
         row = QHBoxLayout()
         self.ed_path = QLineEdit()
         self.ed_path.setPlaceholderText(r"C:\path\to\your\repo")
+        self.ed_path.editingFinished.connect(self._fill_branch_from_repo)
         row.addWidget(self.ed_path, 1)
         btn_browse = QPushButton("Browse…")
         btn_browse.clicked.connect(self._browse)
@@ -80,6 +81,22 @@ class AddRepoDialog(QDialog):
         chosen = QFileDialog.getExistingDirectory(self, "Choose a git repository")
         if chosen:
             self.ed_path.setText(os.path.normpath(chosen))
+            self._fill_branch_from_repo()
+
+    def _fill_branch_from_repo(self):
+        """Prefill the branch field with the repo's CURRENT branch instead of
+        assuming 'main' — otherwise adding a 'master' repo silently starts
+        off-branch (autosync waiting). Best-effort convenience."""
+        path = self.ed_path.text().strip()
+        if not path or not os.path.isdir(path):
+            return
+        try:
+            from ..gitrepo import GitRepo
+            branch = GitRepo(path).current_branch()
+        except Exception:  # noqa: BLE001 — purely a convenience
+            return
+        if branch and branch != "HEAD":
+            self.ed_branch.setText(branch)
 
     def _add(self):
         path = self.ed_path.text().strip()

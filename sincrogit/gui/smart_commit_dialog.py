@@ -44,7 +44,8 @@ class SmartCommitDialog(QDialog):
         self.ed_msg.setEnabled(False)
         v.addWidget(self.ed_msg, 1)
 
-        v.addWidget(QLabel("Files in this commit (current snapshot window):"))
+        v.addWidget(QLabel("Files in this commit (at proposal time — edits you make "
+                           "before pressing Commit are sealed too):"))
         self.files_view = QPlainTextEdit()
         self.files_view.setReadOnly(True)
         self.files_view.setFont(QFont("Consolas", 9))
