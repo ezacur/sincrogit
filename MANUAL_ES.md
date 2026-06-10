@@ -102,7 +102,9 @@ python -m sincrogit -c config.yaml --history src\app.py            # interactivo
 python -m sincrogit -c config.yaml --history src\app.py --pick 3   # restaura la versión 3 directa
 ```
 
-Una restauración la captura el siguiente snapshot, así que sigue siendo reversible.
+Las ediciones pendientes se fotografían en el WIP *antes* de que la restauración toque
+nada, y la restauración a su vez queda capturada — así que restaurar es siempre
+reversible, hasta el momento justo anterior.
 
 ### Recuperación entre máquinas — `--autosnaps` y `--apply-handoff REPO`
 

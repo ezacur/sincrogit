@@ -391,8 +391,12 @@ class GitRepo:
         return self._run(["diff", "--cached", "--quiet"], check=False).returncode != 0
 
     def amend_keep_message(self):
-        """Rewrite the WIP with the current index, keeping its message."""
-        self._run(["commit", "--amend", "--no-edit"])
+        """Rewrite the WIP with the current index, keeping its message.
+        `--allow-empty` because the WIP may legitimately become empty — e.g. the
+        user reverts an already-snapshotted edit back to the sealed content, or a
+        whole-repo restore targets the last sealed state; the WIP is created
+        empty (`ensure_wip`), so an empty amend must not fail either."""
+        self._run(["commit", "--amend", "--no-edit", "--allow-empty"])
 
     def wip_differs_from_base(self) -> bool:
         """Does the WIP have content worth sealing?"""

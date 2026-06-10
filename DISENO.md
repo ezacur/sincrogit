@@ -363,6 +363,12 @@ repos:
   posicional): si el usuario commitea a mano encima del WIP, su commit es lo que se sube —
   nunca el WIP transitorio. El reloj de sellado también se resetea al detectar un commit
   externo (se respeta como sello manual).
+- **Las restauraciones nunca destruyen trabajo sin fotografiar.** Antes de que
+  `restore_file`/`restore_repo` sobrescriban nada, las ediciones pendientes se capturan
+  en el WIP (el mismo stage+amend que hace el relevo) — lo guardado desde el último
+  snapshot no existe en ningún otro sitio, ni siquiera el reflog. El amend del WIP es
+  `--allow-empty`: revertir a mano al contenido sellado, o restaurar el repo entero al
+  último sellado, vacía legítimamente el WIP y no debe fallar.
 - **Instancia única (que dos demonios no compitan por git).** La guarda autoritativa es un
   mutex con nombre de Windows (`acquire_instance_mutex`; sin lock-huérfano —el SO lo libera
   al morir el proceso— y no se lo puede robar una app que ocupe el puerto). El puerto local

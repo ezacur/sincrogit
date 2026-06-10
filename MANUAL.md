@@ -101,7 +101,9 @@ python -m sincrogit -c config.yaml --history src\app.py            # interactive
 python -m sincrogit -c config.yaml --history src\app.py --pick 3   # restore version 3 directly
 ```
 
-A restore is itself captured by the next snapshot, so it stays reversible.
+Pending edits are snapshotted into the WIP *before* the restore touches anything, and
+the restore is itself captured — so a restore is always reversible, back to the moment
+right before it.
 
 ### Cross-machine recovery — `--autosnaps` and `--apply-handoff REPO`
 

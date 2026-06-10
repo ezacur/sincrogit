@@ -1418,6 +1418,12 @@ class Engine:
             return False, "repo not found"
         with st.op_lock:  # don't race with the snapshot/seal cycle
             try:
+                # Snapshot pending edits into the WIP BEFORE overwriting: an edit
+                # saved since the last snapshot exists nowhere else — without this,
+                # the checkout would destroy it beyond even the reflog's reach.
+                self._ensure_wip(st)
+                if self._stage(st) and st.repo.has_staged_changes():
+                    st.repo.amend_keep_message()
                 st.repo.restore_file(relpath, sha)
             except GitError as e:
                 return False, str(e)
@@ -1453,6 +1459,11 @@ class Engine:
         with st.op_lock:  # don't race with the snapshot/seal cycle
             try:
                 self._ensure_wip(st)
+                # Snapshot pending edits into the WIP BEFORE overwriting: anything
+                # saved since the last snapshot exists nowhere else — without this,
+                # the read-tree would destroy it beyond even the reflog's reach.
+                if self._stage(st) and st.repo.has_staged_changes():
+                    st.repo.amend_keep_message()
                 st.repo.restore_tree(sha)
                 if st.repo.has_staged_changes():
                     st.repo.amend_keep_message()

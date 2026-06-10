@@ -314,6 +314,11 @@ En la app de bandeja, lo mismo está en el panel de control:
 **Estado → "File history…"** (explorar, ver un diff de cualquier versión y restaurar
 un fichero o el repo entero).
 
+Restaurar está a su vez protegido: las ediciones pendientes se fotografían primero en el
+WIP (así nada guardado desde el último snapshot puede perderse), y el estado restaurado
+se captura como un snapshot nuevo — una restauración es siempre reversible, hasta el
+momento justo anterior a ella.
+
 ### Commit manual (Smart Commit)
 
 Sella tu trabajo actual ahora con un mensaje curado, en vez de esperar al sellado

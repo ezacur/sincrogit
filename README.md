@@ -295,6 +295,10 @@ python -m sincrogit -c config.yaml --history path\to\file.py --pick 3
 In the tray app, the same is available from the control panel:
 **Status → "File history…"** (browse, preview any version, and restore).
 
+Restoring is itself protected: pending edits are first snapshotted into the WIP (so
+nothing saved since the last snapshot can be lost), and the restored state is captured
+as a new snapshot — a restore is always reversible, back to the moment right before it.
+
 ### Manual commit (Smart Commit)
 
 Seal your current work now with a curated message instead of waiting for the 6 h

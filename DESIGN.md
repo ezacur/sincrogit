@@ -361,6 +361,12 @@ repos:
   positional `HEAD~1`): if the user commits manually on top of the WIP, their
   commit is what gets pushed — never the transient WIP. The seal clock is also
   reset when an external commit is detected (it's respected as a manual seal).
+- **Restores never destroy unsnapshotted work.** Before `restore_file`/`restore_repo`
+  overwrite anything, pending edits are captured into the WIP (the same stage+amend the
+  handoff does) — work saved since the last snapshot exists nowhere else, not even the
+  reflog. The WIP amend is `--allow-empty`: a hand-revert to the sealed content, or a
+  whole-repo restore to the last sealed state, legitimately empties the WIP and must
+  not fail.
 - **Single instance (no two daemons racing git).** Authoritative guard is a Windows
   named mutex (`acquire_instance_mutex`; no stale-lock problem — the OS releases it on
   process death — and it can't be stolen by an app squatting on the lock port). The
