@@ -40,6 +40,25 @@ def _disabled_to_inf(value):
     return value
 
 
+def _to_number(name: str, value):
+    """Coerce a config value to a non-negative number, accepting numeric strings
+    (a quoted '300' in the YAML). Anything else fails AT LOAD with a clear
+    message — instead of TypeError-ing inside the engine loop hours later.
+    (load_config's callers already surface ValueError as a config error.)"""
+    if isinstance(value, bool):  # bool is an int subclass: reject it explicitly
+        raise ValueError(f"config: '{name}' must be a number, got a boolean ({value!r})")
+    if isinstance(value, str):
+        try:
+            value = float(value) if any(c in value for c in ".eE") else int(value)
+        except ValueError:
+            raise ValueError(f"config: '{name}' must be a number, got {value!r}") from None
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"config: '{name}' must be a number, got {value!r}")
+    if value < 0:
+        raise ValueError(f"config: '{name}' must be >= 0, got {value!r}")
+    return value
+
+
 def _norm_handoff(value) -> str:
     """Normalize live_handoff to 'auto' | 'ask' | 'off'. Accepts booleans
     (true->auto, false->off) and the obvious word spellings."""
@@ -114,9 +133,19 @@ class RepoConfig:
         # Normalize disable sentinels (inf/off/none/never, None, False) to
         # math.inf for the interval/threshold fields, so 'seal_interval_min: inf'
         # (purist mode: no auto-seal) or 'max_file_bytes: off' (no size limit)
-        # just work. See _disabled_to_inf.
+        # just work. See _disabled_to_inf. Everything that survives must be a
+        # real non-negative number (numeric strings are coerced): a mistyped
+        # value fails here, at load, with a clear message — not as a TypeError
+        # deep inside the engine loop hours later.
         for f in _DISABLEABLE_FIELDS:
-            setattr(self, f, _disabled_to_inf(getattr(self, f)))
+            v = _disabled_to_inf(getattr(self, f))
+            if not (isinstance(v, float) and math.isinf(v)):
+                v = _to_number(f, v)
+            setattr(self, f, v)
+        # git_timeout_sec keeps its own semantics (not disableable; None = no
+        # timeout) but must otherwise be a real number too.
+        if self.git_timeout_sec is not None:
+            self.git_timeout_sec = _to_number("git_timeout_sec", self.git_timeout_sec)
         self.live_handoff = _norm_handoff(self.live_handoff)
 
     @property
