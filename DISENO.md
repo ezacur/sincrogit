@@ -10,7 +10,10 @@
 > §12 (roadmap) y §13 (registro de decisiones) registran **historia**: sus entradas no se
 > reescriben retroactivamente — cuando la realidad avanzó, lo dice una nota explícita
 > *(superado después …)*. Para el día a día, el [Manual](MANUAL_ES.md); para la referencia
-> de configuración, el [LEAME](LEAME.md#configuración).
+> de configuración, el [LEAME](LEAME.md#configuración); para la relación de SincroGit con
+> las herramientas vecinas (jj, GitButler, dura, …) y la lista de trabajo pendiente, las
+> secciones [Cómo se compara](LEAME.md#cómo-se-compara-con-las-herramientas-vecinas) y
+> [TODO](LEAME.md#todo) del LEAME.
 
 ---
 
@@ -433,7 +436,8 @@ repos:
 - Generador de mensajes IA híbrido (Ollama → Gemini → fallback). Nunca bloquea el sellado.
 - Push de sellados (refspec con SHA → `refs/heads/<branch>`) + reintento en cada sync.
 - `fetch` + pull con rebase del WIP, solo si el remoto adelanta; sync inicial al arrancar.
-- Política de conflicto: abortar rebase + pausar repo + notificar (verificado en pruebas).
+- Política de conflicto: abortar rebase + pausar repo + notificar *(verificado a mano —
+  una batería de tests automatizados sigue pendiente; ver el TODO técnico abajo)*.
 
 **✅ Fase 4 — Interfaz de bandeja (PyQt5) — COMPLETA:**
 - Icono en la bandeja del sistema (una "G" con reloj de arena, dibujado vectorial)
@@ -456,8 +460,19 @@ repos:
   Ver §11.)*
 - ✅ Resolución de config: junto al .exe → `%APPDATA%\SincroGit\` → cwd; en el primer
   arranque se crea una por defecto.
-- ⏳ Pendiente: tarea programada al iniciar sesión que auto-arranque `SincroGit.exe`.
+- ⏳ Pendiente: tarea programada al iniciar sesión que auto-arranque `SincroGit.exe` —
+  sin ella, la promesa de "cero disciplina" depende de acordarse de lanzar la herramienta.
 - ⏳ Pendiente: comando/pestaña `status` (el atajo "sellar+push ahora" ya está en el menú).
+- ⏳ Pendiente: onboarding guiado en "Add repo" (crear/conectar un remoto privado y
+  verificarlo con un push de prueba, desde la GUI) — para el público sin Git, el montaje
+  de remoto/credenciales es la barrera de entrada real, no el demonio.
+
+**Pendiente — técnico (sin feature visible para el usuario):**
+- ⏳ Batería de tests automatizados — **hoy no existe ninguna**; todos los caminos de
+  seguridad se han verificado a mano. Prioridad: clasificación de `work_relationship`,
+  los rechazos del fast-forward (`untracked_collisions`, `modified_unstaged`), aborto +
+  pausa en conflicto de rebase, e idempotencia de sellado/push — todo contra repos
+  locales desechables; después, CI.
 
 **Opcional / futuro:**
 - Rama `autosnap` con commits reales cada 5 min (historial intra-ventana navegable *en el remoto*) en lugar del espejo force-push del último estado.

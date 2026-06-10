@@ -29,6 +29,33 @@ trabajo te siga entre máquinas con esfuerzo casi nulo.
 > en Git o quieres el *cuándo/por qué* en lenguaje llano? La **[guía para humanos](GUIA.md)**.
 > Diseño y decisiones: **[DISENO.md](DISENO.md)**.
 
+## ¿Ya dominas Git? El minuto del escéptico
+
+Un demonio que amendea commits y hace force-push de refs *suena* a algo que mantener
+lejos de tus repos — así que aquí va, por delante, exactamente qué toca y qué no toca
+nunca:
+
+- **El único commit que reescribe es el suyo.** El único commit `WIP: autosnapshot` de
+  la punta es el que se amendea; tus commits no se amendean, rebasan ni descartan nunca,
+  y cada snapshot reemplazado sigue recuperable en el reflog (≈30 días).
+- **Tu rama nunca recibe un force-push.** Solo recibe commits sellados, siempre como
+  fast-forward. `--force` se usa únicamente sobre los refs laterales por máquina de
+  SincroGit (`refs/autosnap/<user>/<host>/<rama>`), donde cada máquina es la única que
+  escribe.
+- **Nunca fusiona ni resuelve nada por su cuenta.** ¿Trabajo divergente o conflicto de
+  rebase? Se detiene, pausa ese repo y te avisa; ambos estados quedan intactos (ver
+  [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo)).
+- **Los commits de la máquina van etiquetados.** Todo sellado automático lleva el
+  prefijo `sincro:` — trivial de localizar, aplastar o descartar antes de un PR.
+- **Puedes tener cero commits de máquina.** El modo purista (`seal_interval_min: inf`)
+  deja la rama 100 % tuya — solo aterrizan tus Smart Commits — mientras el WIP, el
+  espejo autosnap y el relevo entre máquinas siguen funcionando por debajo (ver
+  [Pragmática vs purista](#pragmática-vs-purista-tú-decides-qué-significa-un-commit)).
+
+Cómo se implementa cada garantía está documentado en [DISENO.md](DISENO.md) §11. Para
+ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
+[Cómo se compara](#cómo-se-compara-con-las-herramientas-vecinas).
+
 ## Estado: Fases 1, 2 y 4 completas (Fase 3, despliegue: parcial)
 
 **Fase 1 (núcleo local):**
@@ -105,8 +132,34 @@ trabajo te siga entre máquinas con esfuerzo casi nulo.
   **solo ese fichero o el repo entero** — desde la CLI (`--history`, `--autosnaps`) y
   el panel de control.
 
-Pendiente (Fase 3): despliegue como tarea programada de Windows (`pythonw.exe`)
-para arrancar `--tray` al iniciar sesión, y comando `sincrogit status`.
+Pendiente (Fase 3): ver el [TODO](#todo) de abajo.
+
+## TODO
+
+Por orden de prioridad:
+
+1. **Onboarding sin fricción para quien no sabe Git.** El público que más necesita
+   SincroGit es el menos preparado para crear un remoto y configurar credenciales — hoy
+   ese montaje es la barrera de entrada real, no el demonio. Plan: un flujo guiado en
+   "Add repo…" que cree/conecte un remoto privado (GitHub/GitLab), lo verifique con un
+   push de prueba y aplique defaults sensatos — sin que el usuario tenga que saber qué
+   es un remoto.
+2. **Arranque automático al iniciar sesión** (la pieza de la Fase 3 que falta). La
+   promesa de "cero disciplina" se rompe si hay que acordarse de lanzar la red de
+   seguridad: un aviso en el primer arranque (o un paso del instalador) debería
+   registrar la tarea programada de Windows (`SincroGit.exe --tray` /
+   `pythonw.exe -m sincrogit --tray` al iniciar sesión — ver [DISENO.md §9](DISENO.md)).
+3. **Comando `sincrogit status`** (el menú de bandeja ya cubre las acciones comunes).
+
+### TODO — técnico (para desarrolladores)
+
+- **Batería de tests automatizados — hoy no hay ninguna.** Toda afirmación de seguridad
+  (clasificación del relevo, caminos de rechazo, pausa por conflicto) se ha verificado
+  solo a mano; para una herramienta cuya promesa es "nunca pierde datos", es la pieza
+  ausente más importante. Orden de prioridad: clasificación de `work_relationship`; los
+  rechazos del fast-forward (`untracked_collisions`, `modified_unstaged`); aborto +
+  pausa en conflicto de rebase; idempotencia de sellado/push — todo ejecutable contra
+  repos locales desechables. Después, CI.
 
 ## Instalación
 
@@ -399,6 +452,56 @@ y no habrá ninguno.
 
 Sigue siendo secuencial **por rama** (una máquina a la vez en una rama dada); no fusiona a dos
 personas editando la *misma* rama a la vez.
+
+## Cómo se compara con las herramientas vecinas
+
+Hay muchas herramientas que auto-commitean un repo; ninguna combina las piezas de
+SincroGit. Panorama **a junio de 2026** (la actividad cambia — toma las notas como una
+foto). Leyenda: ✅ sí · ➖ parcial · ❌ no.
+
+| Herramienta | Snapshots sin acumular commits | Demonio "configura y olvida" | Mensajes de commit con IA | Relevo de WIP entre máquinas | Nunca auto-fusiona / force-pushea tu rama | GUI de máquina del tiempo |
+|------|------|------|------|------|------|------|
+| **SincroGit** | ✅ un único WIP amendado | ✅ demonio de bandeja | ✅ auto-sellado + Smart Commit (Ollama → Gemini → fallback) | ✅ refs por máquina + eventos de bloqueo/desbloqueo | ✅ | ✅ por fichero, app de bandeja |
+| [jujutsu (jj)](https://github.com/jj-vcs/jj) | ✅ mismo modelo (working copy = un commit amendado) | ➖ al guardar, vía watchman | ❌ (herramientas externas) | ❌ solo local | ✅ | ❌ CLI (`jj op restore`) |
+| [GitButler](https://github.com/gitbutlerapp/gitbutler) | ➖ snapshots del oplog alrededor de operaciones | ➖ app de escritorio | ✅ interactivo (Ollama/OpenAI/Anthropic) | ❌ | ➖ force-pushea sus ramas virtuales | ➖ restauración a nivel de proyecto, GUI de escritorio |
+| [dura](https://github.com/tkellogg/dura) | ❌ un commit por cambio (ramas sombra) | ✅ demonio | ❌ | ❌ (sin remoto) | ✅ (nunca pushea) | ❌ |
+| [gitwatch](https://github.com/gitwatch/gitwatch) | ❌ un commit por cambio, en tu rama | ✅ demonio | ❌ | ➖ pushea tu rama | ❌ | ❌ |
+| [git-wip](https://github.com/bartman/git-wip) | ❌ commits apilados en `refs/wip/*` | ❌ hooks de guardado del editor | ❌ | ❌ | ✅ | ❌ |
+| [GitDoc](https://github.com/lostintangent/gitdoc) | ➖ commits por intervalo (squash opcional), en tu rama | ➖ atado a VS Code | ➖ solo Copilot | ➖ auto-push/pull de la misma rama | ❌ (auto-pullea) | ❌ |
+| [aicommit2](https://github.com/tak-bro/aicommit2) | — | ❌ (CLI interactiva) | ✅ multi-proveedor incl. Ollama | ❌ | — | ❌ |
+| [git-annex assistant](https://git-annex.branchable.com/) | ❌ un commit por cambio | ✅ demonio | ❌ | ➖ refs `synced/*` compartidos, auto-merge | ❌ (auto-fusiona) | ➖ webapp |
+| [SparkleShare](https://github.com/hbons/SparkleShare) | ❌ un commit por cambio | ✅ demonio de bandeja | ❌ | ➖ rama compartida, auto-merge | ❌ | ➖ bandeja + restauración (build de Windows abandonado hace años) |
+| [Obsidian Git](https://github.com/Vinzent03/obsidian-git) | ❌ commits por intervalo | ➖ solo vaults de Obsidian | ❌ (plantillas) | ➖ rama compartida, auto-pull/merge | ❌ | ➖ historial de ficheros dentro de la app |
+| [git-sync (simonthum)](https://github.com/simonthum/git-sync) | ❌ un commit por ejecución | ❌ script/hook | ❌ | ➖ rama compartida, auto-rebase | ❌ | ❌ |
+
+Lectura del panorama: cada columna tiene al menos un precedente parcial en alguna parte,
+pero ninguna herramienta las combina — y dos piezas no tienen **equivalente en nada de lo
+encontrado**: los refs de relevo por usuario/máquina con semántica de nunca-auto-fusionar,
+y la sincronización disparada por eventos de bloqueo/desbloqueo/suspensión del SO. Los
+espacios concurridos son el auto-commit por intervalo (muchas herramientas, casi todas
+estancadas) y los mensajes IA interactivos (muchos, muy activos); el espacio vacío es la
+mecánica del relevo.
+
+### jj (jujutsu): el pariente más cercano
+
+[jj](https://github.com/jj-vcs/jj) merece nota propia: es la única otra herramienta
+construida sobre la idea central de SincroGit — la working copy **es** un único commit,
+amendado en cada snapshot, sin acumular commits — y su `jj op log` / `jj op restore` es
+una verdadera máquina del tiempo local. La diferencia es de alcance y dirección:
+
+- **jj es un VCS que adoptas.** Una CLI nueva y un modelo mental nuevo (convive con
+  remotos git, pero *tú* dejas de teclear `git`). Su red de seguridad es solo local: sin
+  espejo remoto, sin relevo entre máquinas, sin mensajes IA, sin GUI; los snapshots se
+  disparan con comandos de jj / eventos de watchman, no con un reloj ni con eventos de
+  sesión.
+- **SincroGit es una capa que no tienes que aprender.** Tu repo sigue siendo git normal y
+  tus hábitos quedan intactos; lo que añade es justo lo que jj no lleva — el espejo
+  autosnap remoto, el relevo entre máquinas (incl. los disparadores de
+  bloqueo/desbloqueo), los mensajes IA de sellado y la UI de bandeja/máquina del tiempo.
+
+Si te apetece cambiar de herramienta, jj es excelente y está más integrado. Si quieres
+seguir en git normal — o necesitas la continuidad multi-máquina — ese es el carril de
+SincroGit.
 
 ## Limitaciones
 

@@ -10,7 +10,10 @@
 > record **history**: their entries are not rewritten retroactively — when reality moved
 > on, an explicit *(since superseded …)* note says so. For day-to-day operation see the
 > [Manual](MANUAL.md); for the configuration reference, the
-> [README](README.md#configuration).
+> [README](README.md#configuration); for how SincroGit relates to neighboring tools
+> (jj, GitButler, dura, …) and for the pending-work list, the README's
+> [How it compares](README.md#how-it-compares-with-neighboring-tools) and
+> [TODO](README.md#todo) sections.
 
 ---
 
@@ -429,7 +432,8 @@ repos:
 - Hybrid AI message generator (Ollama → Gemini → fallback). Never blocks the seal.
 - Push of sealed commits (refspec with SHA → `refs/heads/<branch>`) + retry on every sync.
 - `fetch` + pull with WIP rebase, only if the remote is ahead; initial sync on startup.
-- Conflict policy: abort rebase + pause repo + notify (verified in tests).
+- Conflict policy: abort rebase + pause repo + notify *(verified manually — an
+  automated test suite is still pending; see the technical TODO below)*.
 
 **✅ Phase 4 — Tray UI (PyQt5) — COMPLETE:**
 - System tray icon (a "G" with an hourglass, drawn vectorially) whose **color reflects
@@ -460,8 +464,18 @@ repos:
   CLI one-shots; the port remains as the activation/ping channel. See §11.)*
 - ✅ Config resolution: next to the .exe → `%APPDATA%\SincroGit\` → cwd; a default
   is created on first run.
-- ⏳ Pending: scheduled task at log on to auto-start `SincroGit.exe`.
+- ⏳ Pending: scheduled task at log on to auto-start `SincroGit.exe` — without it, the
+  "zero discipline" promise depends on remembering to launch the tool.
 - ⏳ Pending: `status` command/tab (the "seal+push now" shortcut is already in the menu).
+- ⏳ Pending: guided "Add repo" onboarding (create/connect a private remote and verify it
+  with a test push, from the GUI) — for the non-Git audience the remote/credentials
+  setup is the real entry barrier, not the daemon.
+
+**Pending — technical (no user-visible feature):**
+- ⏳ Automated test suite — **none exists today**; every safety path has been verified
+  manually. Priority: `work_relationship` classification, the fast-forward refusals
+  (`untracked_collisions`, `modified_unstaged`), rebase-conflict abort + pause, and
+  seal/push idempotence — all against throwaway local repos; then CI.
 
 **Optional / future:**
 - `autosnap` branch with real commits every 5 min (browsable intra-window history *on the remote*) instead of the force-push mirror of the latest state.

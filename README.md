@@ -27,6 +27,31 @@ follows you between machines with near-zero effort.
 > the plain-language *when/why*? See **[GUIDE.md](GUIDE.md)** (Spanish: [GUIA.md](GUIA.md)).
 > Design and decisions: **[DESIGN.md](DESIGN.md)**.
 
+## Already fluent in Git? The skeptic's minute
+
+A daemon that amends commits and force-pushes refs *sounds* like something to keep away
+from your repos — so here is, up front, exactly what it touches and what it never touches:
+
+- **The only commit it ever rewrites is its own.** The single `WIP: autosnapshot` commit
+  at the tip is the one being amended; your commits are never amended, rebased or
+  dropped, and every replaced snapshot stays recoverable in the reflog (≈30 days).
+- **Your branch is never force-pushed.** It only ever receives sealed commits, always as
+  a fast-forward. `--force` is used solely on SincroGit's own per-machine side refs
+  (`refs/autosnap/<user>/<host>/<branch>`), where each machine is the sole writer.
+- **It never merges or resolves anything on its own.** Divergent work or a rebase
+  conflict → it stops, pauses that repo and notifies you; both states stay intact (see
+  [Cross-machine handoff](#cross-machine-handoff-live-wip)).
+- **Machine commits are labeled.** Every automatic seal carries the `sincro:` prefix —
+  trivial to spot, squash or drop before a PR.
+- **You can have zero machine commits at all.** Purist mode (`seal_interval_min: inf`)
+  keeps the branch 100 % yours — only your Smart Commits land on it — while the WIP, the
+  autosnap mirror and the cross-machine handoff keep running underneath (see
+  [Pragmatic vs purist](#pragmatic-vs-purist-you-decide-what-a-commit-means)).
+
+How each guarantee is implemented is documented in [DESIGN.md](DESIGN.md) §11. For how
+SincroGit relates to jj, GitButler, dura and friends, see
+[How it compares](#how-it-compares-with-neighboring-tools).
+
 ## Status: Phases 1, 2 and 4 complete (Phase 3, deployment: partial)
 
 **Phase 1 (local core):**
@@ -97,8 +122,32 @@ follows you between machines with near-zero effort.
   vs the current file, and restore **just that file or the whole repo** — from the CLI
   (`--history`, `--autosnaps`) and the control panel.
 
-Pending (Phase 3): deployment as a Windows scheduled task (`pythonw.exe`) to launch
-`--tray` at log-on, and a `sincrogit status` command.
+Pending (Phase 3): see the [TODO](#todo) below.
+
+## TODO
+
+In priority order:
+
+1. **Frictionless onboarding for Git newcomers.** The audience that needs SincroGit most
+   is the least equipped to create a remote and wire up credentials — today that setup is
+   the real entry barrier, not the daemon. Planned: a guided "Add repo…" flow that
+   creates/connects a private remote (GitHub/GitLab), verifies it with a test push, and
+   applies sensible defaults — without the user needing to know what a remote is.
+2. **Start at log-on, automatically** (the missing Phase-3 piece). The "zero discipline"
+   promise breaks if you have to remember to launch the safety net: a first-run prompt
+   (or installer step) should register the Windows scheduled task
+   (`SincroGit.exe --tray` / `pythonw.exe -m sincrogit --tray` at log-on — see
+   [DESIGN.md §9](DESIGN.md)).
+3. **`sincrogit status` command** (the tray menu already covers the common actions).
+
+### TODO — technical (for developers)
+
+- **Automated test suite — there is none yet.** Every safety claim (handoff
+  classification, refusal paths, conflict-pause) has been verified manually so far; for
+  a tool whose promise is "never loses data", this is the most important missing piece.
+  Priority order: `work_relationship` classification; the fast-forward refusals
+  (`untracked_collisions`, `modified_unstaged`); rebase-conflict abort + pause;
+  seal/push idempotence — all runnable against throwaway local repos. CI after that.
 
 ## Installation
 
@@ -374,6 +423,53 @@ setup is one flag:
 
 It's still sequential **per branch** (one machine at a time on a given branch); it doesn't
 merge two people editing the *same* branch at once.
+
+## How it compares with neighboring tools
+
+Plenty of tools auto-commit a repo; none combines SincroGit's pieces. Survey **as of
+June 2026** (activity changes — treat the notes as a snapshot). Legend: ✅ yes ·
+➖ partial · ❌ no.
+
+| Tool | Snapshots without commit pile-up | Set-and-forget daemon | AI commit messages | Cross-machine WIP handoff | Never auto-merges / force-pushes your branch | Time-machine GUI |
+|------|------|------|------|------|------|------|
+| **SincroGit** | ✅ one amended WIP | ✅ tray daemon | ✅ auto-seal + Smart Commit (Ollama → Gemini → fallback) | ✅ per-machine refs + OS lock/unlock triggers | ✅ | ✅ per-file, tray app |
+| [jujutsu (jj)](https://github.com/jj-vcs/jj) | ✅ same model (working copy = one amended commit) | ➖ on-save, via watchman trigger | ❌ (external tools) | ❌ local-only | ✅ | ❌ CLI (`jj op restore`) |
+| [GitButler](https://github.com/gitbutlerapp/gitbutler) | ➖ oplog snapshots around operations | ➖ desktop app | ✅ interactive (Ollama/OpenAI/Anthropic) | ❌ | ➖ force-pushes its virtual branches | ➖ project-level restore, desktop GUI |
+| [dura](https://github.com/tkellogg/dura) | ❌ commit per change (shadow branches) | ✅ daemon | ❌ | ❌ (no remote) | ✅ (never pushes) | ❌ |
+| [gitwatch](https://github.com/gitwatch/gitwatch) | ❌ commit per change, on your branch | ✅ daemon | ❌ | ➖ pushes your branch | ❌ | ❌ |
+| [git-wip](https://github.com/bartman/git-wip) | ❌ stacked commits on `refs/wip/*` | ❌ editor save hooks | ❌ | ❌ | ✅ | ❌ |
+| [GitDoc](https://github.com/lostintangent/gitdoc) | ➖ interval commits (optional squash), on your branch | ➖ VS Code-bound | ➖ Copilot only | ➖ same-branch auto-push/pull | ❌ (auto-pulls) | ❌ |
+| [aicommit2](https://github.com/tak-bro/aicommit2) | — | ❌ (interactive CLI) | ✅ multi-provider incl. Ollama | ❌ | — | ❌ |
+| [git-annex assistant](https://git-annex.branchable.com/) | ❌ commit per change | ✅ daemon | ❌ | ➖ shared `synced/*` refs, auto-merge | ❌ (auto-merges) | ➖ webapp |
+| [SparkleShare](https://github.com/hbons/SparkleShare) | ❌ commit per change | ✅ tray daemon | ❌ | ➖ shared branch, auto-merge | ❌ | ➖ tray + restore (Windows build long abandoned) |
+| [Obsidian Git](https://github.com/Vinzent03/obsidian-git) | ❌ interval commits | ➖ Obsidian vaults only | ❌ (templates) | ➖ shared branch, auto-pull/merge | ❌ | ➖ in-app file history |
+| [git-sync (simonthum)](https://github.com/simonthum/git-sync) | ❌ commit per run | ❌ script/hook | ❌ | ➖ shared branch, auto-rebase | ❌ | ❌ |
+
+What the survey says: every column has at least a partial precedent somewhere, but no
+tool combines them — and two pieces had **no equivalent anywhere we looked**:
+per-user/per-machine handoff refs with never-auto-merge semantics, and sync triggered by
+OS lock/unlock/suspend events. The crowded spaces are interval auto-commit (many tools,
+mostly stagnant) and interactive AI commit messages (many, very active); the empty space
+is the handoff mechanics.
+
+### jj (jujutsu): the closest relative
+
+[jj](https://github.com/jj-vcs/jj) deserves its own note: it is the only other tool
+built on SincroGit's core idea — the working copy **is** a single commit, amended in
+place on every snapshot, no commit pile-up — and its `jj op log` / `jj op restore` is a
+true local time machine. The difference is scope and direction:
+
+- **jj is a VCS you adopt.** A new CLI and a new mental model (it coexists with git
+  remotes, but *you* stop typing `git`). Its safety net is local-only: no remote mirror,
+  no machine-to-machine handoff, no AI messages, no GUI; snapshots fire on jj commands /
+  watchman events, not on a wall clock or session events.
+- **SincroGit is an overlay you don't have to learn.** Your repo stays plain git and your
+  habits stay untouched; what it adds is exactly what jj doesn't carry — the remote
+  autosnap mirror, the cross-machine handoff (incl. lock/unlock triggers), AI seal
+  messages and the tray/time-machine UI.
+
+If you're happy to switch tools, jj is excellent and more deeply integrated. If you want
+to keep plain git — or you need the multi-machine continuity — that's SincroGit's lane.
 
 ## Limitations
 
