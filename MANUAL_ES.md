@@ -43,8 +43,9 @@ Hay cuatro formas; el binario y `python -m sincrogit` se comportan igual.
 
 La instancia única se garantiza con un mutex con nombre en Windows (más un handshake por
 puerto local en otros sistemas), y aplica tanto a la bandeja **como** a `--headless` — dos
-demonios amendando los WIPs de los mismos repos competirían por git. Una segunda instancia
-rehúsa arrancar (código de salida 2).
+demonios amendando los WIPs de los mismos repos competirían por git. Un segundo lanzamiento
+de la bandeja simplemente trae el panel en marcha al frente y sale con 0; un segundo
+`--headless` rehúsa arrancar (código de salida 2).
 
 ---
 

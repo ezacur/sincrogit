@@ -364,8 +364,9 @@ repos:
   localhost port (29677, deliberately below Windows' ephemeral range) doubles as the
   "show the running panel" activation channel; if a foreign app holds it, single-instance
   is still enforced by the mutex (we just lose that IPC channel). The guard applies to the
-  tray **and** `--headless` (a second daemon would race git on the same repos; it refuses
-  to start, exit code 2). A headless daemon still answers the activation handshake, so a
+  tray **and** `--headless` (a second daemon would race git on the same repos): a second
+  tray launch just activates the running panel and exits 0; a second `--headless` refuses
+  to start, exit code 2. A headless daemon still answers the activation handshake, so a
   later tray launch detects it and backs off. CLI one-shots check the same guard
   (side-effect-free presence ping) and refuse to run alongside a live daemon — same race —
   unless `--force` is passed.

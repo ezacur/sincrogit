@@ -42,8 +42,9 @@ There are four ways to start it; the binary and `python -m sincrogit` behave ide
 
 Single-instance is enforced by a named mutex on Windows (plus a localhost-port handshake
 elsewhere), and applies to the tray **and** `--headless` alike — two daemons amending the
-same repos' WIPs would race each other's git work. A second instance refuses to start
-(exit code 2).
+same repos' WIPs would race each other's git work. A second tray launch just brings the
+running panel to the front and exits 0; a second `--headless` refuses to start (exit
+code 2).
 
 ---
 
