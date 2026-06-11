@@ -646,6 +646,13 @@ python -m pip install pyinstaller pillow
 
 Esto genera `app.ico` a partir del icono vectorial y produce `dist\SincroGit.exe`.
 
+**Recompilar con el demonio corriendo está resuelto:** si el exe que se va a generar es el
+que está en ejecución, `build.ps1` le pide (por el puerto de control local) que **vuelque
+todos los repos** (snapshot + push de autosnap) y salga limpiamente, espera, compila y **lo
+relanza** — así una recompilación nunca pierde trabajo ni deja el demonio muerto. Un demonio
+antiguo que no conozca el comando recibe un kill forzado (avisado en la salida); un SincroGit
+corriendo desde *otra* ruta se deja en paz.
+
 - **Doble clic** (sin argumentos) → app de bandeja + demonio, **instancia única** (un
   segundo lanzamiento solo trae al frente el panel).
 - **Desde una terminal con argumentos** → CLI (la salida se engancha a esa terminal):

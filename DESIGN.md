@@ -372,9 +372,13 @@ repos:
 - **Single instance (no two daemons racing git).** Authoritative guard is a Windows
   named mutex (`acquire_instance_mutex`; no stale-lock problem — the OS releases it on
   process death — and it can't be stolen by an app squatting on the lock port). The
-  localhost port (29677, deliberately below Windows' ephemeral range) doubles as the
-  "show the running panel" activation channel; if a foreign app holds it, single-instance
-  is still enforced by the mutex (we just lose that IPC channel). The guard applies to the
+  localhost port (29677, deliberately below Windows' ephemeral range) doubles as a tiny
+  command channel: `show` (bring the panel to front), `ping` (presence probe for the
+  one-shot guard) and `flushquit` (flush every repo — snapshot + autosnap push — then exit
+  cleanly; `build.ps1` uses it to rebuild the very exe that is running without losing work,
+  falling back to a forced kill for older daemons, and relaunches after). If a foreign app
+  holds the port, single-instance is still enforced by the mutex (we just lose that IPC
+  channel). The guard applies to the
   tray **and** `--headless` (a second daemon would race git on the same repos): a second
   tray launch just activates the running panel and exits 0; a second `--headless` refuses
   to start, exit code 2. A headless daemon still answers the activation handshake, so a

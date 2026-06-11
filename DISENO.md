@@ -375,8 +375,12 @@ repos:
 - **Instancia única (que dos demonios no compitan por git).** La guarda autoritativa es un
   mutex con nombre de Windows (`acquire_instance_mutex`; sin lock-huérfano —el SO lo libera
   al morir el proceso— y no se lo puede robar una app que ocupe el puerto). El puerto local
-  (29677, deliberadamente por debajo del rango efímero de Windows) hace además de canal de
-  "mostrar el panel"; si un ajeno lo ocupa, la instancia única sigue garantizada por el
+  (29677, deliberadamente por debajo del rango efímero de Windows) hace además de pequeño
+  canal de comandos: `show` (traer el panel al frente), `ping` (sonda de presencia para la
+  guarda de los disparos únicos) y `flushquit` (volcar todos los repos —snapshot + push de
+  autosnap— y salir limpiamente; `build.ps1` lo usa para recompilar el mismo exe que está
+  corriendo sin perder trabajo, con kill forzado como fallback para demonios antiguos, y lo
+  relanza después). Si un ajeno ocupa el puerto, la instancia única sigue garantizada por el
   mutex (solo perdemos ese canal IPC). La guarda aplica a la bandeja **y** a `--headless`
   (un segundo demonio competiría por git en los mismos repos): un segundo lanzamiento de
   la bandeja simplemente activa el panel en marcha y sale con 0; un segundo `--headless`

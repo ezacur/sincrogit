@@ -23,8 +23,12 @@ _LOCK_PORT = 29677
 # to hold the port (still possible, just unlikely now). Only a peer that replies with
 # the ACK counts as "us". The "ping" variant is a pure presence probe (no panel pops):
 # CLI one-shots use it to detect a running daemon before touching the same repos.
+# "flushquit" asks the daemon to flush every repo (snapshot + autosnap push) and then
+# exit cleanly — build.ps1 uses it to rebuild the very exe that is running. Localhost
+# only; the worst an abuser gains is a clean shutdown of a personal tool.
 _HANDSHAKE_REQ = b"SINCROGIT:show"
 _HANDSHAKE_PING = b"SINCROGIT:ping"
+_HANDSHAKE_FLUSHQUIT = b"SINCROGIT:flushquit"
 _HANDSHAKE_ACK = b"SINCROGIT:ok"
 
 # Template written on first run when no config is found anywhere.
@@ -237,25 +241,46 @@ def ping_existing_instance(port: int = _LOCK_PORT) -> bool:
         return False
 
 
-def serve_activation(conn) -> bool:
+def request_flush_quit(port: int = _LOCK_PORT) -> bool:
+    """Ask the running daemon to flush every repo (snapshot + autosnap push) and
+    exit cleanly. Returns True if a real SincroGit ACKed the command (the caller
+    should then WAIT for the process to disappear — the flush takes a moment);
+    False if nothing answered (no daemon, or one too old to know the command —
+    the caller falls back to a forced kill). build.ps1's rebuild cycle uses this."""
+    try:
+        with socket.create_connection((_LOCK_HOST, port), timeout=2) as c:
+            c.sendall(_HANDSHAKE_FLUSHQUIT)
+            c.settimeout(5)
+            reply = c.recv(64)
+        return reply.startswith(_HANDSHAKE_ACK)
+    except OSError:
+        return False
+
+
+def serve_activation(conn):
     """Handle one inbound connection on the lock socket (server side).
 
-    Returns True if it was a valid SincroGit activation request (the caller should
-    then show the panel); False for anything else that hit the port — including a
-    presence ping, which is ACKed but must not pop the panel. Always closes the
-    connection.
+    Returns the command verdict: "show" (bring the panel to front), "flushquit"
+    (flush all repos then exit cleanly — the build script's rebuild cycle), or
+    None for anything else that hit the port — including a presence ping, which
+    is ACKed but demands no action. Always closes the connection.
     """
     try:
         data = conn.recv(64)
+        # NOTE: "flushquit" must be tested BEFORE bare prefixes ever overlap; the
+        # current commands share no prefix, but keep the most specific first.
+        if data.startswith(_HANDSHAKE_FLUSHQUIT):
+            conn.sendall(_HANDSHAKE_ACK)  # ACK receipt; the flush+quit follows
+            return "flushquit"
         if data.startswith(_HANDSHAKE_PING):
-            conn.sendall(_HANDSHAKE_ACK)  # presence probe: acknowledge, no panel
-            return False
+            conn.sendall(_HANDSHAKE_ACK)  # presence probe: acknowledge, no action
+            return None
         if data.startswith(_HANDSHAKE_REQ):
             conn.sendall(_HANDSHAKE_ACK)
-            return True
-        return False
+            return "show"
+        return None
     except OSError:
-        return False
+        return None
     finally:
         try:
             conn.close()

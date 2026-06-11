@@ -84,6 +84,7 @@ class _Bridge(QObject):
     """Thread-safe bridge: background threads emit; the GUI receives."""
     event_added = pyqtSignal(object)
     activate = pyqtSignal()  # a second launch asks us to show the panel
+    quit_requested = pyqtSignal()  # flushquit command: exit cleanly on the GUI thread
 
 
 class TrayApp:
@@ -103,6 +104,7 @@ class TrayApp:
         self.bridge = _Bridge()
         self.bridge.event_added.connect(self._on_event_gui)
         self.bridge.activate.connect(self.show_panel)
+        self.bridge.quit_requested.connect(self.quit)  # flushquit -> clean exit (GUI thread)
 
         self.engine = Engine(self.config, emit_event=self._on_engine_event)
         self._engine_thread = None
@@ -191,8 +193,19 @@ class TrayApp:
                     break  # socket closed on quit
                 # Only react to a valid SincroGit handshake (serve_activation
                 # answers the ACK); ignore anything else that hit the port.
-                if serve_activation(conn):
+                verdict = serve_activation(conn)
+                if verdict == "show":
                     self.bridge.activate.emit()
+                elif verdict == "flushquit":
+                    # build.ps1 is about to rebuild this very exe: flush every repo
+                    # (snapshot + autosnap push, synchronous — don't die mid-push)
+                    # and exit cleanly via the GUI thread. The listener thread may
+                    # block here; that's fine, we're quitting anyway.
+                    self._on_engine_event(
+                        "", "flush", "rebuild requested: flushing all repos, then exiting", "WARNING")
+                    self.engine.flush_now(wait=True)
+                    self.bridge.quit_requested.emit()
+                    break
 
         threading.Thread(target=loop, name="sincrogit-activation", daemon=True).start()
 

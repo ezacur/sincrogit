@@ -269,22 +269,32 @@ def _daemon_running() -> bool:
     return ping_existing_instance()
 
 
-def _serve_activation_pings(lock) -> None:
+def _serve_activation_pings(lock, get_engine=None) -> None:
     """Answer the single-instance handshake on the lock socket. A headless daemon
     has no panel to show, but replying the ACK is what tells a second launch
-    (tray or headless) that a real SincroGit already runs, so it backs off."""
+    (tray or headless) that a real SincroGit already runs, so it backs off.
+    A "flushquit" command (build.ps1's rebuild cycle) flushes every repo and
+    stops the engine — `get_engine` returns the live Engine (or None during the
+    brief startup window, in which case the command is ignored and the caller's
+    forced-kill fallback covers it)."""
     def loop():
         while True:
             try:
                 conn, _ = lock.accept()
             except OSError:
                 break  # socket closed at exit
-            serve_activation(conn)
+            verdict = serve_activation(conn)
+            if verdict == "flushquit" and get_engine is not None:
+                eng = get_engine()
+                if eng is not None:
+                    eng.flush_now(wait=True)
+                    eng.stop()  # run() returns -> the process exits cleanly
+                    break
 
     threading.Thread(target=loop, name="sincrogit-activation", daemon=True).start()
 
 
-def _acquire_headless_instance():
+def _acquire_headless_instance(get_engine=None):
     """Single-instance guard for --headless, same scheme as the tray: the named
     mutex is authoritative on Windows; the lock port covers other platforms and
     doubles as the handshake channel. Returns (ok, lock_socket): ok=False means
@@ -301,12 +311,14 @@ def _acquire_headless_instance():
             return False, None
         print("Lock port held by another app; continuing.", file=sys.stderr)
         return True, None
-    _serve_activation_pings(lock)
+    _serve_activation_pings(lock, get_engine)
     return True, lock
 
 
-def _run_headless(config, logger) -> int:
+def _run_headless(config, logger, engine_ref=None) -> int:
     engine = Engine(config)
+    if engine_ref is not None:
+        engine_ref["engine"] = engine  # expose to the activation listener (flushquit)
 
     def _handle(signum, _frame):
         logger.info("Signal %s received, shutting down...", signum)
@@ -436,7 +448,8 @@ def main(argv=None) -> int:
         return 0
 
     if args.headless:
-        ok, lock = _acquire_headless_instance()
+        engine_ref = {"engine": None}  # filled by _run_headless; read by the listener
+        ok, lock = _acquire_headless_instance(lambda: engine_ref["engine"])
         if not ok:
             print(
                 "SincroGit is already running (tray or headless); not starting a "
@@ -445,7 +458,7 @@ def main(argv=None) -> int:
             )
             return 2
         try:
-            return _run_headless(config, logger)
+            return _run_headless(config, logger, engine_ref)
         finally:
             if lock is not None:
                 try:

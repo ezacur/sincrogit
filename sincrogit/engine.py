@@ -595,12 +595,15 @@ class Engine:
             st.last_pull_mono = 0.0  # monotonic in the distant past -> sync is due
         self._wake.set()
 
-    def flush_now(self):
+    def flush_now(self, wait: bool = False):
         """Force a snapshot + autosnap push of every (on-branch) repo NOW, ignoring
         the intervals, so the remote mirror is fresh — the 'leaving this machine' OS
-        event (lock/suspend). Runs on a background thread (never blocks the caller).
-        Best-effort: a suspend may cut the network before the push finishes; the
-        normal autosnap interval is the backstop. See §4.2/§11 of DESIGN.md."""
+        event (lock/suspend). Runs on a background thread (never blocks the caller)
+        unless `wait` is True — then it blocks (bounded) until the flush finishes,
+        for callers about to QUIT the daemon (the build script's flush-quit-rebuild
+        cycle must not kill the process mid-push). Best-effort: a suspend may cut
+        the network before the push finishes; the normal autosnap interval is the
+        backstop. See §4.2/§11 of DESIGN.md."""
         if self._paused.is_set():
             return
 
@@ -633,7 +636,12 @@ class Engine:
             if did:
                 self._emit("", "flush", "flushed latest state to the remote (leaving machine)")
 
-        threading.Thread(target=worker, name="sincrogit-flush", daemon=True).start()
+        t = threading.Thread(target=worker, name="sincrogit-flush", daemon=True)
+        t.start()
+        if wait:
+            # Bounded: a hung remote must not wedge the quit path forever (each
+            # repo's push already has its own git_timeout_sec).
+            t.join(timeout=180)
 
     def _wait_seconds(self) -> float:
         """How long to sleep before the next tick: the time until the soonest

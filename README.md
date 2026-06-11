@@ -608,6 +608,13 @@ python -m pip install pyinstaller pillow
 
 This generates `app.ico` from the vector icon and produces `dist\SincroGit.exe`.
 
+**Rebuilding while the daemon runs is handled for you:** if the exe being built is the
+one currently running, `build.ps1` asks it (via the localhost control port) to **flush
+every repo** (snapshot + autosnap push) and exit cleanly, waits, builds, and **relaunches
+it** — so a rebuild never loses work and never leaves the daemon dead. An older daemon
+that doesn't know the command gets a forced kill (noted in the output); a SincroGit
+running from a *different* path is left alone.
+
 - **Double-click** (no arguments) → tray app + daemon, **single instance** (a second
   launch just brings up the running panel).
 - **From a terminal with arguments** → CLI (output attaches to that terminal):
