@@ -485,7 +485,21 @@ class TrayApp:
 
 
 def main(config_path: str, lock_socket=None, open_config: bool = False) -> int:
-    app = TrayApp(config_path, lock_socket=lock_socket, open_config=open_config)
+    try:
+        app = TrayApp(config_path, lock_socket=lock_socket, open_config=open_config)
+    except (FileNotFoundError, ValueError) as e:
+        # A broken config (e.g. a TAB snuck into the YAML while hand-editing) must
+        # show a friendly dialog: a windowed (--noconsole) exe has no stderr the
+        # user can see, so printing — or worse, an uncaught exception — surfaces as
+        # PyInstaller's "unhandled exception" crash box.
+        from PyQt5.QtWidgets import QMessageBox
+        QApplication.instance() or QApplication(sys.argv)
+        QMessageBox.critical(
+            None, "SincroGit — configuration error",
+            f"SincroGit could not start because the configuration file is invalid:"
+            f"\n\n{e}\n\nFix the file (file and line above) and launch SincroGit again.",
+        )
+        return 2
     if not QSystemTrayIcon.isSystemTrayAvailable():
         app.logger.warning("No system tray available.")
     return app.run()

@@ -200,7 +200,18 @@ def load_config(path: str) -> Config:
         )
 
     with open(path, "r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
+        try:
+            raw = yaml.safe_load(fh) or {}
+        except yaml.YAMLError as e:
+            # Normalize to ValueError so every caller's existing "configuration
+            # error" handling catches it (a raw YAMLError would crash a windowed
+            # exe with PyInstaller's unhandled-exception dialog). The yaml message
+            # already includes file, line and column. A tab instead of spaces is
+            # the classic hand-editing slip, so name it explicitly.
+            hint = ""
+            if "'\\t'" in str(e) or "\\t" in str(e):
+                hint = "\nHint: YAML forbids TAB indentation — use spaces."
+            raise ValueError(f"Invalid YAML in the configuration:\n{e}{hint}") from e
 
     defaults = raw.get("defaults") or {}
     repos_raw = raw.get("repos") or []
