@@ -26,6 +26,7 @@ from ..log import setup_logging
 from ..runtime import release_instance_mutex, serve_activation
 from . import icon as iconmod
 from .control_panel import ControlPanel
+from .theme import apply_theme
 
 # --- Windows session/power messages (Phase 3: cut cross-machine handoff latency) ---
 _WM_WTSSESSION_CHANGE = 0x02B1
@@ -100,6 +101,9 @@ class TrayApp:
 
         self.qapp = QApplication.instance() or QApplication(sys.argv)
         self.qapp.setQuitOnLastWindowClosed(False)  # live in the tray
+        # Visual theme (light/dark/auto from the config); the returned palette is
+        # shared with dialogs that color custom elements (diff HTML, state labels).
+        self.theme = apply_theme(self.qapp, getattr(self.config, "theme", "auto"))
 
         self.bridge = _Bridge()
         self.bridge.event_added.connect(self._on_event_gui)
@@ -498,6 +502,11 @@ class TrayApp:
 
 
 def main(config_path: str, lock_socket=None, open_config: bool = False) -> int:
+    # HiDPI must be configured BEFORE the QApplication exists: crisp scaling on
+    # high-resolution displays instead of blurry bitmap stretching.
+    from PyQt5.QtCore import Qt
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     try:
         app = TrayApp(config_path, lock_socket=lock_socket, open_config=open_config)
     except (FileNotFoundError, ValueError) as e:

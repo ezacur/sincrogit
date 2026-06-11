@@ -134,8 +134,16 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
   - Barra superior: **File history…** (explorar/previsualizar/restaurar un fichero o el repo
     entero) y **Add repo…** (opcionalmente deja un `.gitattributes` `* text=auto`).
 - **Log** — eventos, filtrables por repo / acción / nivel / texto.
-- **Configuration** — editar `config.yaml`; *Save* o *Save and restart* para aplicar.
+- **Settings** — el formulario amable: ritmos (snapshot/sellado con checkbox de *modo
+  purista*), backup y sync (autosnap, modo de relevo, seguir-rama), mensajes de IA, tema
+  (claro/oscuro/auto), ruta de pandoc, nivel de log. Edita los defaults globales; *Save
+  and restart* para aplicar.
+- **Advanced (YAML)** — el editor del `config.yaml` crudo, para overrides por repo y comentarios.
 - **About**.
+
+El diálogo de **File history** muestra a la izquierda el **árbol de ficheros** del repo
+(`.git` oculto) — clic en cualquier fichero para ver sus versiones (tiempos relativos y
+tipos con color: sellado / snapshot / autosnap) y un diff con tema frente al fichero actual.
 
 El **color del icono de bandeja** refleja el estado: verde = activo, ámbar = pausado, rojo =
 conflicto (te necesita), gris = parado. El menú de bandeja tiene además Pause/Resume, Sync now,
@@ -224,7 +232,7 @@ SincroGit está diseñado para convivir con el resto de tus herramientas git —
 mientras *tú* operas (un merge/rebase en curso, el índice bloqueado, otra rama
 checkouteada) y se reanuda después. Las reglas de tráfico:
 
-- **El commit `WIP: autosnapshot` de la punta es de SincroGit; todo lo de abajo es
+- **El commit `sincro: WIP autosnapshot` de la punta es de SincroGit; todo lo de abajo es
   tuyo.** Commitea, crea ramas, etiqueta o rebasa *por debajo* con libertad — el demonio
   detecta los commits externos y los respeta como sellados manuales. Pero no amendees ni
   rewordees el WIP desde otra herramienta: un reword le quita el prefijo `WIP:`, así que

@@ -18,16 +18,18 @@ Talks to the app through the `controller`:
 import difflib
 import html
 import os
+import time
 from datetime import datetime
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import QModelIndex, QSortFilterProxyModel, Qt
+from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
+    QFileSystemModel,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -38,9 +40,19 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QTreeView,
     QVBoxLayout,
     QWidget,
 )
+
+# Diff colors per theme flavor (keyed off the panel palette's background).
+_DIFF_LIGHT = {"meta": "#8a929c", "hunk": "#2b6cb0", "add": "#1a7f37", "add_bg": "#e6f4eb",
+               "del": "#cf222e", "del_bg": "#fbebed", "ctx": "#444444"}
+_DIFF_DARK = {"meta": "#9aa3af", "hunk": "#6cb0f0", "add": "#4cc07a", "add_bg": "#203428",
+              "del": "#ec7272", "del_bg": "#3a2628", "ctx": "#c8cdd4"}
+
+# Version-type accents (foreground of the "Type" cell).
+_TYPE_COLOR = {"sealed": "#2e9e5b", "snapshot": "#6b7280", "autosnap": "#8a63d2"}
 
 
 def _fmt(epoch) -> str:
@@ -50,30 +62,63 @@ def _fmt(epoch) -> str:
         return "—"
 
 
-def _diff_html(old_text: str, current_text: str) -> str:
-    """Unified diff (old version -> current file) as colored HTML."""
+def _ago(epoch) -> str:
+    """Compact relative time ("3 h ago"); the absolute stamp goes in the tooltip."""
+    try:
+        secs = max(0, int(time.time() - epoch))
+    except (ValueError, OSError, TypeError):
+        return "—"
+    if secs < 60:
+        return f"{secs} s ago"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins} min ago"
+    hrs, mins = divmod(mins, 60)
+    if hrs < 24:
+        return f"{hrs} h {mins:02d} m ago"
+    days, hrs = divmod(hrs, 24)
+    if days < 14:
+        return f"{days} d {hrs} h ago"
+    return _fmt(epoch)
+
+
+def _diff_html(old_text: str, current_text: str, dark: bool = False) -> str:
+    """Unified diff (old version -> current file) as colored HTML, theme-aware."""
+    c = _DIFF_DARK if dark else _DIFF_LIGHT
     diff = difflib.unified_diff(
         old_text.splitlines(), current_text.splitlines(),
         fromfile="selected version", tofile="current file", lineterm="",
     )
     rows = []
     for ln in diff:
-        esc = html.escape(ln)
+        esc = html.escape(ln) or "&nbsp;"
         if ln.startswith(("+++", "---")):
-            color = "#888888"
+            rows.append(f'<span style="color:{c["meta"]};">{esc}</span>')
         elif ln.startswith("@@"):
-            color = "#2b6cb0"
+            rows.append(f'<span style="color:{c["hunk"]};font-weight:bold;">{esc}</span>')
         elif ln.startswith("+"):
-            color = "#1a7f37"   # green: present in the current file
+            rows.append(f'<span style="color:{c["add"]};background:{c["add_bg"]};'
+                        f'display:block;">{esc}</span>')
         elif ln.startswith("-"):
-            color = "#cf222e"   # red: only in the old version
+            rows.append(f'<span style="color:{c["del"]};background:{c["del_bg"]};'
+                        f'display:block;">{esc}</span>')
         else:
-            color = "#444444"
-        rows.append(f'<span style="color:{color};">{esc or "&nbsp;"}</span>')
+            rows.append(f'<span style="color:{c["ctx"]};">{esc}</span>')
     if not rows:
-        return '<pre style="color:#777;">(no differences vs the current file)</pre>'
+        return (f'<pre style="color:{c["meta"]};font-family:Consolas,monospace;'
+                f'padding:8px;">(no differences vs the current file)</pre>')
     body = "\n".join(rows)
-    return f'<pre style="font-family:Consolas,monospace;font-size:10pt;margin:0;">{body}</pre>'
+    return (f'<pre style="font-family:Consolas,monospace;font-size:10pt;'
+            f'margin:0;padding:6px;line-height:1.35;">{body}</pre>')
+
+
+class _NoGitProxy(QSortFilterProxyModel):
+    """Hides .git (and git's lock litter) from the repo file tree."""
+
+    def filterAcceptsRow(self, row: int, parent: QModelIndex) -> bool:  # noqa: N802
+        idx = self.sourceModel().index(row, 0, parent)
+        name = self.sourceModel().fileName(idx)
+        return name != ".git"
 
 
 class HistoryDialog(QDialog):
@@ -128,11 +173,27 @@ class HistoryDialog(QDialog):
         row2.addWidget(self.cb_diff)
         v.addLayout(row2)
 
-        # --- Splitter: versions table (top) + preview/diff (bottom) ---
-        splitter = QSplitter(Qt.Vertical)
+        # --- Main area: repo file tree (left) | versions + preview (right) ---
+        outer = QSplitter(Qt.Horizontal)
+
+        self.fs_model = QFileSystemModel(self)
+        self.fs_proxy = _NoGitProxy(self)
+        self.fs_proxy.setSourceModel(self.fs_model)
+        self.tree = QTreeView()
+        self.tree.setModel(self.fs_proxy)
+        self.tree.setHeaderHidden(True)
+        for col in range(1, 4):  # hide size/type/date — only names matter here
+            self.tree.hideColumn(col)
+        self.tree.setAlternatingRowColors(False)
+        self.tree.clicked.connect(self._tree_clicked)
+        outer.addWidget(self.tree)
+        self.cb_repo.currentIndexChanged.connect(self._reroot_tree)
+        self._reroot_tree()
+
+        right = QSplitter(Qt.Vertical)
 
         self.tbl = QTableWidget(0, 4)
-        self.tbl.setHorizontalHeaderLabels(["#", "Time", "Type", "Message"])
+        self.tbl.setHorizontalHeaderLabels(["#", "When", "Type", "Message"])
         hdr = self.tbl.horizontalHeader()
         for col in range(3):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
@@ -140,8 +201,11 @@ class HistoryDialog(QDialog):
         self.tbl.setSelectionBehavior(QTableWidget.SelectRows)
         self.tbl.setSelectionMode(QTableWidget.SingleSelection)
         self.tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tbl.setAlternatingRowColors(True)
+        self.tbl.setShowGrid(False)
+        self.tbl.verticalHeader().setVisible(False)
         self.tbl.itemSelectionChanged.connect(self._load_preview)
-        splitter.addWidget(self.tbl)
+        right.addWidget(self.tbl)
 
         prev_box = QWidget()
         pv = QVBoxLayout(prev_box)
@@ -152,19 +216,27 @@ class HistoryDialog(QDialog):
         self.preview.setFont(QFont("Consolas", 10))
         self.preview.setLineWrapMode(QTextEdit.NoWrap)
         pv.addWidget(self.preview)
-        splitter.addWidget(prev_box)
-        splitter.setSizes([260, 280])
-        v.addWidget(splitter, 1)
+        right.addWidget(prev_box)
+        right.setSizes([260, 280])
+
+        outer.addWidget(right)
+        outer.setSizes([230, 630])
+        outer.setStretchFactor(0, 0)
+        outer.setStretchFactor(1, 1)
+        v.addWidget(outer, 1)
 
         # --- Bottom buttons ---
         row = QHBoxLayout()
         self.lbl_info = QLabel()
+        self.lbl_info.setProperty("cssClass", "muted")
         row.addWidget(self.lbl_info, 1)
         self.btn_restore = QPushButton("Restore this file")
+        self.btn_restore.setProperty("cssClass", "primary")
         self.btn_restore.clicked.connect(self._restore)
         self.btn_restore.setEnabled(False)
         row.addWidget(self.btn_restore)
         self.btn_restore_repo = QPushButton("Restore ENTIRE repo…")
+        self.btn_restore_repo.setProperty("cssClass", "danger")
         self.btn_restore_repo.setToolTip(
             "Set every tracked file back to this version (including deletions). "
             "Reversible: it's captured as a new snapshot."
@@ -176,6 +248,29 @@ class HistoryDialog(QDialog):
         btn_close.clicked.connect(self.accept)
         row.addWidget(btn_close)
         v.addLayout(row)
+
+    # ----------------------------------------------------------- file tree
+    def _reroot_tree(self):
+        """Point the tree at the selected repo's working tree."""
+        base = self._repo_path()
+        if not base or not os.path.isdir(base):
+            return
+        self.fs_model.setRootPath(base)
+        src_root = self.fs_model.index(base)
+        self.tree.setRootIndex(self.fs_proxy.mapFromSource(src_root))
+
+    def _tree_clicked(self, proxy_idx):
+        """Click on a file -> load its history right away (folders just expand)."""
+        idx = self.fs_proxy.mapToSource(proxy_idx)
+        if self.fs_model.isDir(idx):
+            return
+        full = self.fs_model.filePath(idx)
+        try:
+            rel = os.path.relpath(full, self._repo_path())
+        except ValueError:
+            return
+        self.ed_file.setText(rel.replace(os.sep, "/"))
+        self.show_history()
 
     # ----------------------------------------------------------- helpers
     def _repo_name(self) -> str:
@@ -224,9 +319,15 @@ class HistoryDialog(QDialog):
         self.btn_restore_repo.setEnabled(False)
         self.tbl.setRowCount(len(self._versions))
         for i, ver in enumerate(self._versions):
-            cells = [str(i + 1), _fmt(ver["epoch"]), ver.get("source", ""), ver["subject"]]
+            source = ver.get("source", "")
+            cells = [str(i + 1), _ago(ver["epoch"]), source, ver["subject"]]
             for j, val in enumerate(cells):
-                self.tbl.setItem(i, j, QTableWidgetItem(val))
+                item = QTableWidgetItem(val)
+                if j == 1:
+                    item.setToolTip(_fmt(ver["epoch"]))  # exact stamp on hover
+                if j == 2 and source in _TYPE_COLOR:
+                    item.setForeground(QColor(_TYPE_COLOR[source]))
+                self.tbl.setItem(i, j, item)
         if self._versions:
             self.lbl_info.setText(f"{len(self._versions)} version(s) of '{rel}'")
             self.tbl.selectRow(0)
@@ -251,7 +352,10 @@ class HistoryDialog(QDialog):
             self.preview.setPlainText("(binary or unavailable)")
             return
         if self.cb_diff.isChecked():
-            self.preview.setHtml(_diff_html(content, self._current_content()))
+            # Dark diff colors when the app palette is dark (TrayApp.theme).
+            pal = getattr(self.c, "theme", None) or {}
+            self.preview.setHtml(_diff_html(
+                content, self._current_content(), dark=bool(pal.get("is_dark"))))
         else:
             self.preview.setPlainText(content)
 

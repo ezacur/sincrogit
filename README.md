@@ -37,7 +37,7 @@ follows you between machines with near-zero effort.
 A daemon that amends commits and force-pushes refs *sounds* like something to keep away
 from your repos — so here is, up front, exactly what it touches and what it never touches:
 
-- **The only commit it ever rewrites is its own.** The single `WIP: autosnapshot` commit
+- **The only commit it ever rewrites is its own.** The single `sincro: WIP autosnapshot` commit
   at the tip is the one being amended; your commits are never amended, rebased or
   dropped, and every replaced snapshot stays recoverable in the reflog (≈30 days).
 - **Your branch is never force-pushed.** It only ever receives sealed commits, always as
@@ -647,6 +647,7 @@ overridable per repo):
 | `extra_includes` | — | patterns versioned even if binary (e.g. `**/*.docx`) |
 | `max_include_bytes` | 26214400 | size cap (25 MB) for `extra_includes` |
 | `pandoc_path` | `pandoc` | **(top-level)** path to pandoc for readable `.docx` diffs |
+| `theme` | `auto` | **(top-level)** GUI theme: `auto` (follow Windows), `light`, `dark` |
 
 Values are **validated at load**: numeric fields accept numbers or numeric strings
 (`"300"`), and booleans, negatives or garbage fail at startup with a clear per-field

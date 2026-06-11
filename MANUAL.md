@@ -133,8 +133,15 @@ Open it from the tray icon (double-click) or *Open control panel*.
   - Top bar: **File history…** (browse/preview/restore a file or the whole repo) and **Add
     repo…** (optionally drops a `* text=auto` `.gitattributes`).
 - **Log** — events, filterable by repo / action / level / text.
-- **Configuration** — edit `config.yaml`; *Save* or *Save and restart* to apply.
+- **Settings** — the friendly form: rhythms (snapshot/seal with a *Purist mode* checkbox),
+  backup & sync (autosnap, handoff mode, follow-branch), AI messages, theme (light/dark/auto),
+  pandoc path, log level. Edits the global defaults; *Save and restart* to apply.
+- **Advanced (YAML)** — the raw `config.yaml` editor, for per-repo overrides and comments.
 - **About**.
+
+The **File history** dialog shows the repo's **file tree** on the left (`.git` hidden) —
+click any file to see its versions (with relative times and color-coded types:
+sealed / snapshot / autosnap) and a themed diff against the current file.
 
 The **tray icon colour** reflects state: green = active, amber = paused, red = conflict
 (needs you), gray = stopped. The tray menu also has Pause/Resume, Sync now, Seal now, Quit.
@@ -222,7 +229,7 @@ SincroGit is designed to coexist with your other git tooling — it yields while
 operate (a merge/rebase in progress, a locked index, another branch checked out) and
 resumes afterwards. The rules of the road:
 
-- **The `WIP: autosnapshot` commit at the tip is SincroGit's; everything below it is
+- **The `sincro: WIP autosnapshot` commit at the tip is SincroGit's; everything below it is
   yours.** Commit, branch, tag or rebase *under* it freely — the daemon detects external
   commits and respects them as manual seals. But don't amend or reword the WIP itself
   from another tool: rewording strips the `WIP:` prefix, so the daemon treats it as a

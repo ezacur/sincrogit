@@ -40,7 +40,7 @@ Un demonio que amendea commits y hace force-push de refs *suena* a algo que mant
 lejos de tus repos — así que aquí va, por delante, exactamente qué toca y qué no toca
 nunca:
 
-- **El único commit que reescribe es el suyo.** El único commit `WIP: autosnapshot` de
+- **El único commit que reescribe es el suyo.** El único commit `sincro: WIP autosnapshot` de
   la punta es el que se amendea; tus commits no se amendean, rebasan ni descartan nunca,
   y cada snapshot reemplazado sigue recuperable en el reflog (≈30 días).
 - **Tu rama nunca recibe un force-push.** Solo recibe commits sellados, siempre como
@@ -685,6 +685,7 @@ sobreescribibles por repo):
 | `extra_includes` | — | patrones versionados aunque sean binarios (p. ej. `**/*.docx`) |
 | `max_include_bytes` | 26214400 | tope de tamaño (25 MB) para `extra_includes` |
 | `pandoc_path` | `pandoc` | **(top-level)** ruta a pandoc para diffs legibles de `.docx` |
+| `theme` | `auto` | **(top-level)** tema de la GUI: `auto` (sigue a Windows), `light`, `dark` |
 
 Los valores se **validan al cargar**: los campos numéricos aceptan números o strings
 numéricos (`"300"`), y un booleano, un negativo o un valor sin sentido fallan al arrancar

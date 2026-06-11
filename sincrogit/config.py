@@ -190,6 +190,8 @@ class Config:
     # diffs of .docx and similar via a git textconv driver. "pandoc" assumes it's
     # on PATH; set a full path if not (forward slashes are fine on Windows).
     pandoc_path: str = "pandoc"
+    # GUI theme: "auto" follows Windows' app theme; or force "light" / "dark".
+    theme: str = "auto"
 
 
 def load_config(path: str) -> Config:
@@ -255,8 +257,11 @@ def load_config(path: str) -> Config:
     )
 
     pandoc_path = raw.get("pandoc_path", "pandoc")
+    theme = str(raw.get("theme", "auto")).strip().lower()
+    if theme not in ("auto", "light", "dark"):
+        theme = "auto"
 
-    return Config(repos=repos, log=log_cfg, ai=ai_cfg, pandoc_path=pandoc_path)
+    return Config(repos=repos, log=log_cfg, ai=ai_cfg, pandoc_path=pandoc_path, theme=theme)
 
 
 def append_repo(config_path: str, repo_entry: dict) -> None:

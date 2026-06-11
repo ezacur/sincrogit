@@ -38,6 +38,7 @@ from .. import __version__
 from ..events import ACTIONS
 from .add_repo_dialog import AddRepoDialog
 from .history_dialog import HistoryDialog
+from .settings_tab import SettingsTab
 from .smart_commit_dialog import SmartCommitDialog
 
 _LEVEL_COLOR = {
@@ -90,7 +91,8 @@ class ControlPanel(QMainWindow):
         self.setCentralWidget(self.tabs)
         self.tabs.addTab(self._build_status_tab(), "Status")
         self.tabs.addTab(self._build_log_tab(), "Log")
-        self.tabs.addTab(self._build_config_tab(), "Configuration")
+        self.tabs.addTab(SettingsTab(self.c), "Settings")
+        self.tabs.addTab(self._build_config_tab(), "Advanced (YAML)")
         self.tabs.addTab(self._build_about_tab(), "About")
 
         # Periodic status refresh while the window is visible.
@@ -133,6 +135,9 @@ class ControlPanel(QMainWindow):
         self.tbl_repos.setSelectionBehavior(QTableWidget.SelectRows)
         self.tbl_repos.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tbl_repos.verticalHeader().setVisible(False)
+        self.tbl_repos.setAlternatingRowColors(True)
+        self.tbl_repos.setShowGrid(False)
+        self.tbl_repos.verticalHeader().setDefaultSectionSize(34)  # row breathing room
         v.addWidget(self.tbl_repos)
 
         self._row_widgets = {}   # repo name -> {"pause": QPushButton}
@@ -184,7 +189,7 @@ class ControlPanel(QMainWindow):
             b_pull.clicked.connect(lambda _, n=name: self.c.pull_repo_now(n))
             b_handoff = QPushButton("Apply handoff")
             b_handoff.setToolTip("Apply newer work waiting from your other machine")
-            b_handoff.setStyleSheet("QPushButton { color: #1E6FD9; font-weight: bold; }")
+            b_handoff.setProperty("cssClass", "accent")  # themed highlight (see theme.py)
             b_handoff.clicked.connect(lambda _, n=name: self._apply_handoff(n))
             b_handoff.setVisible(False)  # shown only when a handoff is pending (ask mode)
             for b in (b_pause, b_commit, b_seal, b_pull, b_handoff):
@@ -308,6 +313,9 @@ class ControlPanel(QMainWindow):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.Stretch)
         self.tbl_log.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tbl_log.setAlternatingRowColors(True)
+        self.tbl_log.setShowGrid(False)
+        self.tbl_log.verticalHeader().setVisible(False)
         v.addWidget(self.tbl_log)
 
         self.lbl_log_count = QLabel()
@@ -452,8 +460,9 @@ class ControlPanel(QMainWindow):
         return w
 
     def select_config_tab(self):
+        # First run lands the user on the friendly Settings form, not raw YAML.
         for i in range(self.tabs.count()):
-            if self.tabs.tabText(i) == "Configuration":
+            if self.tabs.tabText(i) == "Settings":
                 self.tabs.setCurrentIndex(i)
                 return
 
