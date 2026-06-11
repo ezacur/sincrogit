@@ -1,4 +1,4 @@
-# SincroGit
+# ⏳g — SincroGit
 
 SincroGit le da a cualquier repo una **máquina del tiempo** automática y versionada — sin
 que ejecutes `git` jamás. Cada pocos minutos fotografía tus ficheros **guardados**, cada

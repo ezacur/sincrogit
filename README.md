@@ -1,4 +1,4 @@
-# SincroGit
+# ⏳g — SincroGit
 
 SincroGit gives any repo an automatic, versioned **time machine** — without you ever
 running `git`. Every few minutes it snapshots your **saved** files, every ~6 h it "seals"
