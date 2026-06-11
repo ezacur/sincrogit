@@ -79,7 +79,7 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 - Cuando el debounce se asienta **y** ha pasado ≥5 min desde el último snapshot:
   1. Calcular ficheros candidatos y aplicar el **filtro** (§5).
   2. `git add <solo los candidatos>`.
-  3. Si hay algo staged: `git commit --amend --no-edit` (mensaje WIP estático tipo `WIP: autosnapshot`).
+  3. Si hay algo staged: `git commit --amend --no-edit` (mensaje WIP estático tipo `sincro: WIP autosnapshot`).
 - Sin cambios → no se hace nada.
 - **Anti-inanición:** una fuente que nunca se asienta (un build largo, un log que escribe
   dentro del repo) reinicia el debounce sin parar — así que pasadas **2× el intervalo de
@@ -93,7 +93,7 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 1. Si el WIP no tiene cambios respecto a `sellado_N` → **no sellar** (no ensuciar el historial).
 2. Generar mensaje con IA a partir de `git diff sellado_N..WIP` (§6).
 3. `git commit --amend -m "<mensaje IA>"` → el WIP pasa a ser `sellado_N+1`.
-4. Crear WIP nuevo vacío encima: `git commit --allow-empty -m "WIP: autosnapshot"`.
+4. Crear WIP nuevo vacío encima: `git commit --allow-empty -m "sincro: WIP autosnapshot"`.
 5. **Push** (§4).
 
 > No hay sellado por inactividad ni por apagado. Para forzar un sellado+push puntual (p. ej. justo antes de irme al portátil): *Seal now* / *Seal+Push* por repo en la bandeja, `--seal-once` desde la CLI, o un Smart Commit.

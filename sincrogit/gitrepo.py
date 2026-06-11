@@ -89,8 +89,15 @@ class GitError(RuntimeError):
 
 
 class GitRepo:
-    # Message prefix that identifies a (transient) WIP commit.
-    WIP_MESSAGE = "WIP: autosnapshot"
+    # Message new (transient) WIP commits are created with: the `sincro:` prefix
+    # marks it as SincroGit's, same as the seals, so every machine commit is
+    # recognizable at a glance in `git log`.
+    WIP_MESSAGE = "sincro: WIP autosnapshot"
+    # DETECTION accepts the legacy message too: repos that were running before the
+    # rename still have a live WIP with the old text at HEAD — failing to recognize
+    # it would bake it into history as an "external commit". Never trim the legacy
+    # entry while old WIPs can exist in reflogs/autosnap refs.
+    WIP_PREFIXES = (WIP_MESSAGE, "WIP: autosnapshot")
 
     def __init__(self, path: str, pandoc: str | None = None, pandoc_provider=None):
         self.path = path
@@ -211,7 +218,7 @@ class GitRepo:
 
     def head_is_wip(self) -> bool:
         msg = self.head_message()
-        return msg is not None and msg.startswith(self.WIP_MESSAGE)
+        return msg is not None and msg.startswith(self.WIP_PREFIXES)
 
     def commit_time(self, ref: str) -> int | None:
         """UNIX timestamp (committer date) of the commit, or None."""
@@ -544,7 +551,7 @@ class GitRepo:
             sha, subj, _ = self._split3(line)
             if not sha:
                 continue
-            if subj.startswith(self.WIP_MESSAGE):
+            if subj.startswith(self.WIP_PREFIXES):
                 continue
             if subj.startswith("sincro:") or subj.startswith("auto:"):
                 continue
@@ -610,7 +617,7 @@ class GitRepo:
         )
         for line in res.stdout.splitlines():
             sha, subj, _ = self._split3(line)
-            if sha and not subj.startswith(self.WIP_MESSAGE):
+            if sha and not subj.startswith(self.WIP_PREFIXES):
                 return sha
         return None
 
@@ -960,7 +967,7 @@ class GitRepo:
                 continue
             if sha in autosnap_label:
                 source, subject = "autosnap", f"(autosnap: {autosnap_label[sha]})"
-            elif subj.startswith(self.WIP_MESSAGE):
+            elif subj.startswith(self.WIP_PREFIXES):
                 source, subject = "snapshot", "(auto-snapshot)"
             else:
                 source, subject = "sealed", subj

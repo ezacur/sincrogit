@@ -79,7 +79,7 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
 - When the debounce settles **and** ≥5 min has passed since the last snapshot:
   1. Compute candidate files and apply the **filter** (§5).
   2. `git add <only the candidates>`.
-  3. If something is staged: `git commit --amend --no-edit` (static WIP message like `WIP: autosnapshot`).
+  3. If something is staged: `git commit --amend --no-edit` (static WIP message like `sincro: WIP autosnapshot`).
 - No changes → nothing happens.
 - **Anti-starvation:** a source that never settles (a long build, a log writer inside the
   repo) keeps resetting the debounce — so past **2× the snapshot interval** since the last
@@ -92,7 +92,7 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
 1. If the WIP has no changes vs `sealed_N` → **don't seal** (don't pollute the history).
 2. Generate a message with AI from `git diff sealed_N..WIP` (§6).
 3. `git commit --amend -m "<AI message>"` → the WIP becomes `sealed_N+1`.
-4. Create a new empty WIP on top: `git commit --allow-empty -m "WIP: autosnapshot"`.
+4. Create a new empty WIP on top: `git commit --allow-empty -m "sincro: WIP autosnapshot"`.
 5. **Push** (§4).
 
 > There is no sealing on idle or on shutdown. To force a one-off seal+push (e.g. right before I head to the laptop): *Seal now* / per-repo *Seal+Push* in the tray, `--seal-once` from the CLI, or a Smart Commit.
