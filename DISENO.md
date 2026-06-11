@@ -407,6 +407,15 @@ repos:
   y los demás siguen corriendo. Si aun así el loop choca con un error inesperado, se hace
   visible en vez de dejar un icono zombi: log con traceback, evento ERROR (globo de bandeja
   + toast), `status()` reporta parado (icono gris), y `--headless` sale con código 1.
+- **Auto-reparación de refs tras un corte de luz.** Un crash puede dejar `.git/HEAD` o
+  `refs/heads/<rama>` a ceros (NTFS conserva el tamaño del fichero, pierde la última
+  escritura pequeña) — git dice entonces "your current branch appears to be broken" y el
+  repo cedería para siempre. En el setup, `GitRepo.repair_corrupt_refs` detecta una ref que
+  no resuelve y la restaura desde la entrada más nueva de **su propio reflog** cuyo commit
+  siga existiendo (el reflog es append-only y sobrevive al crash) — la recuperación manual,
+  automatizada. Conservador: solo toca refs irresolubles, nunca adivina entre ramas, emite
+  un evento "repair" de WARNING. (Nacido de un incidente real: un corte de luz zeroeó el
+  `refs/heads/main` de este mismo repo.)
 - **Nunca `--force`** en el flujo automático.
 - **Mantenimiento:** `git gc --auto` tras cada sello **y al menos una vez al día**
   (`Engine.GC_INTERVAL_SEC`, en un worker en segundo plano), para empaquetar los objetos

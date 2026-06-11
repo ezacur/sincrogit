@@ -151,6 +151,7 @@ The **tray icon colour** reflects state: green = active, amber = paused, red = c
 | **Make a clean, documented commit now** | Per-repo **Commit…** button, or `--commit REPO`. |
 | **Move my work to another machine** | Just **lock the screen / close the lid** — SincroGit flushes; on the other machine, unlock and it syncs. Or **Smart Commit** before leaving for an instant handoff. |
 | **Recover after a dead disk** | On another machine: `--autosnaps` (or panel → *Fetch autosnaps*), then *File history* / *Restore*. Loses at most ~30 min. |
+| **Power cut left git saying "branch broken"** | Nothing — just start SincroGit. It detects the zeroed ref and restores it from the reflog at startup (a "repair" warning shows in the Log). |
 | **Stop writing automatic commits (purist)** | Set `seal_interval_min: inf`; commit by hand with Smart Commit. |
 | **Work on a feature branch (team)** | Set `track_current_branch: true`, work on your own branch, Smart Commit → Pull Request. See [README → Using it in a team](README.md#using-it-in-a-team-shared-repos). |
 | **Sync one repo more aggressively** | Override its intervals per repo — see [README → Tuning a "hot" repo](README.md#tuning-a-hot-repo). |

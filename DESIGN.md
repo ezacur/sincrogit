@@ -402,6 +402,15 @@ repos:
   If the loop still hits an unexpected error, it is made visible instead of leaving a
   zombie tray icon: logged with traceback, emitted as an ERROR event (tray balloon +
   toast), `status()` reports not-running (gray icon), and `--headless` exits with code 1.
+- **Power-cut self-healing of refs.** A crash can leave `.git/HEAD` or
+  `refs/heads/<branch>` zeroed (NTFS keeps the file size, loses the last small write) —
+  git then reports "your current branch appears to be broken" and the repo would yield
+  forever. At setup, `GitRepo.repair_corrupt_refs` detects a ref that does not resolve and
+  restores it from the newest entry of **its own reflog** whose commit still exists
+  (the reflog is append-only and survives the crash) — the manual recovery, automated.
+  Conservative: only touches unresolvable refs, never guesses across branches, emits a
+  WARNING "repair" event. (Born from a real incident: a power cut zeroed this very
+  repo's `refs/heads/main`.)
 - **Never `--force`** in the automatic flow.
 - **Git output language** forced to English (`LC_ALL=C`) for consistent logs (our parsing uses locale-independent porcelain/plumbing commands).
 - **Maintenance:** `git gc --auto` after each seal **and at least once a day**

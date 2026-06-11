@@ -27,6 +27,7 @@ ACTIONS = [
     "handoff",
     "flush",
     "gc",
+    "repair",
     "conflict",
     "pause",
     "resume",

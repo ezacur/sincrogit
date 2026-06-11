@@ -254,6 +254,90 @@ class GitRepo:
         )
         return any(os.path.exists(os.path.join(gd, m)) for m in markers)
 
+    # --------------------------------------------------- crash self-healing
+    _SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+    def repair_corrupt_refs(self, branch: str) -> list:
+        """Self-heal the tiny ref files a power cut can zero out.
+
+        NTFS metadata often survives a crash while the last small write is lost:
+        `.git/HEAD` or `.git/refs/heads/<branch>` ends up the right SIZE but full
+        of NUL bytes, and git fails with "your current branch appears to be
+        broken". The reflog is append-only and survives, so its newest entry
+        whose commit still exists IS the pre-crash state — restore the ref from
+        it (exactly the manual recovery, automated).
+
+        Conservative on purpose: only touches a ref that does NOT resolve (a
+        broken ref is unusable, so repairing can only improve things); restores
+        only from the ref's OWN reflog (never guesses from another branch's
+        history); leaves everything alone when there is nothing trustworthy to
+        restore from. Returns human-readable descriptions of the repairs made
+        ([] = nothing was wrong). Best-effort: never raises.
+        """
+        repairs = []
+        try:
+            gd = self._git_dir()
+
+            # --- HEAD itself (a symbolic ref in a tiny file) ---
+            head_path = os.path.join(gd, "HEAD")
+            try:
+                with open(head_path, "rb") as fh:
+                    head_txt = fh.read(256).decode("ascii", errors="replace").strip()
+            except OSError:
+                head_txt = ""
+            head_ok = head_txt.startswith("ref: ") or bool(self._SHA_RE.fullmatch(head_txt))
+            if not head_ok:
+                # Re-point at the configured branch (the only branch the engine
+                # operates on; with a zeroed HEAD the previous branch is unknowable).
+                with open(head_path, "w", encoding="ascii", newline="\n") as fh:
+                    fh.write(f"ref: refs/heads/{branch}\n")
+                repairs.append(f"HEAD was corrupt; re-pointed at refs/heads/{branch}")
+                head_txt = f"ref: refs/heads/{branch}"
+
+            # --- the branch HEAD references ---
+            target = branch
+            if head_txt.startswith("ref: refs/heads/"):
+                target = head_txt[len("ref: refs/heads/"):].strip() or branch
+            ref = f"refs/heads/{target}"
+            if self._run(["rev-parse", "--verify", "--quiet", ref], check=False).returncode == 0:
+                return repairs  # resolves fine — nothing (more) to do
+
+            sha = self._last_good_reflog_sha(gd, ref)
+            if not sha:
+                return repairs  # no trustworthy source: leave it for a human
+            loose = os.path.join(gd, *ref.split("/"))
+            try:
+                os.remove(loose)  # the zeroed file blocks update-ref's lock
+            except OSError:
+                pass
+            self._run(["update-ref", ref, sha], check=False)
+            if self._run(["rev-parse", "--verify", "--quiet", ref], check=False).returncode == 0:
+                repairs.append(
+                    f"{ref} was corrupt (power cut?); restored from its reflog to {sha[:8]}")
+        except Exception as e:  # noqa: BLE001 — healing must never block startup
+            log.warning("ref auto-repair skipped: %s", e)
+        return repairs
+
+    def _last_good_reflog_sha(self, gitdir: str, ref: str):
+        """Newest entry in the ref's OWN reflog whose commit object still exists
+        (the crash may also have truncated the newest loose object). None if the
+        log is missing or nothing verifies — then we refuse to guess."""
+        path = os.path.join(gitdir, "logs", *ref.split("/"))
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            new = parts[1]
+            if self._SHA_RE.fullmatch(new) and new != "0" * 40:
+                if self._run(["cat-file", "-e", f"{new}^{{commit}}"], check=False).returncode == 0:
+                    return new
+        return None
+
     # ------------------------------------------------------------ mutations
     def ensure_gitattributes(self, lines=("* text=auto",)) -> list:
         """Ensure each given line is present in .gitattributes (append the missing

@@ -153,6 +153,7 @@ Seal now, Quit.
 | **Hacer un commit limpio y documentado ya** | Botón **Commit…** del repo, o `--commit REPO`. |
 | **Llevar mi trabajo a otra máquina** | Solo **bloquea la pantalla / cierra la tapa** — SincroGit vuelca; en la otra, desbloquea y sincroniza. O **Smart Commit** antes de irte para un relevo instantáneo. |
 | **Recuperar tras un disco muerto** | En otra máquina: `--autosnaps` (o panel → *Fetch autosnaps*), luego *File history* / *Restore*. Pierdes ≤30 min. |
+| **Un corte de luz dejó git diciendo "branch broken"** | Nada — arranca SincroGit. Detecta la ref zeroed y la restaura desde el reflog al arrancar (verás un aviso "repair" en el Log). |
 | **Dejar de escribir commits automáticos (purista)** | Pon `seal_interval_min: inf`; commitea a mano con Smart Commit. |
 | **Trabajar en una feature branch (equipo)** | Pon `track_current_branch: true`, trabaja en tu rama, Smart Commit → Pull Request. Ver [LEAME → Usar en equipo](LEAME.md#usar-sincrogit-en-equipo-repos-compartidos). |
 | **Sincronizar un repo más agresivo** | Sobreescribe sus intervalos por repo — ver [LEAME → Repo "en caliente"](LEAME.md#afinar-un-repo-en-caliente). |

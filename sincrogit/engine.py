@@ -474,6 +474,13 @@ class Engine:
             log.error("Not a git repo (skipping): %s", rc.path)
             return
 
+        # Power-cut self-healing: a crash can zero out .git/HEAD or the branch's
+        # ref file (right size, NUL content) leaving the repo "broken" while the
+        # reflog — append-only — still knows the last state. Repair before any
+        # git work so the repo comes back by itself instead of yielding forever.
+        for msg in repo.repair_corrupt_refs(rc.branch):
+            self._emit(rc.name, "repair", msg, "WARNING")
+
         ff = FileFilter(rc.max_file_bytes, rc.extra_excludes,
                         rc.extra_includes, rc.max_include_bytes)
         st = RepoState(repo, rc, ff)
