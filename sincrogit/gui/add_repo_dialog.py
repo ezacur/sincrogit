@@ -23,7 +23,7 @@ class AddRepoDialog(QDialog):
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.c = controller
-        self.setWindowTitle("SincroGit — Add repo")
+        self.setWindowTitle("⏳g SincroGit — Add repo")
         self.resize(560, 0)
 
         v = QVBoxLayout(self)

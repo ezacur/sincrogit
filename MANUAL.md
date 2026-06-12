@@ -1,4 +1,4 @@
-# SincroGit — User Manual
+# ⏳g SincroGit — User Manual
 
 A practical, reference-style guide to **operating** SincroGit: how to launch it, every CLI
 command, the control-panel actions, common task recipes, and where its files live.

@@ -237,7 +237,7 @@ class TrayApp:
     # ------------------------------------------------------------- tray
     def _build_tray(self):
         self.tray = QSystemTrayIcon(iconmod.make_icon("running"))
-        self.tray.setToolTip("SincroGit")
+        self.tray.setToolTip("⏳g SincroGit")
         menu = QMenu()
 
         self.act_panel = menu.addAction("Open control panel")

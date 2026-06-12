@@ -1,4 +1,4 @@
-# SincroGit for the lazy and forgetful 🦥
+# ⏳g SincroGit for the lazy and forgetful 🦥
 
 Let's be honest: Git is great, but it demands discipline. And sometimes we just **don't
 feel like** running `git add`, crafting the perfect message, and `git push`ing every time

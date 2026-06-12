@@ -1,4 +1,4 @@
-# SincroGit — Documento de diseño
+# ⏳g SincroGit — Documento de diseño
 
 > Una máquina del tiempo automática y versionada para tus repos (y continuidad
 > multi-máquina de bajo esfuerzo), con **cero** disciplina de Git.

@@ -33,7 +33,7 @@ class SmartCommitDialog(QDialog):
         self.c = controller
         self.name = repo_name
         self._msg = ""
-        self.setWindowTitle(f"SincroGit — Smart Commit ({repo_name})")
+        self.setWindowTitle(f"⏳g SincroGit — Smart Commit ({repo_name})")
         self.resize(640, 480)
 
         v = QVBoxLayout(self)

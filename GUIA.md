@@ -1,4 +1,4 @@
-# SincroGit para perezosos y olvidadizos 🦥
+# ⏳g SincroGit para perezosos y olvidadizos 🦥
 
 Seamos honestos: Git es increíble, pero pide disciplina. Y a veces simplemente **no
 tenemos ganas** de hacer `git add`, pensar el mensaje perfecto y `git push` cada vez que

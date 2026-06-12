@@ -1,8 +1,9 @@
-"""SincroGit icon: a "G" with an hourglass.
+"""SincroGit icon: the ⏳g brand mark — an hourglass and a lowercase git "g".
 
-It is drawn with QPainter (vectorial, crisp at any size) and the background color
-changes with the state, so a glance at the tray tells you whether it is active,
-paused, in conflict or stopped.
+The product mark is pure unicode ("⏳g", typable anywhere); this draws the same
+two glyphs with QPainter (vectorial, crisp at any size) so the icon needs no
+font or image asset. The background color changes with the state, so a glance
+at the tray tells you whether it is active, paused, in conflict or stopped.
 
 Requires a QApplication to exist (gui/app.py creates it before painting).
 """
@@ -29,10 +30,10 @@ STATE_COLORS = {
 }
 
 STATE_TOOLTIP = {
-    "running": "SincroGit: active",
-    "paused": "SincroGit: paused",
-    "conflict": "SincroGit: conflict (needs attention)",
-    "stopped": "SincroGit: stopped",
+    "running": "⏳g SincroGit: active",
+    "paused": "⏳g SincroGit: paused",
+    "conflict": "⏳g SincroGit: conflict (needs attention)",
+    "stopped": "⏳g SincroGit: stopped",
 }
 
 
@@ -57,62 +58,82 @@ def _draw(painter: QPainter, size: int, color_hex: str):
     painter.setPen(QPen(dark.darker(120), max(1.0, size * 0.02)))
     painter.drawPath(path)
 
-    # --- "G" drawn as a vector (not as text) so it always renders, without
-    #     depending on installed fonts ---
+    # --- The mark, side by side like the text: hourglass ⏳ then lowercase g ---
+    _draw_hourglass(painter, size)
     _draw_g(painter, size)
 
-    # --- Hourglass inside a circular badge (bottom-right corner) ---
-    _draw_hourglass_badge(painter, size, base)
 
-
-def _draw_g(painter: QPainter, size: int):
-    cx = size * 0.45
-    cy = size * 0.49
-    r = size * 0.29
-    sw = r * 0.46  # stroke width of the G
-    white = QColor("#FFFFFF")
-    painter.setBrush(QColor(0, 0, 0, 0))
-    painter.setPen(QPen(white, sw, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-
-    # Ring open on the right (like a "C").
-    rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-    # ~80° gap centered at 0° (3 o'clock): draw from 40° to 320° (CCW).
-    painter.drawArc(rect, int(40 * 16), int(280 * 16))
-
-    # Horizontal bar of the "G" entering from the right up to the center.
-    painter.drawLine(QPointF(cx + r * 0.08, cy), QPointF(cx + r, cy))
-
-
-def _draw_hourglass_badge(painter: QPainter, size: int, base: QColor):
-    # Dark circular badge that separates the hourglass from the "G".
-    r = size * 0.21
-    cx = size * 0.74
-    cy = size * 0.74
-    painter.setBrush(QBrush(base.darker(150)))
-    painter.setPen(QPen(QColor("#FFFFFF"), max(1.0, size * 0.022)))
-    painter.drawEllipse(QPointF(cx, cy), r, r)
-
-    # Hourglass (two triangles + caps) in white, inside the badge.
-    hw = r * 0.92
-    hh = r * 1.12
-    left = cx - hw / 2
-    right = cx + hw / 2
+def _draw_hourglass(painter: QPainter, size: int):
+    """The ⏳ half of the mark (left). What makes the glyph read "hourglass" (and
+    not "X") is the OUTLINED glass with the sand inside: stroked bulbs with a real
+    neck, sand left in the top bulb, a falling stream, and the pile below."""
+    cx = size * 0.335
+    cy = size * 0.50
+    gw = size * 0.26   # glass (bulb) width
+    hh = size * 0.47   # glass height
+    neck = gw * 0.18   # waist half-gap
+    left = cx - gw / 2
+    right = cx + gw / 2
     top = cy - hh / 2
     bot = cy + hh / 2
 
     white = QColor("#FFFFFF")
+
+    # Glass outline (stroked, NOT filled): two edges narrowing to a neck.
+    sw = max(1.2, size * 0.034)
+    painter.setBrush(QColor(0, 0, 0, 0))
+    painter.setPen(QPen(white, sw, Qt.SolidLine, Qt.FlatCap, Qt.RoundJoin))
+    for sgn in (-1, 1):  # left edge, right edge
+        path = QPainterPath(QPointF(cx + sgn * gw / 2, top))
+        path.lineTo(QPointF(cx + sgn * neck, cy))
+        path.lineTo(QPointF(cx + sgn * gw / 2, bot))
+        painter.drawPath(path)
+
+    # Sand: hanging in the top bulb, the falling stream, the pile at the bottom.
+    painter.setPen(QPen(white, max(1.0, size * 0.004), Qt.SolidLine, Qt.FlatCap, Qt.MiterJoin))
     painter.setBrush(QBrush(white))
-    painter.setPen(QPen(white, max(1.0, size * 0.012), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-    painter.drawPolygon(QPolygonF([
-        QPointF(left, top), QPointF(right, top), QPointF(cx, cy),
+    inset = gw * 0.16
+    painter.drawPolygon(QPolygonF([          # top bulb: sand draining
+        QPointF(left + inset, top + hh * 0.12),
+        QPointF(right - inset, top + hh * 0.12),
+        QPointF(cx, cy - hh * 0.06),
     ]))
-    painter.drawPolygon(QPolygonF([
-        QPointF(left, bot), QPointF(right, bot), QPointF(cx, cy),
+    painter.drawPolygon(QPolygonF([          # bottom: the pile
+        QPointF(cx, cy + hh * 0.16),
+        QPointF(left + inset * 0.8, bot - hh * 0.06),
+        QPointF(right - inset * 0.8, bot - hh * 0.06),
     ]))
-    cap = max(1.4, size * 0.026)
+    painter.setPen(QPen(white, max(1.0, size * 0.022), Qt.SolidLine, Qt.RoundCap))
+    painter.drawLine(QPointF(cx, cy), QPointF(cx, cy + hh * 0.18))  # the stream
+
+    # Caps wider than the glass — the hourglass frame.
+    capw = gw * 1.35
+    cap = max(1.8, size * 0.05)
     painter.setPen(QPen(white, cap, Qt.SolidLine, Qt.RoundCap))
-    painter.drawLine(QPointF(left, top), QPointF(right, top))
-    painter.drawLine(QPointF(left, bot), QPointF(right, bot))
+    painter.drawLine(QPointF(cx - capw / 2, top), QPointF(cx + capw / 2, top))
+    painter.drawLine(QPointF(cx - capw / 2, bot), QPointF(cx + capw / 2, bot))
+
+
+def _draw_g(painter: QPainter, size: int):
+    """The lowercase git "g" of the mark (right), drawn as vectors (bowl + stem
+    + descender hook) so it always renders without depending on installed fonts."""
+    white = QColor("#FFFFFF")
+    sw = size * 0.082  # stroke width
+    painter.setBrush(QColor(0, 0, 0, 0))
+    painter.setPen(QPen(white, sw, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+
+    # Bowl: a circle in the x-height band of the right half.
+    r = size * 0.13
+    bx = size * 0.66           # bowl center x
+    by = size * 0.45           # bowl center y
+    painter.drawEllipse(QPointF(bx, by), r, r)
+
+    # Stem: down the bowl's right edge, into the descender...
+    sx = bx + r
+    painter.drawLine(QPointF(sx, by - r), QPointF(sx, by + r * 1.9))
+    # ...ending in an open hook swinging left under the bowl.
+    hook = QRectF(sx - 2 * r * 1.05, by + r * 0.55, 2 * r * 1.05, 2 * r * 1.35)
+    painter.drawArc(hook, int(-15 * 16), int(-150 * 16))
 
 
 def make_pixmap(state: str = "running", size: int = 64) -> QPixmap:

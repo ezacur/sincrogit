@@ -80,7 +80,7 @@ class ControlPanel(QMainWindow):
         # open/Refresh (reload_log); filter changes only re-filter this list, so
         # typing in the search box never re-reads the file from disk.
         self._events_cache = []
-        self.setWindowTitle("SincroGit — Control panel")
+        self.setWindowTitle("⏳g SincroGit — Control panel")
         self.resize(880, 560)
         try:
             self.setWindowIcon(self.c.make_icon(self.c.app_state()))
@@ -445,7 +445,7 @@ class ControlPanel(QMainWindow):
         icon_lbl.setAlignment(Qt.AlignCenter)
         v.addWidget(icon_lbl)
 
-        title = QLabel(f"SincroGit v{__version__}")
+        title = QLabel(f"⏳g  SincroGit v{__version__}")
         tf = QFont()
         tf.setPointSize(16)
         tf.setBold(True)

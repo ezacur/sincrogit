@@ -125,7 +125,7 @@ class HistoryDialog(QDialog):
     def __init__(self, controller, parent=None, preselect_repo=None):
         super().__init__(parent)
         self.c = controller
-        self.setWindowTitle("SincroGit — File history")
+        self.setWindowTitle("⏳g SincroGit — File history")
         self.resize(860, 600)
         self._versions = []
 

@@ -1,4 +1,4 @@
-# SincroGit — Manual de usuario
+# ⏳g SincroGit — Manual de usuario
 
 Una guía práctica, de referencia, para **operar** SincroGit: cómo arrancarlo, todos los
 comandos de la CLI, las acciones del panel de control, recetas de tareas comunes, y dónde
