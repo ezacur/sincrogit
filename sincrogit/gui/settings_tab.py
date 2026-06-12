@@ -49,7 +49,13 @@ def _combo(pairs) -> QComboBox:
     cb = QComboBox()
     for value, label in pairs:
         cb.addItem(label, value)
+    cb.setMaximumWidth(360)  # form fields shouldn't stretch across the window
     return cb
+
+
+def _spin(spin: QSpinBox) -> QSpinBox:
+    spin.setMaximumWidth(160)  # a number never needs the full row
+    return spin
 
 
 def _select(cb: QComboBox, value):
@@ -88,7 +94,7 @@ class SettingsTab(QWidget):
         # ------------------------------------------------------------ rhythms
         g1 = QGroupBox("Rhythms (how often things happen)")
         f1 = QFormLayout(g1)
-        self.sp_snapshot = QSpinBox()
+        self.sp_snapshot = _spin(QSpinBox())
         self.sp_snapshot.setRange(10, 3600)
         self.sp_snapshot.setSingleStep(10)
         self.sp_snapshot.setSuffix(" s")
@@ -98,7 +104,7 @@ class SettingsTab(QWidget):
         self.ck_purist = QCheckBox("Purist mode — never auto-seal; I commit by hand (Smart Commit)")
         self.ck_purist.toggled.connect(lambda on: self.sp_seal.setEnabled(not on))
         f1.addRow(self.ck_purist)
-        self.sp_seal = QSpinBox()
+        self.sp_seal = _spin(QSpinBox())
         self.sp_seal.setRange(5, 2880)
         self.sp_seal.setSingleStep(30)
         self.sp_seal.setSuffix(" min")
@@ -113,7 +119,7 @@ class SettingsTab(QWidget):
         self.ck_autosnap.setToolTip("Disk-failure recovery + cross-machine handoff substrate.")
         self.ck_autosnap.toggled.connect(lambda on: self.sp_autosnap.setEnabled(on))
         f2.addRow(self.ck_autosnap)
-        self.sp_autosnap = QSpinBox()
+        self.sp_autosnap = _spin(QSpinBox())
         self.sp_autosnap.setRange(2, 240)
         self.sp_autosnap.setSuffix(" min")
         f2.addRow("Mirror every", self.sp_autosnap)
@@ -123,7 +129,7 @@ class SettingsTab(QWidget):
         self.ck_pull = QCheckBox("Pull from the remote periodically")
         self.ck_pull.toggled.connect(lambda on: self.sp_pull.setEnabled(on))
         f2.addRow(self.ck_pull)
-        self.sp_pull = QSpinBox()
+        self.sp_pull = _spin(QSpinBox())
         self.sp_pull.setRange(1, 240)
         self.sp_pull.setSuffix(" min")
         f2.addRow("Check the remote every", self.sp_pull)

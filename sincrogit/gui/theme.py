@@ -196,6 +196,16 @@ QComboBox::drop-down {{
     border: none;
     width: 22px;
 }}
+QSpinBox::up-button, QSpinBox::down-button {{
+    border: none;
+    background: transparent;
+    width: 18px;
+    margin: 1px 2px;
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+    background: {p['sel_bg']};
+    border-radius: 3px;
+}}
 QComboBox QAbstractItemView {{
     background: {p['surface']};
     border: 1px solid {p['border']};

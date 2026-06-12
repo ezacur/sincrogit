@@ -104,7 +104,7 @@ class ControlPanel(QMainWindow):
         self.reload_log()
 
     # =============================================================== STATUS
-    _COLS = ["Repo", "Branch", "State", "Since last seal", "Last action", "Actions"]
+    _COLS = ["Repo", "Branch", "State", "Since last seal", "Last action"]
 
     def _build_status_tab(self) -> QWidget:
         w = QWidget()
@@ -126,6 +126,8 @@ class ControlPanel(QMainWindow):
             top.addWidget(b)
         v.addLayout(top)
 
+        # Clean table: per-repo ACTIONS live in the bar below and act on the
+        # SELECTED row (buttons crammed into cells overflowed the viewport).
         self.tbl_repos = QTableWidget(0, len(self._COLS))
         self.tbl_repos.setHorizontalHeaderLabels(self._COLS)
         hdr = self.tbl_repos.horizontalHeader()
@@ -133,16 +135,66 @@ class ControlPanel(QMainWindow):
         for col in range(1, len(self._COLS)):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         self.tbl_repos.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tbl_repos.setSelectionMode(QTableWidget.SingleSelection)
         self.tbl_repos.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tbl_repos.verticalHeader().setVisible(False)
         self.tbl_repos.setAlternatingRowColors(True)
         self.tbl_repos.setShowGrid(False)
         self.tbl_repos.verticalHeader().setDefaultSectionSize(34)  # row breathing room
+        self.tbl_repos.itemSelectionChanged.connect(self._sync_action_bar)
+        self.tbl_repos.doubleClicked.connect(lambda _i: self._open_history())
         v.addWidget(self.tbl_repos)
 
-        self._row_widgets = {}   # repo name -> {"pause": QPushButton}
+        # --- Action bar for the selected repo ---
+        bar = QHBoxLayout()
+        self.lbl_selected = QLabel("Select a repo")
+        self.lbl_selected.setProperty("cssClass", "muted")
+        bar.addWidget(self.lbl_selected, 1)
+        self.b_handoff = QPushButton("Apply handoff")
+        self.b_handoff.setProperty("cssClass", "accent")
+        self.b_handoff.setToolTip("Apply newer work waiting from your other machine")
+        self.b_handoff.clicked.connect(lambda: self._apply_handoff(self._selected_repo()))
+        self.b_handoff.setVisible(False)
+        self.b_pause_repo = QPushButton("Pause")
+        self.b_pause_repo.clicked.connect(lambda: self._toggle_repo_pause(self._selected_repo()))
+        self.b_commit = QPushButton("Commit…")
+        self.b_commit.setToolTip("Manual commit now with an AI-proposed Conventional Commits message")
+        self.b_commit.clicked.connect(lambda: self._open_smart_commit(self._selected_repo()))
+        self.b_seal = QPushButton("Seal+Push")
+        self.b_seal.setToolTip("Turn the current WIP into a permanent commit and push it")
+        self.b_seal.clicked.connect(lambda: self.c.seal_repo_now(self._selected_repo()))
+        self.b_pull = QPushButton("Fetch+Pull")
+        self.b_pull.setToolTip("Fetch the remote and rebase the WIP on top now")
+        self.b_pull.clicked.connect(lambda: self.c.pull_repo_now(self._selected_repo()))
+        for b in (self.b_handoff, self.b_pause_repo, self.b_commit, self.b_seal, self.b_pull):
+            bar.addWidget(b)
+        v.addLayout(bar)
+
         self._shown_names = []   # cached row order
         return w
+
+    def _selected_repo(self) -> str:
+        row = self.tbl_repos.currentRow()
+        item = self.tbl_repos.item(row, 0) if row >= 0 else None
+        return item.text() if item else ""
+
+    def _sync_action_bar(self):
+        """Point the action bar at the selected repo (enabled state, pause text,
+        handoff visibility)."""
+        name = self._selected_repo()
+        repos = {r["name"]: r for r in self.c.status()["repos"]}
+        r = repos.get(name)
+        has = r is not None
+        for b in (self.b_pause_repo, self.b_commit, self.b_seal, self.b_pull):
+            b.setEnabled(has)
+        if not has:
+            self.lbl_selected.setText("Select a repo")
+            self.b_handoff.setVisible(False)
+            return
+        self.lbl_selected.setText(f"Selected:  {name}")
+        paused = r["user_paused"] or r["conflict_paused"]
+        self.b_pause_repo.setText("Resume" if paused else "Pause")
+        self.b_handoff.setVisible(bool(r.get("pending_handoff")))
 
     def refresh_status(self):
         st = self.c.status()
@@ -168,35 +220,16 @@ class ControlPanel(QMainWindow):
         self._update_rows(repos, global_paused)
 
     def _rebuild_rows(self, repos):
-        self._row_widgets = {}
+        selected = self._selected_repo()
         self.tbl_repos.setRowCount(len(repos))
         for i, r in enumerate(repos):
-            for col in range(5):
+            for col in range(len(self._COLS)):
                 self.tbl_repos.setItem(i, col, QTableWidgetItem(""))
-            name = r["name"]
-            cell = QWidget()
-            h = QHBoxLayout(cell)
-            h.setContentsMargins(2, 1, 2, 1)
-            h.setSpacing(4)
-            b_pause = QPushButton("Pause")
-            b_pause.clicked.connect(lambda _, n=name: self._toggle_repo_pause(n))
-            b_commit = QPushButton("Commit…")
-            b_commit.setToolTip("Manual commit now with an AI-proposed Conventional Commits message")
-            b_commit.clicked.connect(lambda _, n=name: self._open_smart_commit(n))
-            b_seal = QPushButton("Seal+Push")
-            b_seal.clicked.connect(lambda _, n=name: self.c.seal_repo_now(n))
-            b_pull = QPushButton("Fetch+Pull")
-            b_pull.clicked.connect(lambda _, n=name: self.c.pull_repo_now(n))
-            b_handoff = QPushButton("Apply handoff")
-            b_handoff.setToolTip("Apply newer work waiting from your other machine")
-            b_handoff.setProperty("cssClass", "accent")  # themed highlight (see theme.py)
-            b_handoff.clicked.connect(lambda _, n=name: self._apply_handoff(n))
-            b_handoff.setVisible(False)  # shown only when a handoff is pending (ask mode)
-            for b in (b_pause, b_commit, b_seal, b_pull, b_handoff):
-                b.setFixedHeight(24)
-                h.addWidget(b)
-            self.tbl_repos.setCellWidget(i, 5, cell)
-            self._row_widgets[name] = {"pause": b_pause, "handoff": b_handoff}
+        # Keep (or establish) a selection so the action bar always has a target.
+        names = [r["name"] for r in repos]
+        if repos:
+            row = names.index(selected) if selected in names else 0
+            self.tbl_repos.selectRow(row)
 
     def _update_rows(self, repos, global_paused):
         for i, r in enumerate(repos):
@@ -226,11 +259,7 @@ class ControlPanel(QMainWindow):
                         # Clear the role: an invalid QColor() would paint black,
                         # wrong under a non-default/dark palette.
                         item.setData(Qt.ForegroundRole, None)
-            w = self._row_widgets.get(r["name"])
-            if w:
-                paused = r["user_paused"] or r["conflict_paused"]
-                w["pause"].setText("Resume" if paused else "Pause")
-                w["handoff"].setVisible(bool(r.get("pending_handoff")))
+        self._sync_action_bar()
 
     def _toggle_repo_pause(self, name):
         r = {x["name"]: x for x in self.c.status()["repos"]}.get(name)
