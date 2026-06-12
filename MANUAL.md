@@ -132,12 +132,12 @@ Open it from the tray icon (double-click) or *Open control panel*.
     `live_handoff: ask` mode).
   - Top bar: **File history…** (browse/preview/restore a file or the whole repo) and **Add
     repo…** (optionally drops a `* text=auto` `.gitattributes`).
-- **Log** — events, filterable by repo / action / level / text.
+- **Log** — events, newest first and updating live (no refresh needed); filterable by
+  repo / action / level / text, including the DEBUG detail the file log gets.
 - **Settings** — the friendly form: rhythms (snapshot/seal with a *Purist mode* checkbox),
   backup & sync (autosnap, handoff mode, follow-branch), AI messages, theme (light/dark/auto),
   pandoc path, log level. Edits the global defaults; *Save and restart* to apply.
 - **Advanced (YAML)** — the raw `config.yaml` editor, for per-repo overrides and comments.
-- **About**.
 
 The **File history** dialog shows the repo's **file tree** on the left (`.git` hidden) —
 click any file to see its versions (with relative times and color-coded types:

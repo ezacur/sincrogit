@@ -133,13 +133,13 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
     modo `live_handoff: ask`).
   - Barra superior: **File history…** (explorar/previsualizar/restaurar un fichero o el repo
     entero) y **Add repo…** (opcionalmente deja un `.gitattributes` `* text=auto`).
-- **Log** — eventos, filtrables por repo / acción / nivel / texto.
+- **Log** — eventos, lo más nuevo arriba y actualizándose en vivo (sin refresco manual);
+  filtrables por repo / acción / nivel / texto, incluido el detalle DEBUG del log de fichero.
 - **Settings** — el formulario amable: ritmos (snapshot/sellado con checkbox de *modo
   purista*), backup y sync (autosnap, modo de relevo, seguir-rama), mensajes de IA, tema
   (claro/oscuro/auto), ruta de pandoc, nivel de log. Edita los defaults globales; *Save
   and restart* para aplicar.
 - **Advanced (YAML)** — el editor del `config.yaml` crudo, para overrides por repo y comentarios.
-- **About**.
 
 El diálogo de **File history** muestra a la izquierda el **árbol de ficheros** del repo
 (`.git` oculto) — clic en cualquier fichero para ver sus versiones (tiempos relativos y

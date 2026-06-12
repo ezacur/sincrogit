@@ -116,20 +116,20 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
 
 **Fase 4 (interfaz de bandeja):**
 
-- ✅ **Icono en la bandeja del sistema** con la marca de SincroGit (una "G" con
-  reloj de arena). El **color refleja el estado**: verde=activo, ámbar=pausado,
+- ✅ **Icono en la bandeja del sistema** con la marca de la casa (reloj de arena +
+  g minúscula). El **color refleja el estado**: verde=activo, ámbar=pausado,
   rojo=conflicto, gris=parado.
 - ✅ **Menú** de bandeja: abrir panel, pausar/reanudar, sincronizar ahora, sellar
   ahora, salir.
 - ✅ **Panel de control** con pestañas:
-  - *Estado*: tabla de repos (rama, estado, tiempo desde el último sellado, última
-    acción) con **botones por repo** (Pausar/Reanudar, Sellar+Push, Fetch+Pull) y un
-    botón **"Add repo…"** (que opcionalmente crea un `.gitattributes` `* text=auto` para
-    que los finales de línea sean consistentes entre máquinas). Los repos se añaden en
-    caliente, sin reiniciar.
-  - *Registro*: eventos **filtrables por repo, acción, nivel y texto**.
-  - *Configuración*: editor del `config.yaml` (guardar / guardar y reiniciar).
-  - *Acerca de*.
+  - *Status*: tabla de repos (rama, estado, tiempo desde el último sellado, última
+    acción) con una **barra de acciones para el repo seleccionado** (Pausar/Reanudar,
+    Commit…, Seal+Push, Fetch+Pull, Apply handoff) y un botón **"Add repo…"** (que
+    opcionalmente crea un `.gitattributes` `* text=auto` para que los finales de línea
+    sean consistentes entre máquinas). Los repos se añaden en caliente, sin reiniciar.
+  - *Log*: eventos **filtrables por repo, acción, nivel y texto** (lo más nuevo arriba, en vivo).
+  - *Settings*: formulario amable sobre los defaults globales (purista, relevo, IA, tema…).
+  - *Advanced (YAML)*: editor del `config.yaml` crudo (guardar / guardar y reiniciar).
 - ✅ **Notificaciones** de escritorio (vía Qt) ante conflictos/errores.
 - ✅ **Historial / restauración de ficheros** ("máquina del tiempo"): explora las
   versiones pasadas de un fichero (commits sellados + snapshots del reflog + estados

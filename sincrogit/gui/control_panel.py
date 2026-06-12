@@ -1,10 +1,10 @@
 """SincroGit control panel (PyQt5).
 
 Tabbed window:
-  - Status: repos table + actions (pause/resume/sync/seal).
+  - Status: repos table + an action bar for the selected repo.
   - Log: events filterable by repo, action, level and text.
-  - Configuration: config.yaml editor (save / save and restart).
-  - About.
+  - Settings: friendly form over the global defaults.
+  - Advanced (YAML): raw config.yaml editor (save / save and restart).
 
 It talks to the app through a `controller` (duck-typed) that exposes:
   status(), events_all(), pause_all(), resume_all(), sync_now(), seal_now(),
@@ -42,6 +42,7 @@ from .settings_tab import SettingsTab
 from .smart_commit_dialog import SmartCommitDialog
 
 _LEVEL_COLOR = {
+    "DEBUG": QColor("#8a929c"),    # muted: high-volume detail (filtered files, ...)
     "WARNING": QColor("#8a6d00"),
     "ERROR": QColor("#b00020"),
 }
@@ -80,7 +81,7 @@ class ControlPanel(QMainWindow):
         # open/Refresh (reload_log); filter changes only re-filter this list, so
         # typing in the search box never re-reads the file from disk.
         self._events_cache = []
-        self.setWindowTitle("⏳g SincroGit — Control panel")
+        self.setWindowTitle(f"⏳g SincroGit v{__version__} — Control panel")
         self.resize(880, 560)
         try:
             self.setWindowIcon(self.c.make_icon(self.c.app_state()))
@@ -93,7 +94,6 @@ class ControlPanel(QMainWindow):
         self.tabs.addTab(self._build_log_tab(), "Log")
         self.tabs.addTab(SettingsTab(self.c), "Settings")
         self.tabs.addTab(self._build_config_tab(), "Advanced (YAML)")
-        self.tabs.addTab(self._build_about_tab(), "About")
 
         # Periodic status refresh while the window is visible.
         self._timer = QTimer(self)
@@ -320,7 +320,7 @@ class ControlPanel(QMainWindow):
 
         filt.addWidget(QLabel("Level:"))
         self.cb_level = QComboBox()
-        self.cb_level.addItems(["(all)", "INFO", "WARNING", "ERROR"])
+        self.cb_level.addItems(["(all)", "DEBUG", "INFO", "WARNING", "ERROR"])
         self.cb_level.currentIndexChanged.connect(self.refresh_log)
         filt.addWidget(self.cb_level)
 
@@ -330,9 +330,6 @@ class ControlPanel(QMainWindow):
         self.ed_search.textChanged.connect(self.refresh_log)
         filt.addWidget(self.ed_search, 1)
 
-        btn_refresh = QPushButton("Refresh")
-        btn_refresh.clicked.connect(self.reload_log)
-        filt.addWidget(btn_refresh)
         v.addLayout(filt)
 
         self.tbl_log = QTableWidget(0, 5)
@@ -367,8 +364,10 @@ class ControlPanel(QMainWindow):
         return True
 
     def reload_log(self):
-        """Re-read the full event history from disk (on open / the Refresh
-        button). Filter changes go through refresh_log, which reuses the cache."""
+        """Re-read the full event history from disk (on open). After that the tab
+        stays current by itself: every new event arrives live through the Qt
+        signal (append_event), so there is no manual Refresh button. Filter
+        changes go through refresh_log, which reuses the cache."""
         self._events_cache = list(self.c.events_all())
         self.refresh_log()
 
@@ -386,7 +385,8 @@ class ControlPanel(QMainWindow):
         self.cb_repo.setCurrentIndex(idx if idx >= 0 else 0)
         self.cb_repo.blockSignals(False)
 
-        filtered = [e for e in events if self._passes_filter(e)]
+        # Newest first: the latest event is what you came to see.
+        filtered = [e for e in reversed(events) if self._passes_filter(e)]
         self.tbl_log.setRowCount(len(filtered))
         for i, ev in enumerate(filtered):
             cells = [_fmt_time(ev.ts), ev.repo or "—", ev.action, ev.level, ev.message]
@@ -396,7 +396,6 @@ class ControlPanel(QMainWindow):
                 if color:
                     item.setForeground(color)
                 self.tbl_log.setItem(i, j, item)
-        self.tbl_log.scrollToBottom()
         self.lbl_log_count.setText(f"{len(filtered)} event(s) shown of {len(events)} total")
 
     def append_event(self, ev):
@@ -409,16 +408,14 @@ class ControlPanel(QMainWindow):
             self.cb_repo.addItem(ev.repo)
         if not self._passes_filter(ev):
             return
-        r = self.tbl_log.rowCount()
-        self.tbl_log.insertRow(r)
+        self.tbl_log.insertRow(0)  # newest first
         cells = [_fmt_time(ev.ts), ev.repo or "—", ev.action, ev.level, ev.message]
         for j, val in enumerate(cells):
             item = QTableWidgetItem(str(val))
             color = _LEVEL_COLOR.get(ev.level)
             if color:
                 item.setForeground(color)
-            self.tbl_log.setItem(r, j, item)
-        self.tbl_log.scrollToBottom()
+            self.tbl_log.setItem(0, j, item)
 
     # =========================================================== CONFIGURATION
     def _build_config_tab(self) -> QWidget:
@@ -460,33 +457,6 @@ class ControlPanel(QMainWindow):
     def _save_and_restart(self):
         if self._save_config():
             self.c.restart()
-
-    # ================================================================= ABOUT
-    def _build_about_tab(self) -> QWidget:
-        w = QWidget()
-        v = QVBoxLayout(w)
-        v.addStretch(1)
-        icon_lbl = QLabel()
-        try:
-            icon_lbl.setPixmap(self.c.make_icon(self.c.app_state()).pixmap(96, 96))
-        except Exception:
-            pass
-        icon_lbl.setAlignment(Qt.AlignCenter)
-        v.addWidget(icon_lbl)
-
-        title = QLabel(f"⏳g  SincroGit v{__version__}")
-        tf = QFont()
-        tf.setPointSize(16)
-        tf.setBold(True)
-        title.setFont(tf)
-        title.setAlignment(Qt.AlignCenter)
-        v.addWidget(title)
-
-        sub = QLabel("Automatic synchronization with robust Git versioning.")
-        sub.setAlignment(Qt.AlignCenter)
-        v.addWidget(sub)
-        v.addStretch(2)
-        return w
 
     def select_config_tab(self):
         # First run lands the user on the friendly Settings form, not raw YAML.

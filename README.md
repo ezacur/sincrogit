@@ -110,17 +110,18 @@ SincroGit relates to jj, GitButler, dura and friends, see
 
 **Phase 4 (system tray UI):**
 
-- ✅ **System tray icon** with the SincroGit mark (a "G" with an hourglass). The
+- ✅ **System tray icon** with the hourglass+g brand mark. The
   **color reflects the state**: green=active, amber=paused, red=conflict, gray=stopped.
 - ✅ Tray **menu**: open panel, pause/resume, sync now, seal now, quit.
 - ✅ **Control panel** with tabs:
-  - *Status*: repos table (branch, state, time since last seal, last action) with
-    **per-repo buttons** (Pause/Resume, Seal+Push, Fetch+Pull) and an **"Add repo…"**
-    button (optionally drops a `* text=auto` **`.gitattributes`** so line endings stay
-    consistent across machines). Repos can be added live, without restarting.
-  - *Log*: events **filterable by repo, action, level and text**.
-  - *Configuration*: `config.yaml` editor (save / save and restart).
-  - *About*.
+  - *Status*: repos table (branch, state, time since last seal, last action) with an
+    **action bar for the selected repo** (Pause/Resume, Commit…, Seal+Push, Fetch+Pull,
+    Apply handoff) and an **"Add repo…"** button (optionally drops a `* text=auto`
+    **`.gitattributes`** so line endings stay consistent across machines). Repos can be
+    added live, without restarting.
+  - *Log*: events **filterable by repo, action, level and text** (newest first, live).
+  - *Settings*: friendly form over the global defaults (purist mode, handoff, AI, theme…).
+  - *Advanced (YAML)*: raw `config.yaml` editor (save / save and restart).
 - ✅ Desktop **notifications** (via Qt) on conflicts/errors.
 - ✅ **File history / restore** ("time machine"): browse a file's past versions
   (sealed commits + reflog snapshots + fetched autosnap states), see a **colored diff**

@@ -28,6 +28,7 @@ ACTIONS = [
     "flush",
     "gc",
     "repair",
+    "log",        # bridged from the Python logger (e.g. DEBUG detail) — see gui/app.py
     "conflict",
     "pause",
     "resume",

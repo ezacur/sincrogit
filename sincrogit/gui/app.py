@@ -10,7 +10,9 @@ Manual actions (Sync/Seal now) run on a separate thread so as not to freeze the
 interface; the engine serializes them per repo with each repo's op_lock.
 """
 
+import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -81,6 +83,35 @@ class _WinSessionEventFilter(QAbstractNativeEventFilter):
         return False, 0
 
 
+class _LogBridgeHandler(logging.Handler):
+    """Feeds the Python logger's records into the GUI event log, so the Log tab
+    shows EVERYTHING the file log shows — including DEBUG detail (filtered files,
+    git internals) and warnings raised outside Engine._emit. Records that _emit
+    already reported (marked sincro_structured) are skipped to avoid duplicates.
+    The handler inherits the configured log level through the logger itself."""
+
+    _REPO_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$", re.S)
+
+    def __init__(self, sink):
+        super().__init__()
+        self._sink = sink  # callable(repo, action, message, level)
+
+    def emit(self, record):  # noqa: A003 — logging.Handler API
+        if getattr(record, "sincro_structured", False):
+            return
+        try:
+            msg = record.getMessage()
+            repo = ""
+            m = self._REPO_RE.match(msg)
+            if m:
+                repo, msg = m.group(1), m.group(2)
+            level = record.levelname if record.levelname in (
+                "DEBUG", "INFO", "WARNING", "ERROR") else "INFO"
+            self._sink(repo, "log", msg, level)
+        except Exception:  # noqa: BLE001 — a log handler must never raise
+            pass
+
+
 class _Bridge(QObject):
     """Thread-safe bridge: background threads emit; the GUI receives."""
     event_added = pyqtSignal(object)
@@ -109,6 +140,12 @@ class TrayApp:
         self.bridge.event_added.connect(self._on_event_gui)
         self.bridge.activate.connect(self.show_panel)
         self.bridge.quit_requested.connect(self.quit)  # flushquit -> clean exit (GUI thread)
+
+        # Mirror the Python logger into the GUI event log (DEBUG detail and
+        # warnings that don't go through Engine._emit). The logger's configured
+        # level (log.level in the config) decides how much flows through.
+        logging.getLogger("sincrogit").addHandler(
+            _LogBridgeHandler(self._on_engine_event))
 
         self.engine = Engine(self.config, emit_event=self._on_engine_event)
         self._engine_thread = None

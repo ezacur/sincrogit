@@ -158,7 +158,10 @@ class Engine:
         """
         prefix = f"[{repo}] " if repo else ""
         text = message if message.startswith(action) else f"{action}: {message}"
-        log.log(self._LEVELS.get(level, logging.INFO), "%s%s", prefix, text)
+        # The marker keeps the GUI's logging bridge from re-reporting this record
+        # (it already reaches the event sink, structured, right below).
+        log.log(self._LEVELS.get(level, logging.INFO), "%s%s", prefix, text,
+                extra={"sincro_structured": True})
         if self._emit_event is not None:
             try:
                 self._emit_event(repo, action, message, level)
