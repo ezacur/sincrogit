@@ -70,9 +70,10 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
 - ✅ Snapshot inicial al arrancar (captura cambios previos, p. ej. tras un reinicio).
 - ✅ **Sellado** cada 6 h: convierte el WIP en commit permanente + crea un WIP nuevo.
 - ✅ **Filtro**: solo versiona automáticamente texto < 1 MB; binarios/grandes a mano.
-- ✅ **Versionado opcional de binarios** (`extra_includes`, p. ej. `**/*.docx`): versiona
-  también los binarios que elijas — con **diff legible para documentos Word** vía un driver
-  textconv de pandoc (sin `git config` por máquina), así los mensajes de IA y la
+- ✅ **Versionado opcional de binarios** (`extra_includes`, p. ej. `**/*.docx`,
+  `**/*.pptx`): versiona también los binarios que elijas — con **diff legible para
+  documentos Word** (driver textconv de pandoc, sin `git config` por máquina) **y para
+  PowerPoint** (extractor in-process con `python-pptx`), así los mensajes de IA y la
   time-machine muestran *qué cambió en el documento*.
 - ✅ Mensaje de commit de *fallback* (determinista) al sellar.
 - ✅ Apagado limpio con snapshot local final.
@@ -124,9 +125,13 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
 - ✅ **Panel de control** con pestañas:
   - *Status*: tabla de repos (rama, estado, tiempo desde el último sellado, última
     acción) con una **barra de acciones para el repo seleccionado** (Pausar/Reanudar,
-    Commit…, Seal+Push, Fetch+Pull, Apply handoff) y un botón **"Add repo…"** (que
-    opcionalmente crea un `.gitattributes` `* text=auto` para que los finales de línea
-    sean consistentes entre máquinas). Los repos se añaden en caliente, sin reiniciar.
+    Properties…, Commit…, Seal+Push, Fetch+Pull, Apply handoff — con indicador
+    "working…" mientras una corre — y un botón "How to fix…" cuando un conflicto pausa
+    el repo) y un botón **"Add repo…"** (que opcionalmente crea un `.gitattributes`
+    `* text=auto` para que los finales de línea sean consistentes entre máquinas). Los
+    repos se añaden en caliente, sin reiniciar; **Properties…** edita la configuración
+    de un repo como formulario (solo se escriben los campos cambiados — el resto sigue
+    heredando los defaults) y permite quitarlo de la config.
   - *Log*: eventos **filtrables por repo, acción, nivel y texto** (lo más nuevo arriba, en vivo).
   - *Settings*: formulario amable sobre los defaults globales (purista, relevo, IA, tema…).
   - *Advanced (YAML)*: editor del `config.yaml` crudo (guardar / guardar y reiniciar).
@@ -135,7 +140,19 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
   versiones pasadas de un fichero (commits sellados + snapshots del reflog + estados
   autosnap fetcheados), con **diff coloreado** frente al fichero actual, y restaura
   **solo ese fichero o el repo entero** — desde la CLI (`--history`, `--autosnaps`) y
-  el panel de control.
+  el panel de control. La restauración del repo entero muestra antes una **vista
+  previa** de qué cambiaría exactamente (y marca los ficheros cuyo contenido los
+  snapshots no pueden capturar) antes de pedir confirmación. Las versiones se pueden
+  **buscar** ("¿cuándo cambió esta función?") y cualquier versión puede **guardarse
+  como copia** con otro nombre — recuperar sin sobrescribir nada.
+- ✅ **Explorador Time machine**: el mismo historial navegado **por versión** — eliges
+  un punto de la línea temporal del repo, ves todos los ficheros que difieren del
+  presente (con su diff, **unificado o side-by-side, con resaltado intra-línea**),
+  marcas los que quieres y **restauras el conjunto seleccionado** en un paso atómico
+  capturado como snapshot.
+- ✅ **Vista "mis máquinas"**: el último espejo autosnap de cada máquina por repo, con
+  la frescura codificada por color — de un vistazo, si tu otra máquina sigue
+  respaldándose.
 
 Pendiente (Fase 3): ver el [TODO](#todo) de abajo.
 
@@ -148,9 +165,9 @@ Por orden de prioridad:
    ese montaje es la barrera de entrada real, no el demonio. Plan: un flujo guiado en
    "Add repo…" que cree/conecte un remoto privado (GitHub/GitLab), lo verifique con un
    push de prueba y aplique defaults sensatos — sin que el usuario tenga que saber qué
-   es un remoto. Su pieza compañera: un chequeo de salud `sincrogit doctor` (git
-   presente, remoto accesible, credenciales verificadas con un push de prueba, pandoc,
-   Ollama) para diagnosticar un montaje roto con un solo comando.
+   es un remoto. Su pieza compañera, el **chequeo de salud `--doctor`, ya existe** (git
+   presente, remoto accesible, credenciales verificadas con un push --dry-run, pandoc,
+   backends de IA, demonio); lo pendiente es el montaje guiado del remoto.
 2. **Arranque automático al iniciar sesión** (la pieza de la Fase 3 que falta). La
    promesa de "cero disciplina" se rompe si hay que acordarse de lanzar la red de
    seguridad: un aviso en el primer arranque (o un paso del instalador) debería
@@ -196,13 +213,16 @@ cliente git en el panel):
 
 ### TODO — técnico (para desarrolladores)
 
-- **Batería de tests automatizados — hoy no hay ninguna.** Toda afirmación de seguridad
-  (clasificación del relevo, caminos de rechazo, pausa por conflicto) se ha verificado
-  solo a mano; para una herramienta cuya promesa es "nunca pierde datos", es la pieza
-  ausente más importante. Orden de prioridad: clasificación de `work_relationship`; los
-  rechazos del fast-forward (`untracked_collisions`, `modified_unstaged`); aborto +
-  pausa en conflicto de rebase; idempotencia de sellado/push — todo ejecutable contra
-  repos locales desechables. Después, CI.
+- **Batería de tests automatizados — la primera tanda YA EXISTE** (`tests/`, pytest,
+  50 tests, ~20 s): los rechazos de restauración (`untracked_collisions` +
+  `modified_unstaged`), el restore selectivo / línea temporal / exportar / búsqueda en
+  el historial, la cirugía del fichero de config, `--doctor`, el aviso de ocupado largo
+  y la precedencia de estados, el renderizado de diffs, y los diálogos de la GUI en
+  offscreen — todo contra repos locales desechables. Se ejecuta con
+  `pip install -e .[dev]` y `pytest`. **Sigue faltando**: los caminos multi-máquina
+  (clasificación de `work_relationship`, el fast-forward del relevo, aborto + pausa en
+  conflicto de rebase, idempotencia de sellado/push — necesitan *remotos* desechables),
+  y una CI que lo ejecute en cada push.
 
 ## Instalación
 
@@ -244,6 +264,7 @@ pip install -r requirements.txt
 | `--autosnaps` | fetch + listado de puntos de recuperación autosnap (por máquina) |
 | `--commit REPO [-m MSG \| -y]` | commit manual de REPO: edita el mensaje propuesto por IA en `$EDITOR` y sella+pushea |
 | `--apply-handoff REPO` | aplica a REPO el trabajo vivo pendiente de tu otra máquina (relevo) |
+| `--doctor` | chequeo de salud: git, config, rama/remoto/credenciales de cada repo (push --dry-run), pandoc, backends de IA, demonio. Exit 0 = sano |
 | `--force` | ejecuta un disparo único aunque el demonio esté corriendo (por defecto rehúsan, para no competir con su git — ver el [Manual](MANUAL_ES.md)) |
 
 ### Mensajes con IA (opcional)
@@ -259,7 +280,7 @@ pip install -r requirements.txt
   fichero y `--stat`, no el contenido.
 - Si no configuras ninguno, se usa un **mensaje de fallback** determinista.
 
-### Versionar documentos Word (.docx)
+### Versionar documentos Word (.docx) y PowerPoint (.pptx)
 
 Por defecto los binarios no se versionan solos. Para seguir un `.docx` (sincronizado +
 restaurable) con **diff legible**:
@@ -289,13 +310,24 @@ ni respaldan hasta que un cambio de contenido los arrastre. Tras una sesión de 
 maquetar, fuerza una versión con un **Smart Commit** manual. (Sin pandoc, la detección
 vuelve a bytes y cada guardado es una versión.)
 
-> 📌 **Posible, aún no implementado:** el mismo mecanismo de textconv inline podría dar
-> diffs legibles para otros formatos — notebooks Jupyter (`.ipynb` vía `jupytext`/`nbconvert`),
-> hojas de cálculo (`.xlsx` vía `in2csv`), etc. — mediante un mapa configurable
-> `patrón → comando` en vez del driver actual solo-`.docx`. Es una extensión limpia que no
-> hemos construido. Aviso por si la hacemos: textconv arregla el *diff legible*, no el *peso
-> del repo* — un `.ipynb` seguiría guardando el JSON completo (outputs); la higiene real de
-> notebooks necesita además un *clean filter* (p. ej. `nbstripout`).
+**PowerPoint (.pptx).** Mismo opt-in (`extra_includes: ["**/*.pptx"]`), conversor
+distinto: un **extractor in-process** sobre `python-pptx` (`pip install python-pptx`;
+va dentro del exe) convierte cada versión a markdown — títulos de diapositiva, viñetas
+con su nivel de sangría, tablas y notas del orador — así que **la preview, el diff
+intra-línea, la búsqueda en el historial y "Save a copy"** funcionan con
+presentaciones. Diferencias honestas frente a `.docx`: no hay driver textconv de git
+(eso requiere un ejecutable externo), así que (a) `git diff` y los mensajes de IA
+siguen viendo el `.pptx` como binario (`--stat`), y (b) la detección de cambios es
+**por bytes, no por contenido** — cada reguardado de PowerPoint cuenta como versión.
+Sin `python-pptx` degrada a blob opaco, como `.docx` sin pandoc; `--doctor` lo
+comprueba cuando un repo versiona `.pptx`.
+
+> 📌 **Posible, aún no implementado:** los mismos mecanismos podrían cubrir más
+> formatos — notebooks Jupyter (`.ipynb` vía `jupytext`/`nbconvert`), hojas de cálculo
+> (`.xlsx` vía `in2csv` o un extractor openpyxl como el de `.pptx`) — mediante un mapa
+> configurable `patrón → conversor`. Aviso por si lo hacemos: un diff legible no arregla
+> el *peso del repo* — un `.ipynb` seguiría guardando el JSON completo (outputs); la
+> higiene real de notebooks necesita además un *clean filter* (p. ej. `nbstripout`).
 
 ### Restaurar una versión pasada (máquina del tiempo)
 
@@ -322,6 +354,10 @@ Restaurar está a su vez protegido: las ediciones pendientes se fotografían pri
 WIP (así nada guardado desde el último snapshot puede perderse), y el estado restaurado
 se captura como un snapshot nuevo — una restauración es siempre reversible, hasta el
 momento justo anterior a ella.
+Y si el contenido *actual* de un fichero es algo que los snapshots no pueden capturar
+(excluido, sobre el límite de tamaño, binario — no existe en ningún sitio de git), la
+restauración se **niega** en vez de destruirlo, diciéndote qué ficheros copiar antes a
+un lugar seguro — la misma política que aplica el relevo entre máquinas.
 
 ### Commit manual (Smart Commit)
 
@@ -682,7 +718,7 @@ sobreescribibles por repo):
 | `suggest_excludes` | true | Sugerir (una vez, notificación) añadir una carpeta ruidosa a `extra_excludes` — nunca auto-edita |
 | `max_file_bytes` | 1048576 | Tamaño máximo de fichero a versionar (1 MB) |
 | `extra_excludes` | — | Patrones estilo `.gitignore` a excluir |
-| `extra_includes` | — | patrones versionados aunque sean binarios (p. ej. `**/*.docx`) |
+| `extra_includes` | — | patrones versionados aunque sean binarios (p. ej. `**/*.docx`, `**/*.pptx`) |
 | `max_include_bytes` | 26214400 | tope de tamaño (25 MB) para `extra_includes` |
 | `pandoc_path` | `pandoc` | **(top-level)** ruta a pandoc para diffs legibles de `.docx` |
 | `theme` | `auto` | **(top-level)** tema de la GUI: `auto` (sigue a Windows), `light`, `dark` |

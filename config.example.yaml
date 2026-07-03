@@ -35,13 +35,17 @@ defaults:
     - "**/__pycache__/**"
     - "**/dist/**"
     - "**/build/**"
-  extra_includes: []              # version these binary files too (opt-in), e.g. Word docs.
+  extra_includes: []              # version these binary files too (opt-in), e.g. Office docs.
   #   - "**/*.docx"               #   with pandoc (see pandoc_path) their diffs are readable
+  #   - "**/*.pptx"               #   with python-pptx (pip install python-pptx) too
   max_include_bytes: 26214400     # 25 MB size cap for extra_includes
 
 # Path to pandoc, for readable diffs of .docx and similar (machine-specific).
 # "pandoc" if on PATH; otherwise a full path, e.g. C:/Dropbox/Accesories/pandoc.exe
 pandoc_path: pandoc
+
+# GUI theme: auto (follow Windows' app theme), light, or dark.
+theme: auto
 
 # AI configuration for commit messages when sealing.
 ai:

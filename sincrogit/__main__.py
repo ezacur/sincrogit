@@ -377,6 +377,9 @@ def main(argv=None) -> int:
     parser.add_argument("--force", action="store_true",
                         help="Run a one-shot even if a SincroGit daemon is already running "
                              "(risk of racing its git work on the same repos).")
+    parser.add_argument("--doctor", action="store_true",
+                        help="Health check: git, config, each repo's branch/remote/"
+                             "credentials, pandoc, AI backends, daemon. Exit 0 = healthy.")
     args = parser.parse_args(argv)
 
     if args.tray:
@@ -398,6 +401,12 @@ def main(argv=None) -> int:
         return 2
 
     logger = setup_logging(config.log.file, config.log.level)
+
+    if args.doctor:
+        # Read-only diagnostics (ls-remote + push --dry-run transfer nothing),
+        # so it's safe alongside a running daemon — no _daemon_running guard.
+        from .doctor import run_doctor
+        return run_doctor(config)
 
     # One-shots run their own Engine on the same repos: against a live daemon the
     # two processes would race git (amend vs. amend, TOCTOU over index.lock).

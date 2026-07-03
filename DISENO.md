@@ -215,6 +215,7 @@ relojes monotónicos pueden congelarse al suspender; el de pared no).
 - Configurable: tamaño máximo y patrones de exclusión extra (p. ej. `node_modules/`, `.venv/`, `dist/`).
 - **Smart Ignore (`suggest_excludes`, on por defecto):** el filtro reporta cada fichero rechazado (binario/grande, no un exclude del usuario) al motor, que los agrupa por carpeta de primer nivel. Cuando una carpeta acumula **≥ `NOISE_SUGGEST_THRESHOLD` (50)** ficheros distintos filtrados —casi siempre salida de build o caché— **sugiere una vez** (notificación + log) añadir `**/<carpeta>/**` a `extra_excludes`. Nunca auto-edita la config, salta como mucho una vez por carpeta por sesión, y solo cuenta ficheros *rechazados* (un refactor grande de texto pasa el filtro, así que no lo dispara). Caza el ruido que los excludes por defecto no cubren, sin dar la lata.
 - **Lista de inclusión (`extra_includes`)**: patrones que se versionan **aunque sean binarios** (p. ej. `**/*.docx`), bajo un tope de tamaño aparte (`max_include_bytes`, 25 MB). Para `.docx` y similares, SincroGit mapea el fichero a un **driver de diff `textconv` con pandoc** en `.gitattributes` (versionado, viaja) e inyecta el comando textconv **en línea** (`git -c diff.pandoc.textconv=…`) en cada diff → diffs legibles (markdown) sin `git config` por máquina; alimenta los mensajes de IA y la time-machine. El `.docx` es la fuente de verdad; el markdown es una vista *lossy*. La ruta de pandoc es configurable (`pandoc_path`, por máquina); sin pandoc, degrada a versionar el blob opaco. **Consecuencia:** como la detección de cambios usa ese diff, un `.docx` se versiona/sincroniza **solo cuando su markdown cambia** (texto y formato estructural: negrita, encabezados, listas, tablas); la maquetación puramente visual (fuente/color/layout) y el ruido de reguardado de Word no disparan versión hasta que un cambio de contenido los arrastre.
+- **`.pptx` (convert.py)**: mismo opt-in, conversor distinto — un **extractor in-process** sobre `python-pptx` (dependencia opcional; MIT, se empaqueta en el exe) convierte las diapositivas a markdown (títulos, viñetas con nivel de sangría, tablas, notas del orador) para previews/diffs/búsqueda de la GUI y "Save a copy". Deliberadamente NO es un driver textconv de git: eso requiere un ejecutable externo que git pueda lanzar (el papel de pandoc), y un entry point Python paga el arranque del intérprete por invocación — inaceptable dentro de `git diff`. Consecuencias: el diff que ve la IA trata el `.pptx` como binario (`--stat`), y la detección de cambios es por **bytes** (cada reguardado versiona), a diferencia del `.docx` con gating por markdown. La cadena pptx→docx→pandoc se evaluó y descartó: pandoc no lee pptx, así que necesitaría LibreOffice/COM de Office como tercera etapa — más pesado y menos determinista que leer el XML directamente.
 
 ---
 
@@ -257,7 +258,11 @@ sincrogit/
 │  ├─ events.py          # log estructurado (JSONL) para la GUI
 │  ├─ log.py             # logging a fichero rotativo
 │  ├─ notify.py          # notificaciones Windows (toasts)
-│  └─ gui/               # bandeja PyQt5 + panel + diálogos (add-repo, historial)
+│  ├─ convert.py         # extracción in-process de texto legible (.pptx vía python-pptx)
+│  ├─ doctor.py          # chequeo de salud --doctor (git/remotos/credenciales/IA/demonio)
+│  └─ gui/               # bandeja PyQt5 + panel + diálogos (add-repo, historial,
+│                        #   explorador time-machine, máquinas, smart-commit, propiedades)
+├─ tests/               # batería pytest (repos git desechables + Qt offscreen); `pytest`
 ├─ config.example.yaml
 ├─ pyproject.toml
 └─ DISENO.md
@@ -357,7 +362,7 @@ repos:
 - **Repo sin commits / sin remoto:** validar en el arranque y avisar; no romper.
 - **Múltiples repos:** cada uno con su watcher/temporizadores independientes.
 - **Privacidad del código en la nube:** por defecto en modo híbrido se prioriza Ollama (local); si cae a nube, `cloud_send_content: false` envía solo estadísticas. La API key vive en variable de entorno.
-- **Operaciones git manuales mías** mientras corre el daemon (rebase, checkout de rama, etc.): la herramienta debe detectar `HEAD` cambiado/`rebase en curso`/índice ocupado y **ceder** (saltarse ese ciclo) en vez de pelearse. Detectar `.git/MERGE_HEAD`, `.git/rebase-*`, lock del índice.
+- **Operaciones git manuales mías** mientras corre el daemon (rebase, checkout de rama, etc.): la herramienta debe detectar `HEAD` cambiado/`rebase en curso`/índice ocupado y **ceder** (saltarse ese ciclo) en vez de pelearse. Detectar `.git/MERGE_HEAD`, `.git/rebase-*`, lock del índice. Mientras cede, las ediciones NO se están fotografiando — invisible desde el editor —, así que si la operación manual supera `BUSY_WARN_SEC` (10 min) avisa UNA vez (log + toast) de que los snapshots quedan pospuestos, y anota cuándo se reanudan. El umbral es lo bastante alto para que un merge normal — o el `index.lock` transitorio de cualquier comando git — nunca lo dispare.
 - **Guarda de rama / seguir rama.** Por defecto, cuando HEAD no está en la `branch` configurada, el repo **cede** (sin snapshot/seal/autosnap/push en la rama equivocada) — `_ensure_on_branch`, rate-limited. Con **`track_current_branch: true`** en su lugar **sigue** la rama actual: cada operación con rama usa `st.active_branch` (la rama viva de HEAD) en vez de `cfg.branch`, así snapshot/autosnap/relevo/push ocurren en la rama en la que estés (cada rama tiene su `refs/autosnap/<user>/<host>/<rama>`, y el relevo solo casa la misma rama). HEAD desacoplado (detached) sigue cediendo. Se acopla con el modo purista (sin auto-seal → nada se auto-pushea donde no debe). Opt-in; el default mantiene el guard seguro.
 - **El push apunta al último commit no-WIP** (resuelto por mensaje, no el `HEAD~1`
   posicional): si el usuario commitea a mano encima del WIP, su commit es lo que se sube —
@@ -368,7 +373,13 @@ repos:
   en el WIP (el mismo stage+amend que hace el relevo) — lo guardado desde el último
   snapshot no existe en ningún otro sitio, ni siquiera el reflog. El amend del WIP es
   `--allow-empty`: revertir a mano al contenido sellado, o restaurar el repo entero al
-  último sellado, vacía legítimamente el WIP y no debe fallar. Las restauraciones
+  último sellado, vacía legítimamente el WIP y no debe fallar. El contenido que esa
+  pasada de captura *no puede* tomar (una edición trackeada que el filtro rechaza —
+  excluida / sobre el límite de tamaño / binaria, `modified_unstaged` — o un fichero
+  sin trackear que el árbol destino sí trackea, `untracked_collisions`) hace que la
+  restauración se **niegue**, nombrando los ficheros a copiar a un lugar seguro
+  primero: la misma política que el fast-forward del relevo, porque ese contenido no
+  existe en ningún sitio de git. Las restauraciones
   respetan además la guarda de rama y el chequeo de ocupado, como toda operación
   manual — fuera de rama la captura amendearía el WIP de la rama equivocada, y en
   mitad de un merge/rebase pisarían un árbol en conflicto.
@@ -458,8 +469,9 @@ repos:
 - Generador de mensajes IA híbrido (Ollama → Gemini → fallback). Nunca bloquea el sellado.
 - Push de sellados (refspec con SHA → `refs/heads/<branch>`) + reintento en cada sync.
 - `fetch` + pull con rebase del WIP, solo si el remoto adelanta; sync inicial al arrancar.
-- Política de conflicto: abortar rebase + pausar repo + notificar *(verificado a mano —
-  una batería de tests automatizados sigue pendiente; ver el TODO técnico abajo)*.
+- Política de conflicto: abortar rebase + pausar repo + notificar *(verificado a mano
+  aún — la batería automatizada todavía no cubre este camino multi-remoto; ver el TODO
+  técnico abajo)*.
 
 **✅ Fase 4 — Interfaz de bandeja (PyQt5) — COMPLETA:**
 - Icono en la bandeja del sistema (una "G" con reloj de arena, dibujado vectorial)
@@ -492,11 +504,13 @@ repos:
   el demonio.
 
 **Pendiente — técnico (sin feature visible para el usuario):**
-- ⏳ Batería de tests automatizados — **hoy no existe ninguna**; todos los caminos de
-  seguridad se han verificado a mano. Prioridad: clasificación de `work_relationship`,
-  los rechazos del fast-forward (`untracked_collisions`, `modified_unstaged`), aborto +
-  pausa en conflicto de rebase, e idempotencia de sellado/push — todo contra repos
-  locales desechables; después, CI.
+- ⏳ Batería de tests automatizados — la **primera tanda existe** (`tests/`, pytest,
+  50 tests sobre repos locales desechables: rechazos de restauración, restore selectivo,
+  línea temporal, exportar, búsqueda en historial, cirugía de config, `--doctor`, aviso
+  de ocupado, precedencia de estados, renderizado de diffs, diálogos de la GUI en
+  offscreen). Sigue pendiente: clasificación de `work_relationship`, el fast-forward
+  del relevo, aborto + pausa en conflicto de rebase, e idempotencia de sellado/push
+  (necesitan *remotos* desechables); después, CI.
 
 **Opcional / futuro:**
 - Rama `autosnap` con commits reales cada 5 min (historial intra-ventana navegable *en el remoto*) en lugar del espejo force-push del último estado.

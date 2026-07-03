@@ -264,20 +264,45 @@ def load_config(path: str) -> Config:
     return Config(repos=repos, log=log_cfg, ai=ai_cfg, pandoc_path=pandoc_path, theme=theme)
 
 
-def append_repo(config_path: str, repo_entry: dict) -> None:
-    """Append a repo to the config file, preserving existing comments/formatting.
+def _entry_name(entry: dict) -> str:
+    """The name a repo entry resolves to — the same rule load_config applies
+    (explicit `name`, else the basename of the absolute path)."""
+    abspath = os.path.abspath(os.path.expanduser(str(entry.get("path", ""))))
+    return entry.get("name") or os.path.basename(abspath.rstrip("/\\")) or abspath
 
-    If `repos:` is the last top-level section (as in the generated default) we
-    rewrite only that section, keeping everything above untouched. Otherwise we
-    fall back to a full safe_dump (comments are not preserved).
+
+def _validate_entry(entry: dict, defaults: dict) -> None:
+    """Build the RepoConfig that load_config would build from `entry` (+ inherited
+    defaults) — raising ValueError on anything invalid. Called BEFORE writing an
+    edited entry, so a bad value can't brick the config file."""
+    if "path" not in entry:
+        raise ValueError(f"Repo without 'path' in the configuration: {entry!r}")
+    abspath = os.path.abspath(os.path.expanduser(str(entry["path"])))
+    merged = {}
+    for key in _INHERITABLE:
+        if key in entry:
+            merged[key] = entry[key]
+        elif key in defaults:
+            merged[key] = defaults[key]
+    RepoConfig(
+        path=abspath,
+        name=_entry_name(entry),
+        remote=entry.get("remote", "origin"),
+        branch=entry.get("branch", "main"),
+        **merged,
+    )
+
+
+def _write_repos_section(config_path: str, text: str, data: dict, repos: list) -> None:
+    """Write the config back with `repos` as its repos list, preserving existing
+    comments/formatting ABOVE the section.
+
+    If `repos:` is the last top-level section (as in the generated default) only
+    that section is rewritten, keeping everything above untouched. Otherwise we
+    fall back to a full safe_dump (comments are not preserved). Comments INSIDE
+    the repos section are rewritten either way — the same trade Add repo and the
+    Settings form already make.
     """
-    with open(config_path, "r", encoding="utf-8") as fh:
-        text = fh.read()
-
-    data = yaml.safe_load(text) or {}
-    repos = list(data.get("repos") or [])
-    repos.append(repo_entry)
-
     lines = text.splitlines()
     repos_idx = next(
         (i for i, ln in enumerate(lines) if re.match(r"^repos\s*:", ln)), None
@@ -308,7 +333,76 @@ def append_repo(config_path: str, repo_entry: dict) -> None:
         if tail:
             out = out.rstrip("\n") + "\n" + "\n".join(tail).rstrip("\n") + "\n"
     else:
+        data = dict(data)
+        data["repos"] = repos
         out = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 
     with open(config_path, "w", encoding="utf-8") as fh:
         fh.write(out)
+
+
+def append_repo(config_path: str, repo_entry: dict) -> None:
+    """Append a repo to the config file, preserving existing comments/formatting
+    above the repos section (see _write_repos_section)."""
+    with open(config_path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    data = yaml.safe_load(text) or {}
+    repos = list(data.get("repos") or [])
+    repos.append(repo_entry)
+    _write_repos_section(config_path, text, data, repos)
+
+
+def find_repo_entry(config_path: str, name: str) -> dict | None:
+    """The RAW config entry (explicit keys only, no defaults merged) of the repo
+    called `name`, or None. Lets the GUI distinguish an explicit override from
+    an inherited default."""
+    with open(config_path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh.read()) or {}
+    for entry in data.get("repos") or []:
+        if isinstance(entry, dict) and _entry_name(entry) == name:
+            return dict(entry)
+    return None
+
+
+def update_repo(config_path: str, name: str, changes: dict) -> tuple:
+    """Set keys on ONE repo's entry in the config file. Returns (ok, msg).
+
+    math.inf is written as the documented 'inf' token; other values pass through
+    as given. The merged entry is validated (RepoConfig construction) BEFORE
+    anything is written. Comment preservation: same trade as append_repo.
+    """
+    with open(config_path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    data = yaml.safe_load(text) or {}
+    repos = list(data.get("repos") or [])
+    idx = next((i for i, e in enumerate(repos)
+                if isinstance(e, dict) and _entry_name(e) == name), None)
+    if idx is None:
+        return False, f"repo '{name}' not found in the config file"
+    entry = dict(repos[idx])
+    for key, value in changes.items():
+        entry[key] = "inf" if isinstance(value, float) and math.isinf(value) else value
+    try:
+        _validate_entry(entry, data.get("defaults") or {})
+    except (ValueError, TypeError) as e:
+        return False, str(e)
+    repos[idx] = entry
+    _write_repos_section(config_path, text, data, repos)
+    return True, "saved"
+
+
+def remove_repo(config_path: str, name: str) -> tuple:
+    """Remove ONE repo's entry from the config file. Returns (ok, msg). The git
+    repository on disk is not touched. Comment preservation: same trade as
+    append_repo."""
+    with open(config_path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    data = yaml.safe_load(text) or {}
+    repos = list(data.get("repos") or [])
+    idx = next((i for i, e in enumerate(repos)
+                if isinstance(e, dict) and _entry_name(e) == name), None)
+    if idx is None:
+        return False, f"repo '{name}' not found in the config file"
+    del repos[idx]
+    _write_repos_section(config_path, text, data, repos)
+    return True, "removed"

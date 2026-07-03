@@ -416,7 +416,16 @@ class TrayApp:
         return ok
 
     def seal_repo_now(self, name):
-        self._run_async(lambda: self.engine.seal_repo_now(name), f"seal:{name}")
+        # Surface the outcome as an event — silently dropping a refusal (busy,
+        # off-branch…) or a no-op left the panel button looking dead. A real
+        # seal already emits its own "seal"/"push" events from the engine.
+        def work():
+            ok, msg = self.engine.seal_repo_now(name)
+            if not ok:
+                self.event_log.add(name, "seal", f"not sealed: {msg}", "WARNING")
+            elif msg != "sealed":
+                self.event_log.add(name, "seal", msg, "INFO")  # "nothing to seal"
+        self._run_async(work, f"seal:{name}")
 
     def propose_seal_message(self, name):
         """(ok, title, body, files_text) — proposed manual-commit message. May be
@@ -428,7 +437,11 @@ class TrayApp:
         return self.engine.seal_repo_now(name, message=message)
 
     def pull_repo_now(self, name):
-        self._run_async(lambda: self.engine.pull_repo_now(name), f"pull:{name}")
+        def work():
+            ok, msg = self.engine.pull_repo_now(name)
+            self.event_log.add(name, "pull", msg if ok else f"not pulled: {msg}",
+                               "INFO" if ok else "WARNING")
+        self._run_async(work, f"pull:{name}")
 
     def apply_handoff(self, name):
         """Apply a pending cross-machine handoff ('ask' mode, one click). Runs on a
@@ -489,12 +502,80 @@ class TrayApp:
         self._refresh_tray()
         return ok, msg
 
+    # ---- per-repo configuration (Properties dialog) ----
+    _REPO_CFG_FIELDS = (
+        "branch", "remote", "snapshot_interval_sec", "seal_interval_min",
+        "push", "pull", "pull_interval_min", "autosnap", "autosnap_interval_min",
+        "live_handoff", "track_current_branch", "extra_excludes", "extra_includes",
+    )
+
+    def repo_config_view(self, name):
+        """(entry, effective) for the Properties dialog: `entry` is the repo's RAW
+        config entry (explicit keys only), `effective` the values the engine runs
+        with (entry merged over defaults). ({}, {}) if the repo isn't found."""
+        from ..config import find_repo_entry
+        try:
+            entry = find_repo_entry(self.config_path, name) or {}
+        except (OSError, yaml.YAMLError):
+            entry = {}
+        st = self.engine.repo_state_by_name(name)
+        if not st:
+            return entry, {}
+        effective = {f: getattr(st.cfg, f) for f in self._REPO_CFG_FIELDS}
+        return entry, effective
+
+    def update_repo_config(self, name, changes):
+        """Persist per-repo overrides to the config file. (ok, msg). Applies on
+        restart, like every config edit."""
+        from ..config import update_repo
+        try:
+            return update_repo(self.config_path, name, changes)
+        except (OSError, yaml.YAMLError) as e:
+            return False, str(e)
+
+    def remove_repo_config(self, name):
+        """Remove the repo's entry from the config file (the git repo on disk is
+        untouched). (ok, msg). Applies on restart."""
+        from ..config import remove_repo
+        try:
+            return remove_repo(self.config_path, name)
+        except (OSError, yaml.YAMLError) as e:
+            return False, str(e)
+
     # ---- file history / restore ----
     def repo_list(self):
         return [(r["name"], r["path"]) for r in self.engine.status()["repos"]]
 
     def file_history(self, name, relpath):
         return self.engine.file_history(name, relpath)
+
+    def repo_history(self, name, limit=200):
+        """The repo's whole-tree version timeline (Time Machine). Blocking (git
+        log/reflog): the dialog runs it off the GUI thread."""
+        return self.engine.repo_history(name, limit)
+
+    def export_file_version(self, name, relpath, sha, dest_path):
+        """Save a copy of a version to `dest_path` (nothing in the repo changes)."""
+        return self.engine.export_file_version(name, relpath, sha, dest_path)
+
+    def search_in_file_versions(self, name, relpath, text):
+        """[(sha, count)] of `text` across the file's versions. Blocking (one git
+        show per version): the dialog runs it off the GUI thread."""
+        return self.engine.search_in_file_versions(name, relpath, text)
+
+    def list_autosnaps(self, name):
+        """Locally-known autosnap mirrors of every machine (no network)."""
+        return self.engine.list_autosnaps(name)
+
+    def this_host(self):
+        """This machine's name as used in its autosnap refs."""
+        from ..gitrepo import autosnap_host
+        return autosnap_host()
+
+    def restore_files(self, name, relpaths, sha):
+        """Selectively restore several files to their state at `sha` (one atomic
+        WIP capture). Blocking: the dialog runs it off the GUI thread."""
+        return self.engine.restore_files(name, relpaths, sha)
 
     def file_content_at(self, name, relpath, sha):
         return self.engine.file_content_at(name, relpath, sha)
@@ -511,8 +592,16 @@ class TrayApp:
         return self.engine.restore_file(name, relpath, sha)
 
     def fetch_autosnaps(self, name):
-        """Fetch + list other machines' autosnap recovery points (network)."""
+        """Fetch + list other machines' autosnap recovery points. Blocking
+        (network + the repo's op_lock): callers on the GUI thread must run it
+        on a background thread — the history dialog does."""
         return self.engine.fetch_autosnaps(name)
+
+    def restore_repo_preview(self, name, sha):
+        """(ok, payload) — what a whole-repo restore would change. Blocking (git
+        diff + the repo's op_lock): the history dialog runs it off the GUI
+        thread."""
+        return self.engine.restore_repo_preview(name, sha)
 
     def restore_repo(self, name, sha):
         return self.engine.restore_repo(name, sha)

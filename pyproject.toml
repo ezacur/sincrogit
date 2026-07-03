@@ -11,6 +11,8 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = ["PyQt5>=5.15"]
+pptx = ["python-pptx>=1.0"]  # readable .pptx previews/diffs (optional, like pandoc)
+dev = ["pytest>=7", "PyQt5>=5.15", "python-pptx>=1.0"]
 
 [project.scripts]
 sincrogit = "sincrogit.__main__:main"
@@ -21,3 +23,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["sincrogit", "sincrogit.gui"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

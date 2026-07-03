@@ -72,6 +72,7 @@ exits. Every one-shot needs a config (auto-discovered, or `--config PATH`).
 | `--pick N` | With `--history`: restore version N non-interactively. |
 | `--autosnaps` | Fetch + list the per-machine autosnap recovery points for every repo. |
 | `--apply-handoff REPO` | Apply your other machine's pending live work to REPO. |
+| `--doctor` | Health check: git, config, each repo's branch/remote/credentials (dry-run push), pandoc, AI backends, daemon. Exit 0 = healthy. |
 | `--force` | Run a one-shot even while the daemon is running (skips the safety refusal). |
 | `--help`, `-h` | Show usage and exit. |
 
@@ -123,15 +124,30 @@ the cross-machine handoff (useful with `live_handoff: ask`, or to force it now).
 Open it from the tray icon (double-click) or *Open control panel*.
 
 - **Status** — the repos table (branch, state, time since last seal, last action) with per-repo
-  buttons:
+  buttons. Hovering the **State** cell explains it (why a conflict paused the repo, what a
+  pending handoff is, why a merge/rebase shows *Busy*). Buttons:
   - **Pause / Resume** — stop/resume autosync for that repo.
+  - **Properties…** — this repo's settings as a form (branch, remote, rhythms, sync,
+    handoff mode, file filters) instead of YAML. Only the fields you change are written;
+    the rest keep inheriting the defaults. Also has **Remove repo…** (config only — the
+    git repo on disk is untouched). Applies on restart.
   - **Commit…** — Smart Commit (AI-proposed message dialog).
   - **Seal+Push** — seal the current WIP now and push.
   - **Fetch+Pull** — fetch and rebase from the remote now.
+  - While one of these (or an engine sync) is running, the bar says *working…* and the
+    buttons disable — the outcome (including "nothing to seal" or a refusal) lands in the Log.
   - **Apply handoff** — appears (blue) only when your other machine has work waiting (in
-    `live_handoff: ask` mode).
-  - Top bar: **File history…** (browse/preview/restore a file or the whole repo) and **Add
+    `live_handoff: ask` mode). Shows what it will do (which machine, how old) before applying.
+  - **How to fix…** — appears when a repo is paused on a conflict: explains what happened
+    (the rebase was aborted; your files are intact) and what to do, with an *Open folder* button.
+  - Top bar: **File history…** (pick a FILE, browse its versions), **Time machine…**
+    (pick a VERSION, see every file that differs, restore a selected set),
+    **Machines…** (each machine's last autosnap mirror, freshness color-coded — spot a
+    machine that stopped backing itself up, and *Fetch latest* to refresh) and **Add
     repo…** (optionally drops a `* text=auto` `.gitattributes`).
+  - Right-click a repo row for **Open folder / File history / Time machine / Properties**.
+  - A one-line **activity digest** under the action bar: today's snapshot / seal /
+    push / pull counts (the Log has the detail; this is the glance).
 - **Log** — events, newest first and updating live (no refresh needed); filterable by
   repo / action / level / text, including the DEBUG detail the file log gets.
 - **Settings** — the friendly form: rhythms (snapshot/seal with a *Purist mode* checkbox),
@@ -141,7 +157,23 @@ Open it from the tray icon (double-click) or *Open control panel*.
 
 The **File history** dialog shows the repo's **file tree** on the left (`.git` hidden) —
 click any file to see its versions (with relative times and color-coded types:
-sealed / snapshot / autosnap) and a themed diff against the current file.
+sealed / snapshot / autosnap — hover for what each means) and a themed diff against the
+current file, with the changed spans **highlighted inside each line**. The search box
+counts a text across every version and highlights where it appeared, changed or
+vanished ("when did this function change?"). **Save a copy…** writes the selected
+version to a NEW file (suggested `name (stamp).ext`) — recover an old version under
+another name, overwriting nothing. **Restore ENTIRE repo…** first computes a
+**preview** of exactly what would change (how many files revert / disappear / come
+back, the full list under Details, and any at-risk files flagged) so you confirm on
+facts, not on faith.
+
+The **Time machine** dialog is the same history navigated the other way around: the
+repo's **version timeline** on the left (seals, snapshots, fetched autosnaps); pick a
+point and the right side lists **every file that differs from the present**, each with a
+checkbox and its action (*revert* / *delete* / *recreate*), plus a diff of the clicked
+file (**unified or side-by-side**). **Restore selected (N)** brings the checked set back
+in ONE atomic step, captured as a single snapshot (reversible, as always). Files whose
+current content snapshots can't capture show ⚠ and can't be selected.
 
 The **tray icon colour** reflects state: green = active, amber = paused, red = conflict
 (needs you), gray = stopped. The tray menu also has Pause/Resume, Sync now, Seal now, Quit.
@@ -153,8 +185,15 @@ The **tray icon colour** reflects state: green = active, amber = paused, red = c
 | I want to… | Do this |
 |------------|---------|
 | **Add a repo** | Panel → Status → *Add repo…* (or edit `repos:` in the config and *Save and restart*). |
+| **Change ONE repo's settings** | Select it → *Properties…* (branch, rhythms, sync, filters as a form). Or edit its entry in Advanced (YAML). |
+| **Remove a repo from SincroGit** | *Properties…* → *Remove repo…* (config only; the git repo on disk is untouched). |
 | **Get back an earlier version of a file** | Panel → *File history…* → pick the file → pick a version → *Restore*. Or `--history FILE`. |
-| **Roll the whole repo back** | Panel → *File history…* → *Restore whole repo* to a chosen point. |
+| **Recover an old version WITHOUT overwriting** | *File history…* (or *Time machine…*) → pick the version → *Save a copy…* → give it another name. |
+| **Find when a text appeared/vanished** | *File history…* → pick the file → type the text → *Find* (transitions highlighted in blue). |
+| **Get back SEVERAL files at once** | Panel → *Time machine…* → pick a version → check the files → *Restore selected*. |
+| **Check the whole setup is healthy** | `python -m sincrogit --doctor` (git, remotes, credentials, pandoc, AI, daemon). |
+| **See if my other machines are backing up** | Panel → *Machines…* (stale mirrors show in red; *Fetch latest* refreshes). |
+| **Roll the whole repo back** | Panel → *File history…* → *Restore whole repo* to a chosen point (with a preview of what changes). |
 | **Make a clean, documented commit now** | Per-repo **Commit…** button, or `--commit REPO`. |
 | **Move my work to another machine** | Just **lock the screen / close the lid** — SincroGit flushes; on the other machine, unlock and it syncs. Or **Smart Commit** before leaving for an instant handoff. |
 | **Recover after a dead disk** | On another machine: `--autosnaps` (or panel → *Fetch autosnaps*), then *File history* / *Restore*. Loses at most ~30 min. |
@@ -163,6 +202,10 @@ The **tray icon colour** reflects state: green = active, amber = paused, red = c
 | **Work on a feature branch (team)** | Set `track_current_branch: true`, work on your own branch, Smart Commit → Pull Request. See [README → Using it in a team](README.md#using-it-in-a-team-shared-repos). |
 | **Sync one repo more aggressively** | Override its intervals per repo — see [README → Tuning a "hot" repo](README.md#tuning-a-hot-repo). |
 | **Pause everything briefly** | Tray → *Pause* (or per-repo *Pause*). |
+
+> A restore never destroys unsaved work: pending edits are snapshotted first, and if some
+> current content is something snapshots *can't* capture (excluded, over the size limit,
+> binary) the restore **refuses** and names the files to copy somewhere safe first.
 
 ---
 
@@ -179,7 +222,7 @@ be overridden per repo**. The most-used keys:
 | `live_handoff` | auto | Pick up your other machine's WIP: `auto` / `ask` / `off`. |
 | `track_current_branch` | false | Follow the current branch instead of pausing off `branch`. |
 | `push` / `pull` | true / true | Push sealed commits / periodic pull. |
-| `extra_excludes` / `extra_includes` | — | Paths to skip / binaries to version anyway (e.g. `**/*.docx`). |
+| `extra_excludes` / `extra_includes` | — | Paths to skip / binaries to version anyway (e.g. `**/*.docx`, `**/*.pptx`). |
 | `max_file_bytes` | 1048576 | Largest file auto-versioned (1 MB). |
 | `suggest_excludes` | true | Suggest excluding a high-churn folder (Smart Ignore). |
 | `pandoc_path` | `pandoc` | (top-level) pandoc for readable `.docx` diffs. |
@@ -227,7 +270,10 @@ python -m sincrogit -c C:\repos\config.yaml --seal-once
 
 SincroGit is designed to coexist with your other git tooling — it yields while *you*
 operate (a merge/rebase in progress, a locked index, another branch checked out) and
-resumes afterwards. The rules of the road:
+resumes afterwards. While it yields, your edits are not being snapshotted; if the
+manual operation runs long (10+ min) the Log and a toast warn you once that snapshots
+are postponed, and the panel shows the repo as *Busy (merge/rebase)*. The rules of
+the road:
 
 - **The `sincro: WIP autosnapshot` commit at the tip is SincroGit's; everything below it is
   yours.** Commit, branch, tag or rebase *under* it freely — the daemon detects external

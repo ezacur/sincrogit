@@ -12,6 +12,7 @@ It talks to the app through a `controller` (duck-typed) that exposes:
   config_path, config_text(), app_state(), make_icon(state).
 """
 
+import os
 import time
 from datetime import datetime
 
@@ -24,6 +25,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -38,13 +40,28 @@ from .. import __version__
 from ..events import ACTIONS
 from .add_repo_dialog import AddRepoDialog
 from .history_dialog import HistoryDialog
+from .machines_dialog import MachinesDialog
+from .repo_properties_dialog import RepoPropertiesDialog
 from .settings_tab import SettingsTab
 from .smart_commit_dialog import SmartCommitDialog
+from .time_machine_dialog import TimeMachineDialog
 
 _LEVEL_COLOR = {
     "DEBUG": QColor("#8a929c"),    # muted: high-volume detail (filtered files, ...)
     "WARNING": QColor("#8a6d00"),
     "ERROR": QColor("#b00020"),
+}
+
+# Canonical per-repo states (Engine.status()["state"]) -> (label, color).
+# The precedence between the underlying flags lives in the engine — this map
+# is presentation only. `None` color = inherit the palette's normal text.
+_STATE_STYLE = {
+    "conflict":   ("Conflict", "#D23F3F"),
+    "off-branch": ("Off-branch", "#8a6d00"),
+    "paused":     ("Paused", "#8a6d00"),
+    "busy":       ("Busy (merge/rebase)", "#8a6d00"),
+    "handoff":    ("Handoff ready", "#1E6FD9"),  # label gets the peer host appended
+    "active":     ("Active", None),
 }
 
 
@@ -62,6 +79,19 @@ def _humanize_since(epoch) -> str:
         return f"{hrs}h {mins}m"
     days, hrs = divmod(hrs, 24)
     return f"{days}d {hrs}h"
+
+
+def _handoff_tooltip(r: dict) -> str:
+    """Explain a pending handoff in plain words (host, age, what Apply does)."""
+    host = r.get("pending_handoff") or "another machine"
+    epoch = r.get("pending_handoff_epoch")
+    age = f" (from {_humanize_since(epoch)} ago)" if epoch else ""
+    return (
+        f"'{host}' has newer work on this repo{age}.\n"
+        f"Applying fast-forwards your files to that state — loss-free: it's "
+        f"re-validated on apply, and your current state stays recoverable "
+        f"via File history."
+    )
 
 
 def _fmt_time(epoch) -> str:
@@ -117,12 +147,21 @@ class ControlPanel(QMainWindow):
         self.lbl_state.setFont(f)
         top.addWidget(self.lbl_state, 1)
         btn_history = QPushButton("File history…")
+        btn_history.setToolTip("Pick a FILE and browse its versions")
         btn_history.clicked.connect(self._open_history)
+        btn_time = QPushButton("Time machine…")
+        btn_time.setToolTip("Pick a VERSION, see every file that differs, and "
+                            "restore a selected set")
+        btn_time.clicked.connect(self._open_time_machine)
+        btn_machines = QPushButton("Machines…")
+        btn_machines.setToolTip("Each machine's last autosnap mirror — your "
+                                "recovery points, and who's gone stale")
+        btn_machines.clicked.connect(self._open_machines)
         btn_add = QPushButton("Add repo…")
         btn_add.clicked.connect(self._open_add_repo)
         self.btn_pause = QPushButton("Pause all")
         self.btn_pause.clicked.connect(self._toggle_pause)
-        for b in (btn_history, btn_add, self.btn_pause):
+        for b in (btn_history, btn_time, btn_machines, btn_add, self.btn_pause):
             top.addWidget(b)
         v.addLayout(top)
 
@@ -143,6 +182,8 @@ class ControlPanel(QMainWindow):
         self.tbl_repos.verticalHeader().setDefaultSectionSize(34)  # row breathing room
         self.tbl_repos.itemSelectionChanged.connect(self._sync_action_bar)
         self.tbl_repos.doubleClicked.connect(lambda _i: self._open_history())
+        self.tbl_repos.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tbl_repos.customContextMenuRequested.connect(self._repo_context_menu)
         v.addWidget(self.tbl_repos)
 
         # --- Action bar for the selected repo ---
@@ -155,6 +196,15 @@ class ControlPanel(QMainWindow):
         self.b_handoff.setToolTip("Apply newer work waiting from your other machine")
         self.b_handoff.clicked.connect(lambda: self._apply_handoff(self._selected_repo()))
         self.b_handoff.setVisible(False)
+        self.b_fix = QPushButton("How to fix…")
+        self.b_fix.setProperty("cssClass", "accent")
+        self.b_fix.setToolTip("Why this repo is paused on a conflict, and how to resolve it")
+        self.b_fix.clicked.connect(lambda: self._show_conflict_help(self._selected_repo()))
+        self.b_fix.setVisible(False)
+        self.b_props = QPushButton("Properties…")
+        self.b_props.setToolTip("This repo's settings (branch, rhythms, sync, filters) "
+                                "— a form instead of the YAML")
+        self.b_props.clicked.connect(lambda: self._open_repo_properties(self._selected_repo()))
         self.b_pause_repo = QPushButton("Pause")
         self.b_pause_repo.clicked.connect(lambda: self._toggle_repo_pause(self._selected_repo()))
         self.b_commit = QPushButton("Commit…")
@@ -162,15 +212,25 @@ class ControlPanel(QMainWindow):
         self.b_commit.clicked.connect(lambda: self._open_smart_commit(self._selected_repo()))
         self.b_seal = QPushButton("Seal+Push")
         self.b_seal.setToolTip("Turn the current WIP into a permanent commit and push it")
-        self.b_seal.clicked.connect(lambda: self.c.seal_repo_now(self._selected_repo()))
+        self.b_seal.clicked.connect(
+            lambda: self._start_repo_action(self._selected_repo(), self.c.seal_repo_now))
         self.b_pull = QPushButton("Fetch+Pull")
         self.b_pull.setToolTip("Fetch the remote and rebase the WIP on top now")
-        self.b_pull.clicked.connect(lambda: self.c.pull_repo_now(self._selected_repo()))
-        for b in (self.b_handoff, self.b_pause_repo, self.b_commit, self.b_seal, self.b_pull):
+        self.b_pull.clicked.connect(
+            lambda: self._start_repo_action(self._selected_repo(), self.c.pull_repo_now))
+        for b in (self.b_handoff, self.b_fix, self.b_props, self.b_pause_repo,
+                  self.b_commit, self.b_seal, self.b_pull):
             bar.addWidget(b)
         v.addLayout(bar)
 
+        # One-line activity digest (today's counts). A full statistics tab would
+        # mostly duplicate the Log; the non-redundant part is this aggregation.
+        self.lbl_digest = QLabel("")
+        self.lbl_digest.setProperty("cssClass", "muted")
+        v.addWidget(self.lbl_digest)
+
         self._shown_names = []   # cached row order
+        self._inflight = {}      # repo -> monotonic start of a manual Seal/Pull
         return w
 
     def _selected_repo(self) -> str:
@@ -178,23 +238,56 @@ class ControlPanel(QMainWindow):
         item = self.tbl_repos.item(row, 0) if row >= 0 else None
         return item.text() if item else ""
 
+    # Fallback for the in-flight marker if no completion event ever arrives
+    # (the git network timeout is 60 s, so 90 s means something went wrong).
+    _INFLIGHT_TIMEOUT = 90
+
+    def _action_inflight(self, name: str) -> bool:
+        t = self._inflight.get(name)
+        if t is None:
+            return False
+        if time.monotonic() - t > self._INFLIGHT_TIMEOUT:
+            self._inflight.pop(name, None)
+            return False
+        return True
+
+    def _start_repo_action(self, name: str, fn):
+        """Launch a manual Seal/Pull and mark it in flight: the buttons disable
+        and the bar says 'working…' until its completion event (or a timeout)
+        clears the marker — no double-dispatch, no dead-button look."""
+        if not name:
+            return
+        self._inflight[name] = time.monotonic()
+        fn(name)
+        self._sync_action_bar()
+
     def _sync_action_bar(self):
         """Point the action bar at the selected repo (enabled state, pause text,
-        handoff visibility)."""
+        handoff/conflict visibility, working feedback)."""
         name = self._selected_repo()
         repos = {r["name"]: r for r in self.c.status()["repos"]}
         r = repos.get(name)
         has = r is not None
-        for b in (self.b_pause_repo, self.b_commit, self.b_seal, self.b_pull):
+        for b in (self.b_props, self.b_pause_repo, self.b_commit, self.b_seal, self.b_pull):
             b.setEnabled(has)
         if not has:
             self.lbl_selected.setText("Select a repo")
             self.b_handoff.setVisible(False)
+            self.b_fix.setVisible(False)
             return
-        self.lbl_selected.setText(f"Selected:  {name}")
         paused = r["user_paused"] or r["conflict_paused"]
         self.b_pause_repo.setText("Resume" if paused else "Pause")
         self.b_handoff.setVisible(bool(r.get("pending_handoff")))
+        if r.get("pending_handoff"):
+            self.b_handoff.setToolTip(_handoff_tooltip(r))
+        self.b_fix.setVisible(bool(r["conflict_paused"]))
+        # 'working': an engine network worker holds the repo, or a manual
+        # Seal/Pull is still in flight.
+        working = bool(r.get("net_busy")) or self._action_inflight(name)
+        self.b_seal.setEnabled(not working)
+        self.b_pull.setEnabled(not working)
+        self.lbl_selected.setText(
+            f"Selected:  {name}" + ("  —  working…" if working else ""))
 
     def refresh_status(self):
         st = self.c.status()
@@ -218,6 +311,23 @@ class ControlPanel(QMainWindow):
             self._rebuild_rows(repos)
             self._shown_names = names
         self._update_rows(repos, global_paused)
+        self._update_digest()
+
+    _DIGEST_ACTIONS = ("snapshot", "seal", "push", "pull", "handoff")
+
+    def _update_digest(self):
+        """Today's activity in one line, aggregated from the event cache."""
+        midnight = datetime.now().replace(hour=0, minute=0, second=0,
+                                          microsecond=0).timestamp()
+        counts = {}
+        for ev in getattr(self, "_events_cache", []):
+            if ev.ts >= midnight and ev.action in self._DIGEST_ACTIONS:
+                counts[ev.action] = counts.get(ev.action, 0) + 1
+        self.lbl_digest.setText(
+            "Today:  " + "   ·   ".join(
+                f"{counts[a]} {a}{'s' if counts[a] != 1 else ''}"
+                for a in self._DIGEST_ACTIONS if a in counts)
+            if counts else "")
 
     def _rebuild_rows(self, repos):
         selected = self._selected_repo()
@@ -231,20 +341,31 @@ class ControlPanel(QMainWindow):
             row = names.index(selected) if selected in names else 0
             self.tbl_repos.selectRow(row)
 
+    # Hover explanations for the non-obvious states (the state cell's tooltip).
+    _STATE_TIP = {
+        "busy": "A manual git operation (merge/rebase) is holding this repo; "
+                "snapshots resume when it finishes.",
+        "off-branch": "HEAD is on another branch — autosync waits until you switch "
+                      "back (or enable track_current_branch for this repo).",
+    }
+
     def _update_rows(self, repos, global_paused):
         for i, r in enumerate(repos):
-            if r["conflict_paused"]:
-                state, color = "Conflict", "#D23F3F"
-            elif r.get("off_branch"):
-                state, color = "Off-branch", "#8a6d00"
-            elif r["user_paused"]:
-                state, color = "Paused", "#8a6d00"
-            elif global_paused:
+            s = r.get("state", "active")
+            state, color = _STATE_STYLE.get(s, _STATE_STYLE["active"])
+            if s == "handoff":
+                state = f"{state}: {r['pending_handoff']}"
+            if global_paused and s in ("active", "busy", "handoff"):
+                # The tray's global pause outranks the non-blocked states; the
+                # blocked ones (conflict/off-branch/paused) stay visible — they
+                # still need the user's attention after a Resume all.
                 state, color = "Paused (all)", "#8a6d00"
-            elif r.get("pending_handoff"):
-                state, color = f"Handoff ready: {r['pending_handoff']}", "#1E6FD9"
+            if s == "conflict":
+                tip = r.get("conflict_msg") or "Paused on a rebase conflict — see the Log."
+            elif s == "handoff":
+                tip = _handoff_tooltip(r)
             else:
-                state, color = "Active", None
+                tip = self._STATE_TIP.get(s, "")
             cells = [r["name"], r["branch"] or "—", state,
                      _humanize_since(r["last_seal"]), r["last_action"] or "—"]
             for col, text in enumerate(cells):
@@ -253,6 +374,7 @@ class ControlPanel(QMainWindow):
                     continue
                 item.setText(text)
                 if col == 2:
+                    item.setToolTip(tip)
                     if color:
                         item.setForeground(QColor(color))
                     else:
@@ -272,8 +394,45 @@ class ControlPanel(QMainWindow):
         self.refresh_status()
 
     def _apply_handoff(self, name):
+        r = {x["name"]: x for x in self.c.status()["repos"]}.get(name)
+        if not r or not r.get("pending_handoff"):
+            return
+        host = r["pending_handoff"]
+        epoch = r.get("pending_handoff_epoch")
+        age = f"from {_humanize_since(epoch)} ago " if epoch else ""
+        if QMessageBox.question(
+            self, "Apply handoff",
+            f"Apply the newer work {age}on '{host}' to '{name}'?\n\n"
+            f"Your working tree fast-forwards to that machine's state. It's "
+            f"loss-free: the move is re-validated on apply, and your current "
+            f"state stays recoverable via File history.",
+        ) != QMessageBox.Yes:
+            return
         self.c.apply_handoff(name)
         self.refresh_status()
+
+    def _show_conflict_help(self, name):
+        """Why the repo is paused on a conflict, and what to do — without making
+        the user reconstruct it from the Log."""
+        r = {x["name"]: x for x in self.c.status()["repos"]}.get(name)
+        if not r:
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle(f"Conflict — {name}")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(r.get("conflict_msg") or "Paused on a rebase conflict.")
+        box.setInformativeText(
+            "SincroGit stays paused on this repo (nothing is snapshotted or "
+            "synced) until you press Resume."
+        )
+        b_open = box.addButton("Open folder", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Close)
+        box.exec_()
+        if box.clickedButton() is b_open:
+            try:
+                os.startfile(r["path"])
+            except OSError:
+                pass
 
     def _toggle_pause(self):
         if self.c.status().get("paused"):
@@ -287,6 +446,36 @@ class ControlPanel(QMainWindow):
         if dlg.exec_():
             self.refresh_status()
 
+    def _open_repo_properties(self, name):
+        if not name:
+            return
+        dlg = RepoPropertiesDialog(self.c, name, parent=self)
+        dlg.exec_()
+        self.refresh_status()
+
+    def _repo_context_menu(self, pos):
+        name = self._selected_repo()
+        r = {x["name"]: x for x in self.c.status()["repos"]}.get(name)
+        if not r:
+            return
+        menu = QMenu(self)
+        act_open = menu.addAction("Open folder")
+        act_hist = menu.addAction("File history…")
+        act_time = menu.addAction("Time machine…")
+        act_props = menu.addAction("Properties…")
+        chosen = menu.exec_(self.tbl_repos.viewport().mapToGlobal(pos))
+        if chosen is act_open:
+            try:
+                os.startfile(r["path"])
+            except OSError:
+                pass
+        elif chosen is act_hist:
+            self._open_history()
+        elif chosen is act_time:
+            self._open_time_machine()
+        elif chosen is act_props:
+            self._open_repo_properties(name)
+
     def _open_smart_commit(self, name):
         dlg = SmartCommitDialog(self.c, name, parent=self)
         if dlg.exec_():
@@ -299,6 +488,15 @@ class ControlPanel(QMainWindow):
             preselect = self.tbl_repos.item(row, 0).text()
         dlg = HistoryDialog(self.c, parent=self, preselect_repo=preselect)
         dlg.exec_()
+
+    def _open_time_machine(self):
+        preselect = self._selected_repo() or None
+        dlg = TimeMachineDialog(self.c, parent=self, preselect_repo=preselect)
+        dlg.exec_()
+        self.refresh_status()
+
+    def _open_machines(self):
+        MachinesDialog(self.c, parent=self).exec_()
 
     # ================================================================== LOG
     def _build_log_tab(self) -> QWidget:
@@ -400,6 +598,11 @@ class ControlPanel(QMainWindow):
 
     def append_event(self, ev):
         """Append a new event live if it passes the current filter (Qt signal)."""
+        # A seal/pull/push/sync event for a repo marks its manual action as done:
+        # clear the in-flight marker so the action bar re-enables its buttons.
+        if ev.repo in self._inflight and ev.action in ("seal", "push", "pull", "sync"):
+            self._inflight.pop(ev.repo, None)
+            self._sync_action_bar()
         self._events_cache.append(ev)
         if len(self._events_cache) > 60_000:  # bound a very long session
             del self._events_cache[:20_000]

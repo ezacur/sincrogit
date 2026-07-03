@@ -213,6 +213,7 @@ side works headless too (monotonic clocks may freeze across suspend; the wall cl
 - Configurable: maximum size and extra exclusion patterns (e.g. `node_modules/`, `.venv/`, `dist/`).
 - **Smart Ignore (`suggest_excludes`, default on):** the filter reports each rejected file (binary/too-large, not a user exclude) to the engine, which buckets them by top-level folder. When one folder accumulates **≥ `NOISE_SUGGEST_THRESHOLD` (50)** distinct filtered-out files — almost always build output or a cache — it **suggests once** (a notification + log) adding `**/<folder>/**` to `extra_excludes`. It never auto-edits the config, fires at most once per folder per session, and counts only *rejected* files (a big text refactor passes the filter, so it never trips). Catches noise the default excludes miss without nagging.
 - **Include list (`extra_includes`)**: patterns versioned **even if binary** (e.g. `**/*.docx`), under a separate size cap (`max_include_bytes`, 25 MB). For `.docx` and similar, SincroGit maps the file to a **pandoc `textconv` diff driver** in `.gitattributes` (committed, travels) and injects the textconv command **inline** (`git -c diff.pandoc.textconv=…`) on every diff → readable (markdown) diffs with no per-machine `git config`; this feeds the AI seal messages and the time-machine. The `.docx` stays the source of truth; the markdown is a *lossy* view. Pandoc's path is configurable (`pandoc_path`, per machine); without pandoc it degrades to versioning the opaque blob. **Consequence:** since change-detection uses that diff, a `.docx` is versioned/synced **only when its markdown changes** (text and structural formatting: bold, headings, lists, tables); purely visual styling (font/color/layout) and Word's resave churn don't trigger a version until a content change carries them in.
+- **`.pptx` (convert.py)**: same opt-in, different converter — an **in-process extractor** over `python-pptx` (optional dependency; MIT, bundles into the exe) renders slides as markdown (titles, bullets with indent level, tables, speaker notes) for the GUI previews/diffs/search and "Save a copy". Deliberately NOT a git textconv driver: that requires an external executable git can spawn (pandoc's role), and a Python entry point pays interpreter startup per invocation — unacceptable inside `git diff`. Consequences: the AI seal diff sees `.pptx` as binary (`--stat`), and change detection is by **bytes** (every resave versions), unlike the md-gated `.docx`. The pptx→docx→pandoc chain was evaluated and rejected: pandoc can't read pptx, so it needs LibreOffice/Office COM as a third conversion stage — heavier and less deterministic than reading the XML directly.
 
 ---
 
@@ -255,7 +256,11 @@ sincrogit/
 │  ├─ events.py          # structured event log (JSONL) for the GUI
 │  ├─ log.py             # logging to a rotating file
 │  ├─ notify.py          # Windows notifications (toasts)
-│  └─ gui/               # tray icon + control panel + dialogs (add-repo, history) (PyQt5)
+│  ├─ convert.py         # in-process readable-text extraction (.pptx via python-pptx)
+│  ├─ doctor.py          # --doctor health check (git/remotes/credentials/AI/daemon)
+│  └─ gui/               # tray icon + control panel + dialogs (add-repo, history,
+│                        #   time-machine explorer, machines, smart-commit, properties)
+├─ tests/               # pytest suite (throwaway git repos + offscreen Qt); `pytest`
 ├─ config.example.yaml
 ├─ pyproject.toml
 └─ DESIGN.md
@@ -355,7 +360,7 @@ repos:
 - **Repo with no commits / no remote:** validate on startup and warn; don't break.
 - **Multiple repos:** each with its own independent watcher/timers.
 - **Code privacy in the cloud:** by default, hybrid mode prioritizes Ollama (local); if it falls back to the cloud, `cloud_send_content: false` sends only statistics. The API key lives in an environment variable.
-- **My manual git operations** while the daemon runs (rebase, branch checkout, etc.): the tool must detect a changed `HEAD`/`rebase in progress`/busy index and **yield** (skip that cycle) instead of fighting. It detects `.git/MERGE_HEAD`, `.git/rebase-*`, the index lock.
+- **My manual git operations** while the daemon runs (rebase, branch checkout, etc.): the tool must detect a changed `HEAD`/`rebase in progress`/busy index and **yield** (skip that cycle) instead of fighting. It detects `.git/MERGE_HEAD`, `.git/rebase-*`, the index lock. While it yields, edits are NOT being snapshotted — invisible from the editor — so if the manual operation outlives `BUSY_WARN_SEC` (10 min) it warns ONCE (log + toast) that snapshots are postponed, and notes when they resume. The threshold is high enough that a normal merge — or the transient `index.lock` of any git command — never trips it.
 - **Branch guard / branch following.** By default, when HEAD isn't on the configured `branch`, the repo **yields** (no snapshot/seal/autosnap/push on the wrong branch) — `_ensure_on_branch`, rate-limited. With **`track_current_branch: true`** it instead **follows** the current branch: every branch-scoped op uses `st.active_branch` (the live HEAD branch) rather than `cfg.branch`, so snapshot/autosnap/handoff/push all happen on whatever branch you're on (each branch gets its own `refs/autosnap/<user>/<host>/<branch>`, and handoff only matches the same branch). Detached HEAD still yields. Pairs naturally with purist mode (no auto-seal → nothing auto-pushed to the wrong place). Opt-in; default keeps the safe guard.
 - **The push targets the last non-WIP commit** (resolved by message, not the
   positional `HEAD~1`): if the user commits manually on top of the WIP, their
@@ -366,7 +371,12 @@ repos:
   handoff does) — work saved since the last snapshot exists nowhere else, not even the
   reflog. The WIP amend is `--allow-empty`: a hand-revert to the sealed content, or a
   whole-repo restore to the last sealed state, legitimately empties the WIP and must
-  not fail. Restores also honor the branch guard and the busy check, like every other
+  not fail. Content that capture pass *can't* take (a tracked edit the filter refuses —
+  excluded / over the size limit / binary, `modified_unstaged` — or an untracked file
+  that the target tree tracks, `untracked_collisions`) makes the restore **refuse**,
+  naming the files to copy somewhere safe first: the same policy as the handoff
+  fast-forward, because that content exists nowhere in git. Restores also honor the
+  branch guard and the busy check, like every other
   manual operation — off-branch the capture would WIP-amend the wrong branch, and
   mid-merge/rebase they would stomp a conflicted tree.
 - **Single instance (no two daemons racing git).** Authoritative guard is a Windows
@@ -453,8 +463,9 @@ repos:
 - Hybrid AI message generator (Ollama → Gemini → fallback). Never blocks the seal.
 - Push of sealed commits (refspec with SHA → `refs/heads/<branch>`) + retry on every sync.
 - `fetch` + pull with WIP rebase, only if the remote is ahead; initial sync on startup.
-- Conflict policy: abort rebase + pause repo + notify *(verified manually — an
-  automated test suite is still pending; see the technical TODO below)*.
+- Conflict policy: abort rebase + pause repo + notify *(still verified manually —
+  the automated suite doesn't cover this multi-remote path yet; see the technical
+  TODO below)*.
 
 **✅ Phase 4 — Tray UI (PyQt5) — COMPLETE:**
 - System tray icon (a "G" with an hourglass, drawn vectorially) whose **color reflects
@@ -494,10 +505,12 @@ repos:
   remote/credentials setup is the real entry barrier, not the daemon.
 
 **Pending — technical (no user-visible feature):**
-- ⏳ Automated test suite — **none exists today**; every safety path has been verified
-  manually. Priority: `work_relationship` classification, the fast-forward refusals
-  (`untracked_collisions`, `modified_unstaged`), rebase-conflict abort + pause, and
-  seal/push idempotence — all against throwaway local repos; then CI.
+- ⏳ Automated test suite — the **first slice exists** (`tests/`, pytest, 50 tests over
+  throwaway local repos: restore refusals, selective restore, timeline, export, history
+  search, config surgery, `--doctor`, busy warning, state precedence, diff rendering,
+  offscreen GUI dialogs). Still pending: `work_relationship` classification, the handoff
+  fast-forward, rebase-conflict abort + pause, and seal/push idempotence (they need
+  throwaway *remotes*); then CI.
 
 **Optional / future:**
 - `autosnap` branch with real commits every 5 min (browsable intra-window history *on the remote*) instead of the force-push mirror of the latest state.

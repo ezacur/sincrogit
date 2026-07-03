@@ -39,6 +39,18 @@ log = logging.getLogger("sincrogit.engine")
 
 
 class RepoState:
+    """Per-repo mutable state shared by the engine loop, the workers and the GUI.
+
+    The pause-like conditions are separate flags on purpose — each has its own
+    owner and lifetime (`paused`: rebase conflict, cleared by resume_repo;
+    `user_paused`: the GUI's per-repo pause; `off_branch`: HEAD left cfg.branch,
+    clears itself when the user returns; `pending_handoff`: a safe fast-forward
+    awaiting the user; `busy_since_mono`: a manual merge/rebase is holding the
+    repo). The CANONICAL precedence when they must collapse into one user-facing
+    state lives in Engine._repo_state (the status() "state" field) — extend it
+    there, not in each GUI.
+    """
+
     def __init__(self, repo: GitRepo, cfg, file_filter: FileFilter):
         self.repo = repo
         self.cfg = cfg
@@ -58,7 +70,10 @@ class RepoState:
         self.last_autosnap_mono = time.monotonic()
         self.last_gc_mono = time.monotonic()  # last `git gc --auto` (decoupled from sealing)
         self.paused = False       # set on rebase conflicts (not cleared on its own)
+        self.conflict_msg = ""    # human explanation of WHY paused=True (for the GUI)
         self.user_paused = False  # set by the user from the GUI (per repo)
+        self.busy_since_mono = None  # first tick that saw a manual merge/rebase
+        self.busy_warned = False     # long-busy warning already emitted (once)
         self.dropped_warned = set()  # files already warned about (no longer snapshotted)
         self.off_branch = False   # HEAD is on a branch other than cfg.branch -> yield
         self._branch_cache = None      # last branch-check result (rate-limited, see below)
@@ -117,6 +132,11 @@ class Engine:
     # one is taken anyway, debounce or not. A disabled (inf) debounce or interval
     # keeps its "never fire" meaning (inf flows through the arithmetic untouched).
     SNAPSHOT_STARVATION_FACTOR = 2
+    # While a manual merge/rebase is in progress the daemon yields (see is_busy),
+    # so edits made during it are NOT being snapshotted. That's invisible from the
+    # editor, so past this long we tell the user once. High enough that a normal
+    # merge — or the transient index.lock of any git command — never trips it.
+    BUSY_WARN_SEC = 600
 
     def __init__(self, config, emit_event=None):
         self.config = config
@@ -182,6 +202,12 @@ class Engine:
         """Does this repo's config opt into versioning .docx (extra_includes)?
         Only then do we need pandoc / the textconv diff driver for it."""
         return any("docx" in p.lower() for p in (rc.extra_includes or []))
+
+    @staticmethod
+    def _repo_versions_pptx(rc) -> bool:
+        """Does this repo's config opt into versioning .pptx (extra_includes)?
+        Only then do the .gitattributes/doctor care about python-pptx."""
+        return any("pptx" in p.lower() for p in (rc.extra_includes or []))
 
     def _pandoc_cmd(self) -> str | None:
         """Resolve pandoc once, on first need. Called only for repos that version
@@ -278,14 +304,20 @@ class Engine:
             self._emit(st.cfg.name, "info", "external commit detected; seal clock reset")
 
     def _ensure_docx_attributes(self, st: "RepoState"):
-        """If the repo versions .docx (via extra_includes), map it to the pandoc
-        diff driver in .gitattributes and keep it out of EOL normalization."""
-        if not self._repo_versions_docx(st.cfg):
+        """Map the binary documents this repo versions in .gitattributes: .docx
+        to the pandoc diff driver, .pptx just out of EOL normalization (its
+        readable previews are in-process — python-pptx — so no diff driver)."""
+        lines = []
+        if self._repo_versions_docx(st.cfg):
+            lines.append("*.docx -text diff=pandoc")
+        if self._repo_versions_pptx(st.cfg):
+            lines.append("*.pptx -text")
+        if not lines:
             return
         try:
-            if st.repo.ensure_gitattributes(["*.docx -text diff=pandoc"]):
+            if st.repo.ensure_gitattributes(lines):
                 self._emit(st.cfg.name, "info",
-                           ".gitattributes: mapped *.docx to the pandoc diff driver")
+                           f".gitattributes: mapped {', '.join(ln.split()[0] for ln in lines)}")
         except Exception:  # noqa: BLE001 — best-effort convenience
             pass
 
@@ -405,10 +437,34 @@ class Engine:
             if st.cfg.name == name and (st.user_paused or st.paused):
                 st.user_paused = False
                 st.paused = False
+                st.conflict_msg = ""
                 self._wake.set()  # re-evaluate this repo without waiting
                 self._emit(name, "resume", "repo resumed")
                 return True
         return False
+
+    @staticmethod
+    def _repo_state(st: RepoState) -> str:
+        """Collapse the pause-like flags into ONE canonical state for the UIs.
+
+        Precedence: conflict > busy > off-branch > paused > handoff > active.
+        This is the single source of truth — the GUIs map these keys to
+        labels/colors but must not re-derive the precedence. `busy` outranks
+        `off-branch` because a manual rebase detaches HEAD, setting both — and
+        "a merge/rebase is running" is the truthful one. It comes from the
+        tick's tracking (no git call here), so it can lag by up to MAX_TICK_SEC.
+        """
+        if st.paused:
+            return "conflict"
+        if st.busy_since_mono is not None:
+            return "busy"
+        if st.off_branch:
+            return "off-branch"
+        if st.user_paused:
+            return "paused"
+        if st.pending_handoff:
+            return "handoff"
+        return "active"
 
     def status(self) -> dict:
         """State snapshot for the panel (cached fields, no git calls)."""
@@ -418,10 +474,14 @@ class Engine:
                 "name": st.cfg.name,
                 "path": st.cfg.path,
                 "branch": st.branch,
+                "state": self._repo_state(st),
                 "conflict_paused": st.paused,
+                "conflict_msg": st.conflict_msg,
                 "user_paused": st.user_paused,
                 "off_branch": st.off_branch,
+                "net_busy": st.net_busy,
                 "pending_handoff": (st.pending_handoff or {}).get("host"),
+                "pending_handoff_epoch": (st.pending_handoff or {}).get("epoch"),
                 "last_snapshot": st.last_snapshot_wall,
                 "last_seal": st.last_seal_epoch if st.has_sealed else None,
                 "last_action": st.last_action,
@@ -708,6 +768,10 @@ class Engine:
             if st.paused or st.user_paused:
                 continue
             try:
+                # Busy tracking runs BEFORE the branch guard: a manual rebase
+                # detaches HEAD, so the guard would yield first and a dragging
+                # rebase — the case the warning exists for — would never warn.
+                self._track_busy(st, now_mono)      # warn once if a merge/rebase drags on
                 if not self._ensure_on_branch(st, now_mono):
                     continue  # user switched branches (git checkout): yield this repo
                 self._maybe_sync(st, now_mono)      # dispatched to a worker; returns at once
@@ -719,6 +783,38 @@ class Engine:
                 log.error("[%s] error in the cycle: %s", st.cfg.name, e)
             except Exception:  # noqa: BLE001 — one bad repo must not stop the others
                 log.exception("[%s] unexpected error in the cycle", st.cfg.name)
+
+    def _track_busy(self, st: RepoState, now_mono: float):
+        """Watch how long a manual git operation (merge/rebase/…) has held the
+        repo. While it lasts every _maybe_* step yields, so edits saved during it
+        are NOT being snapshotted — invisible from the editor. Past BUSY_WARN_SEC
+        we say so ONCE (log + toast), and note when snapshots resume. MAX_TICK_SEC
+        bounds how stale this check can get while the loop sleeps.
+        """
+        try:
+            busy = st.repo.is_busy()
+        except GitError:
+            return  # repo folder vanished; the tick's own error handling logs it
+        if not busy:
+            if st.busy_warned:
+                self._emit(st.cfg.name, "info",
+                           "merge/rebase finished — snapshots resume")
+            st.busy_since_mono = None
+            st.busy_warned = False
+            return
+        if st.busy_since_mono is None:
+            st.busy_since_mono = now_mono
+        elif (not st.busy_warned
+                and now_mono - st.busy_since_mono >= self.BUSY_WARN_SEC):
+            st.busy_warned = True
+            mins = int((now_mono - st.busy_since_mono) // 60)
+            self._emit(st.cfg.name, "busy",
+                       f"a manual merge/rebase has been in progress for {mins}+ min; "
+                       f"snapshots are postponed until it finishes (edits saved "
+                       f"meanwhile are not yet captured)", "WARNING")
+            notify("SincroGit: snapshots postponed",
+                   f"'{st.cfg.name}': a manual merge/rebase has been in progress for "
+                   f"{mins}+ min. Snapshots resume when it finishes.")
 
     # ----------------------------------------------------------- operations
     def _maybe_snapshot(self, st: RepoState, now_mono: float):
@@ -1046,7 +1142,8 @@ class Engine:
             if cfg.live_handoff == "ask":
                 # Don't touch the working tree; record it + notify once for one-click Apply.
                 if not st.pending_handoff or st.pending_handoff.get("sha") != peer["sha"]:
-                    st.pending_handoff = {"sha": peer["sha"], "host": peer["host"]}
+                    st.pending_handoff = {"sha": peer["sha"], "host": peer["host"],
+                                          "epoch": peer.get("epoch")}
                     notify("SincroGit: newer work available",
                            f"'{cfg.name}': '{peer['host']}' has newer work ready. Open the "
                            f"panel and click Apply (or run --apply-handoff).")
@@ -1162,6 +1259,15 @@ class Engine:
                     st.last_seal_epoch = float(sealed)
             return True
         st.paused = True
+        # The rebase already aborted (rebase_onto_remote), so the tree is intact.
+        # Keep the explanation on the state: the GUI shows it next to "Conflict"
+        # instead of making the user dig through the Log.
+        st.conflict_msg = (
+            f"Your local changes overlap commits on '{cfg.remote}/{st.active_branch}'. "
+            f"The rebase was aborted — your files are intact. Reconcile by hand "
+            f"(e.g. `git pull --rebase` in a terminal and resolve, or move your "
+            f"conflicting edits aside), then press Resume."
+        )
         notify(
             "SincroGit: conflict",
             f"Autosync PAUSED on '{cfg.name}'. Resolve the rebase by hand.",
@@ -1413,6 +1519,62 @@ class Engine:
             log.error("[%s] history failed: %s", repo_name, e)
             return []
 
+    def repo_history(self, repo_name: str, limit: int = 200) -> list:
+        """The repo's distinct whole-tree states, newest first (sealed commits +
+        reflog snapshots + fetched autosnap refs) — the Time Machine timeline.
+        Each item: sha, epoch, subject, source."""
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return []
+        try:
+            return st.repo.repo_history(limit)
+        except GitError as e:
+            log.error("[%s] repo history failed: %s", repo_name, e)
+            return []
+
+    def export_file_version(self, repo_name: str, relpath: str, sha: str,
+                            dest_path: str):
+        """Write a file's version at `sha` to `dest_path` — recover an old
+        version WITHOUT overwriting the current one (e.g. under another name).
+        Nothing in the repo changes; if `dest_path` lands inside the repo, the
+        new file is simply picked up by the next snapshot like any other.
+        Returns (ok, message). Byte-exact (works for binaries too)."""
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return False, "repo not found"
+        try:
+            data = st.repo.file_bytes_at(relpath, sha)
+        except GitError as e:
+            return False, str(e)
+        if data is None:
+            return False, f"'{relpath}' doesn't exist in that version"
+        try:
+            with open(dest_path, "wb") as fh:
+                fh.write(data)
+        except OSError as e:
+            return False, str(e)
+        self._emit(repo_name, "info",
+                   f"saved a copy of '{relpath}' @ {sha[:8]} as '{dest_path}'")
+        return True, "saved"
+
+    def search_in_file_versions(self, repo_name: str, relpath: str, text: str,
+                                limit: int = 50) -> list:
+        """[(sha, count)] — occurrences of `text` in each version of the file
+        (the same versions file_history lists, newest first). The GUI marks the
+        transitions ("this is where it appeared / vanished"). One `git show`
+        per version: callers run it off the GUI thread."""
+        st = self.repo_state_by_name(repo_name)
+        if not st or not text:
+            return []
+        out = []
+        for ver in self.file_history(repo_name, relpath, limit):
+            try:
+                content = st.repo.file_text_at(relpath, ver["sha"]) or ""
+            except GitError:
+                content = ""
+            out.append((ver["sha"], content.count(text)))
+        return out
+
     def file_content_at(self, repo_name: str, relpath: str, sha: str):
         st = self.repo_state_by_name(repo_name)
         if not st:
@@ -1430,7 +1592,13 @@ class Engine:
         return st.repo.worktree_text(relpath) if st else ""
 
     def restore_file(self, repo_name: str, relpath: str, sha: str):
-        """Restore a file to a past version. Returns (ok, message)."""
+        """Restore a file to a past version. Returns (ok, message).
+
+        Refuses if the file's CURRENT content is something snapshots can't
+        capture (excluded, over the size limit, binary): that content exists
+        nowhere in git, so overwriting it would destroy it beyond recovery —
+        the same policy the handoff fast-forward applies.
+        """
         st = self.repo_state_by_name(repo_name)
         if not st:
             return False, "repo not found"
@@ -1450,11 +1618,88 @@ class Engine:
                 self._ensure_wip(st)
                 if self._stage(st) and st.repo.has_staged_changes():
                     st.repo.amend_keep_message()
+                # Whatever that pass could NOT capture (tracked edits the filter
+                # refused, or an untracked-but-filtered file that `sha` tracks)
+                # would be destroyed by the checkout. Refuse instead.
+                if (relpath in st.repo.modified_unstaged()
+                        or relpath in st.repo.untracked_collisions(sha)):
+                    return False, (
+                        f"'{relpath}' has local content that snapshots can't "
+                        f"capture (excluded, over the size limit or binary); "
+                        f"copy it somewhere safe first, then restore"
+                    )
                 st.repo.restore_file(relpath, sha)
             except GitError as e:
                 return False, str(e)
         self._emit(repo_name, "info", f"restored '{relpath}' from {sha[:8]}")
         return True, "restored"
+
+    def restore_files(self, repo_name: str, relpaths: list, sha: str):
+        """Selectively restore SEVERAL files to their state at `sha`, atomically
+        captured into one WIP amend. Returns (ok, message).
+
+        Per file, "its state at `sha`" means: its content there (checkout), or
+        its REMOVAL if `sha` doesn't have it. Same protections as restore_file:
+        branch guard, busy check, pending edits snapshotted first, and a refusal
+        if any SELECTED file's current content is something snapshots can't
+        capture (excluded, over the size limit, binary).
+        """
+        relpaths = [p.replace("\\", "/") for p in relpaths]
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return False, "repo not found"
+        if not relpaths:
+            return False, "no files selected"
+        try:
+            ok, cur = self._branch_ok(st)
+        except GitError as e:
+            return False, str(e)
+        if not ok:  # off-branch: the capture would WIP-amend the wrong branch
+            return False, self._branch_block_msg(st, cur)
+        with st.op_lock:  # don't race with the snapshot/seal cycle
+            if st.repo.is_busy():
+                return False, "repo busy (merge/rebase in progress)"
+            try:
+                # Snapshot pending edits into the WIP BEFORE overwriting (see
+                # restore_file), then refuse if a SELECTED file still has content
+                # that pass couldn't capture — it exists nowhere in git.
+                self._ensure_wip(st)
+                if self._stage(st) and st.repo.has_staged_changes():
+                    st.repo.amend_keep_message()
+                selected = set(relpaths)
+                risky = sorted(selected.intersection(
+                    set(st.repo.modified_unstaged())
+                    | set(st.repo.untracked_collisions(sha))))
+                if risky:
+                    sample = ", ".join(risky[:5]) + (", …" if len(risky) > 5 else "")
+                    return False, (
+                        f"{len(risky)} selected file(s) have local content that "
+                        f"snapshots can't capture (excluded, over the size limit "
+                        f"or binary): {sample}. Copy them somewhere safe first, "
+                        f"then restore"
+                    )
+                # 'A' (created since `sha`) -> restoring means REMOVING it; any
+                # other difference -> checkout `sha`'s version. Files that don't
+                # differ are silently already-there.
+                diff = {p: s for s, p in st.repo.diff_name_status_vs(sha)}
+                to_remove = [p for p in relpaths if diff.get(p) == "A"]
+                to_checkout = [p for p in relpaths
+                               if p in diff and diff[p] != "A"]
+                if not to_remove and not to_checkout:
+                    return True, "nothing to restore (files already match)"
+                if to_checkout:
+                    st.repo.checkout_paths(sha, to_checkout)
+                if to_remove:
+                    st.repo.remove_paths(to_remove)
+                # Capture the restore right away (checkout/rm already staged it).
+                if st.repo.has_staged_changes():
+                    st.repo.amend_keep_message()
+                st.autosnap_pending = True
+            except GitError as e:
+                return False, str(e)
+        n = len(to_remove) + len(to_checkout)
+        self._emit(repo_name, "info", f"restored {n} file(s) from {sha[:8]}")
+        return True, f"restored {n} file(s)"
 
     # ---------------------------------------------- autosnap recovery (cross-machine)
     def fetch_autosnaps(self, repo_name: str) -> list:
@@ -1475,10 +1720,53 @@ class Engine:
         st = self.repo_state_by_name(repo_name)
         return st.repo.list_autosnap_refs() if st else []
 
+    def restore_repo_preview(self, repo_name: str, sha: str):
+        """What restoring the WHOLE repo to `sha` would do, WITHOUT touching
+        anything. Returns (ok, payload_or_msg); payload = {"changes", "risky"}.
+
+        `changes` items are (verb, path): 'revert' (differs; goes back to `sha`'s
+        content), 'delete' (created since `sha`; the restore removes it),
+        'recreate' (deleted since `sha`; it comes back). `risky` lists files
+        whose CURRENT content snapshots can't capture — restore_repo refuses
+        while they exist. Untracked files only show up in `risky` (git diff
+        doesn't list them; the restore leaves the others alone).
+
+        Read-only — pending edits are NOT snapshotted here. Callers run it off
+        the GUI thread (a git diff on a big repo can take a moment).
+        """
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return False, "repo not found"
+        verb = {"M": "revert", "T": "revert", "A": "delete", "D": "recreate"}
+        with st.op_lock:
+            if st.repo.is_busy():
+                return False, "repo busy (merge/rebase in progress)"
+            try:
+                raw = st.repo.diff_name_status_vs(sha)
+                # Risky = what restore_repo's guard would refuse on: an unstaged
+                # edit the filter refuses (a capturable one gets snapshotted by
+                # the restore's pre-pass, so it is NOT at risk), or an untracked
+                # file that `sha` tracks (the read-tree would overwrite it).
+                risky = set(st.repo.untracked_collisions(sha))
+                for rel in st.repo.modified_unstaged():
+                    full = os.path.join(st.cfg.path, rel)
+                    if st.file_filter.reason_to_skip(full, rel) is not None:
+                        risky.add(rel)
+            except GitError as e:
+                return False, str(e)
+        changes = [(verb.get(s, "revert"), p) for s, p in raw]
+        return True, {"changes": changes, "risky": sorted(risky)}
+
     def restore_repo(self, repo_name: str, sha: str):
         """Restore the WHOLE working tree to the state at `sha` (a sealed/snapshot/
         autosnap commit), captured into the WIP so it's versioned and reversible.
-        HEAD is not moved. Returns (ok, message)."""
+        HEAD is not moved. Returns (ok, message).
+
+        Refuses if any file's CURRENT content is something snapshots can't
+        capture (excluded, over the size limit, binary): that content exists
+        nowhere in git, so the restore would destroy it beyond recovery — the
+        same policy the handoff fast-forward applies.
+        """
         st = self.repo_state_by_name(repo_name)
         if not st:
             return False, "repo not found"
@@ -1498,6 +1786,19 @@ class Engine:
                 # the read-tree would destroy it beyond even the reflog's reach.
                 if self._stage(st) and st.repo.has_staged_changes():
                     st.repo.amend_keep_message()
+                # Whatever that pass could NOT capture (tracked edits the filter
+                # refused, or untracked-but-filtered files that `sha`'s tree
+                # tracks) would be destroyed by the read-tree. Refuse instead.
+                risky = sorted(set(st.repo.modified_unstaged())
+                               | set(st.repo.untracked_collisions(sha)))
+                if risky:
+                    sample = ", ".join(risky[:5]) + (", …" if len(risky) > 5 else "")
+                    return False, (
+                        f"{len(risky)} file(s) have local content that snapshots "
+                        f"can't capture (excluded, over the size limit or binary) "
+                        f"and the restore would destroy it: {sample}. Copy them "
+                        f"somewhere safe first, then restore"
+                    )
                 st.repo.restore_tree(sha)
                 if st.repo.has_staged_changes():
                     st.repo.amend_keep_message()

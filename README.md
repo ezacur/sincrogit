@@ -66,8 +66,9 @@ SincroGit relates to jj, GitButler, dura and friends, see
 - ✅ Initial snapshot on startup (captures pre-existing changes, e.g. after a reboot).
 - ✅ **Sealing** every 6 h: turns the WIP into a permanent commit + creates a new WIP.
 - ✅ **Filter**: only text < 1 MB is versioned automatically; binaries/large files by hand.
-- ✅ **Opt-in binary versioning** (`extra_includes`, e.g. `**/*.docx`): version chosen
-  binaries too — with **readable diffs for Word docs** via a pandoc textconv driver
+- ✅ **Opt-in binary versioning** (`extra_includes`, e.g. `**/*.docx`, `**/*.pptx`):
+  version chosen binaries too — with **readable diffs for Word docs** (pandoc textconv
+  driver) **and PowerPoint** (in-process `python-pptx` extractor)
   (no per-machine `git config` needed), so the AI seal/Smart Commit messages and the
   time-machine show *what changed in the document*.
 - ✅ Deterministic *fallback* commit message when sealing.
@@ -115,10 +116,13 @@ SincroGit relates to jj, GitButler, dura and friends, see
 - ✅ Tray **menu**: open panel, pause/resume, sync now, seal now, quit.
 - ✅ **Control panel** with tabs:
   - *Status*: repos table (branch, state, time since last seal, last action) with an
-    **action bar for the selected repo** (Pause/Resume, Commit…, Seal+Push, Fetch+Pull,
-    Apply handoff) and an **"Add repo…"** button (optionally drops a `* text=auto`
-    **`.gitattributes`** so line endings stay consistent across machines). Repos can be
-    added live, without restarting.
+    **action bar for the selected repo** (Pause/Resume, Properties…, Commit…, Seal+Push,
+    Fetch+Pull, Apply handoff — with a "working…" indicator while one runs — and a
+    "How to fix…" helper when a conflict pauses the repo) and an **"Add repo…"** button
+    (optionally drops a `* text=auto` **`.gitattributes`** so line endings stay consistent
+    across machines). Repos can be added live, without restarting; **Properties…** edits
+    one repo's settings as a form (only the changed fields are written — the rest keep
+    inheriting the defaults) and can remove the repo from the config.
   - *Log*: events **filterable by repo, action, level and text** (newest first, live).
   - *Settings*: friendly form over the global defaults (purist mode, handoff, AI, theme…).
   - *Advanced (YAML)*: raw `config.yaml` editor (save / save and restart).
@@ -126,7 +130,17 @@ SincroGit relates to jj, GitButler, dura and friends, see
 - ✅ **File history / restore** ("time machine"): browse a file's past versions
   (sealed commits + reflog snapshots + fetched autosnap states), see a **colored diff**
   vs the current file, and restore **just that file or the whole repo** — from the CLI
-  (`--history`, `--autosnaps`) and the control panel.
+  (`--history`, `--autosnaps`) and the control panel. A whole-repo restore first shows a
+  **preview** of exactly what would change (and flags any file whose content snapshots
+  can't capture) before asking for confirmation. Versions are **searchable** ("when did
+  this function change?") and any version can be **saved as a copy** under another
+  name — recovery without overwriting anything.
+- ✅ **Time machine explorer**: the same history navigated **by version** — pick a point
+  in the repo's timeline, see every file that differs from the present (with its diff,
+  **unified or side-by-side, with intra-line highlighting**), check the ones you want and
+  **restore the selected set** in one atomic, snapshot-captured step.
+- ✅ **My machines view**: each machine's last autosnap mirror per repo, freshness
+  color-coded — at a glance, whether your other machine is still backing itself up.
 
 Pending (Phase 3): see the [TODO](#todo) below.
 
@@ -139,9 +153,9 @@ In priority order:
    the real entry barrier, not the daemon. Planned: a guided "Add repo…" flow that
    creates/connects a private remote (GitHub/GitLab), verifies it with a test push, and
    applies sensible defaults — without the user needing to know what a remote is. Its
-   companion piece: a `sincrogit doctor` health check (git present, remote reachable,
-   credentials verified with a test push, pandoc, Ollama) to diagnose a broken setup in
-   one command.
+   companion piece, the **`--doctor` health check, now exists** (git present, remote
+   reachable, credentials verified with a dry-run push, pandoc, AI backends, daemon);
+   the guided remote setup is the part still pending.
 2. **Start at log-on, automatically** (the missing Phase-3 piece). The "zero discipline"
    promise breaks if you have to remember to launch the safety net: a first-run prompt
    (or installer step) should register the Windows scheduled task
@@ -186,12 +200,14 @@ client in the panel):
 
 ### TODO — technical (for developers)
 
-- **Automated test suite — there is none yet.** Every safety claim (handoff
-  classification, refusal paths, conflict-pause) has been verified manually so far; for
-  a tool whose promise is "never loses data", this is the most important missing piece.
-  Priority order: `work_relationship` classification; the fast-forward refusals
-  (`untracked_collisions`, `modified_unstaged`); rebase-conflict abort + pause;
-  seal/push idempotence — all runnable against throwaway local repos. CI after that.
+- **Automated test suite — the first slice EXISTS** (`tests/`, pytest, 50 tests, ~20 s):
+  the restore refusals (`untracked_collisions` + `modified_unstaged`), the selective
+  restore / timeline / export / history search, config-file surgery, `--doctor`, the
+  long-busy warning and state precedence, diff rendering, and the GUI dialogs offscreen —
+  all against throwaway local repos. Run it with `pip install -e .[dev]` then `pytest`.
+  **Still missing**: the multi-machine paths (`work_relationship` classification, the
+  handoff fast-forward, rebase-conflict abort + pause, seal/push idempotence — they need
+  throwaway *remotes*), and CI to run it all on every push.
 
 ## Installation
 
@@ -232,6 +248,7 @@ pip install -r requirements.txt
 | `--autosnaps` | fetch & list autosnap recovery points (per machine) |
 | `--commit REPO [-m MSG \| -y]` | manual commit of REPO: edit the AI-proposed message in `$EDITOR`, then seal+push |
 | `--apply-handoff REPO` | apply your other machine's pending live work to REPO (cross-machine handoff) |
+| `--doctor` | health check: git, config, each repo's branch/remote/credentials (dry-run push), pandoc, AI backends, daemon. Exit 0 = healthy |
 | `--force` | run a one-shot even while the daemon is running (by default they refuse, to avoid racing its git work — see the [Manual](MANUAL.md)) |
 
 ### AI messages (optional)
@@ -247,7 +264,7 @@ pip install -r requirements.txt
   and `--stat`, not the content.
 - If you configure neither, a deterministic **fallback message** is used.
 
-### Versioning Word documents (.docx)
+### Versioning Word documents (.docx) and PowerPoint (.pptx)
 
 By default binaries aren't auto-versioned. To track `.docx` (synced + restorable) with
 **readable diffs**:
@@ -276,13 +293,23 @@ revision IDs) do **not**, so they aren't versioned or backed up until a content 
 includes them. After a styling-only session, force a version with a manual **Smart
 Commit**. (Without pandoc, detection falls back to bytes, so every save is a version.)
 
-> 📌 **Possible, not yet implemented:** the same inline-textconv mechanism could give
-> readable diffs for other formats — Jupyter notebooks (`.ipynb` via `jupytext`/`nbconvert`),
-> spreadsheets (`.xlsx` via `in2csv`), etc. — driven by a configurable `pattern → command`
-> map instead of the current `.docx`-only driver. It's a clean extension we haven't built.
-> Caveat to keep in mind if we do: textconv fixes the *readable diff*, not the *repo size* —
-> a `.ipynb` would still store the full JSON (outputs); real notebook hygiene also needs a
-> clean filter (e.g. `nbstripout`).
+**PowerPoint (.pptx).** Same opt-in (`extra_includes: ["**/*.pptx"]`), different
+converter: an **in-process extractor** over `python-pptx` (`pip install python-pptx`;
+bundled in the exe) renders each version as markdown — slide titles, bullets with
+their indent levels, tables and speaker notes — so the **preview, intra-line diff,
+history search and "Save a copy"** all work on presentations. Honest differences vs
+`.docx`: there is no git textconv driver (that needs an external executable), so
+(a) `git diff` and the AI seal messages still see the `.pptx` as binary (`--stat`), and
+(b) change detection is **by bytes, not by content** — every PowerPoint resave counts
+as a version. Without `python-pptx` it degrades to an opaque blob, like `.docx`
+without pandoc; `--doctor` checks for it when a repo versions `.pptx`.
+
+> 📌 **Possible, not yet implemented:** the same mechanisms could cover more formats —
+> Jupyter notebooks (`.ipynb` via `jupytext`/`nbconvert`), spreadsheets (`.xlsx` via
+> `in2csv` or an openpyxl extractor like the `.pptx` one) — driven by a configurable
+> `pattern → converter` map. Caveat to keep in mind: a readable diff doesn't fix the
+> *repo size* — a `.ipynb` would still store the full JSON (outputs); real notebook
+> hygiene also needs a clean filter (e.g. `nbstripout`).
 
 ### Restore a past version (time machine)
 
@@ -303,6 +330,10 @@ In the tray app, the same is available from the control panel:
 Restoring is itself protected: pending edits are first snapshotted into the WIP (so
 nothing saved since the last snapshot can be lost), and the restored state is captured
 as a new snapshot — a restore is always reversible, back to the moment right before it.
+And if a file's *current* content is something snapshots can't capture (excluded, over
+the size limit, binary — it exists nowhere in git), the restore **refuses** instead of
+destroying it, telling you which files to copy somewhere safe first — the same policy
+the cross-machine handoff applies.
 
 ### Manual commit (Smart Commit)
 
@@ -645,7 +676,7 @@ overridable per repo):
 | `suggest_excludes` | true | Suggest (once, a notification) adding a high-churn folder to `extra_excludes` — never auto-edits |
 | `max_file_bytes` | 1048576 | Maximum file size to version (1 MB) |
 | `extra_excludes` | — | `.gitignore`-style patterns to exclude |
-| `extra_includes` | — | patterns versioned even if binary (e.g. `**/*.docx`) |
+| `extra_includes` | — | patterns versioned even if binary (e.g. `**/*.docx`, `**/*.pptx`) |
 | `max_include_bytes` | 26214400 | size cap (25 MB) for `extra_includes` |
 | `pandoc_path` | `pandoc` | **(top-level)** path to pandoc for readable `.docx` diffs |
 | `theme` | `auto` | **(top-level)** GUI theme: `auto` (follow Windows), `light`, `dark` |

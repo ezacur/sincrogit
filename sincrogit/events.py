@@ -30,6 +30,7 @@ ACTIONS = [
     "repair",
     "log",        # bridged from the Python logger (e.g. DEBUG detail) — see gui/app.py
     "conflict",
+    "busy",       # a manual merge/rebase is holding a repo (long-busy warning)
     "pause",
     "resume",
     "info",

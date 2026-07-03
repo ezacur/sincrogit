@@ -53,6 +53,14 @@ class AddRepoDialog(QDialog):
         row2.addStretch(1)
         v.addLayout(row2)
 
+        # Inline feedback for the branch autodetection (silence looked like it
+        # worked, then the repo started off-branch with autosync waiting).
+        self.lbl_hint = QLabel("")
+        self.lbl_hint.setProperty("cssClass", "muted")
+        self.lbl_hint.setWordWrap(True)
+        self.lbl_hint.setVisible(False)
+        v.addWidget(self.lbl_hint)
+
         self.cb_norm = QCheckBox("Normalize line endings (add .gitattributes if missing)")
         self.cb_norm.setChecked(True)
         self.cb_norm.setToolTip(
@@ -86,17 +94,29 @@ class AddRepoDialog(QDialog):
     def _fill_branch_from_repo(self):
         """Prefill the branch field with the repo's CURRENT branch instead of
         assuming 'main' — otherwise adding a 'master' repo silently starts
-        off-branch (autosync waiting). Best-effort convenience."""
+        off-branch (autosync waiting). When detection fails, SAY so instead of
+        keeping the default quietly."""
         path = self.ed_path.text().strip()
         if not path or not os.path.isdir(path):
             return
         try:
             from ..gitrepo import GitRepo
             branch = GitRepo(path).current_branch()
-        except Exception:  # noqa: BLE001 — purely a convenience
-            return
+        except Exception:  # noqa: BLE001 — the hint below covers it
+            branch = None
         if branch and branch != "HEAD":
             self.ed_branch.setText(branch)
+            self._hint("")
+        elif branch == "HEAD":
+            self._hint("This repo is on a detached HEAD — type the branch "
+                       "SincroGit should track.")
+        else:
+            self._hint(f"Couldn't detect the repo's branch — check that "
+                       f"'{self.ed_branch.text().strip() or 'main'}' is right.")
+
+    def _hint(self, text: str):
+        self.lbl_hint.setText(text)
+        self.lbl_hint.setVisible(bool(text))
 
     def _add(self):
         path = self.ed_path.text().strip()

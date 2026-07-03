@@ -20,6 +20,8 @@ import sys
 import tempfile
 import time
 
+from .convert import pptx_available, pptx_bytes_to_md
+
 log = logging.getLogger("sincrogit.git")
 
 
@@ -191,9 +193,11 @@ class GitRepo:
             raise GitError(f"`git {' '.join(args)}` timed out ({timeout}s)")
         res = subprocess.CompletedProcess(cmd, proc.returncode, out, err)
         if check and res.returncode != 0:
+            # Some git commands report the failure on stdout (e.g. a few hook and
+            # remote errors); without the fallback the message would be empty.
+            detail = res.stderr.strip() or res.stdout.strip()
             raise GitError(
-                f"`git {' '.join(args)}` failed (code {res.returncode}): "
-                f"{res.stderr.strip()}"
+                f"`git {' '.join(args)}` failed (code {res.returncode}): {detail}"
             )
         return res
 
@@ -848,9 +852,10 @@ class GitRepo:
         return None
 
     def untracked_collisions(self, sha: str) -> list:
-        """Untracked working-tree files that a hard reset to `sha` would overwrite
-        (they exist on disk AND are tracked in `sha`'s tree). Used to refuse an
-        otherwise-safe fast-forward that would silently destroy unversioned files."""
+        """Untracked working-tree files that a hard reset (or restore) to `sha`
+        would overwrite (they exist on disk AND are tracked in `sha`'s tree). Used
+        to refuse an otherwise-safe fast-forward — and a restore — that would
+        silently destroy unversioned files."""
         untracked = self._run(
             ["ls-files", "--others", "--exclude-standard", "-z"], check=False
         ).stdout.split("\0")
@@ -867,7 +872,7 @@ class GitRepo:
         snapshot pass: i.e. local edits stage_changes refused (the file grew past
         the size limit, turned binary, or matches an exclude). These edits exist
         NOWHERE in git — not even the reflog — so a hard reset would silently
-        destroy them. Used to refuse a handoff fast-forward."""
+        destroy them. Used to refuse a handoff fast-forward and restores."""
         out = self._run(["diff", "--name-only", "-z"], check=False).stdout
         return sorted(p for p in out.split("\0") if p)
 
@@ -880,11 +885,30 @@ class GitRepo:
         reversible via the reflog. Raises GitError."""
         self._run(["reset", "--hard", sha])
 
+    def diff_name_status_vs(self, sha: str) -> list:
+        """[(status, path)] of how the WORKING TREE differs from `sha`'s tree
+        (`git diff --name-status <sha>`): 'A' = exists now but not in `sha`,
+        'D' = in `sha` but gone now, 'M'/'T' = content/type differs. This is the
+        raw material for a restore preview — the caller translates the letters
+        into what the restore would DO. Raises GitError on failure."""
+        res = self._run(["diff", "--name-status", sha])
+        out = []
+        for line in res.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            # Renames/copies (R100 old new) list two paths; the LAST is current.
+            out.append((parts[0][:1], parts[-1]))
+        return out
+
     def restore_tree(self, sha: str):
         """Make the working tree (and index) match the tree at `sha`, INCLUDING
         deleting tracked files that aren't present there. HEAD is NOT moved, so the
         restore is captured by the next snapshot (and stays reversible via the
-        reflog). Untracked files are left untouched. Raises GitError on failure.
+        reflog). Untracked files are untouched ONLY if `sha`'s tree doesn't contain
+        them — `--reset` overwrites colliding ones without complaint, so the caller
+        must check untracked_collisions(sha) (and modified_unstaged()) first; the
+        engine's restore_repo does. Raises GitError on failure.
         """
         self._run(["read-tree", "-u", "--reset", f"{sha}^{{tree}}"])
 
@@ -992,6 +1016,72 @@ class GitRepo:
                 break
         return out
 
+    def repo_history(self, limit: int = 200) -> list:
+        """Distinct WHOLE-REPO states, newest first — the version timeline of the
+        Time Machine explorer. Same three sources as file_history (sealed
+        history, reflog snapshots, fetched autosnap refs) but repo-wide: states
+        with an identical tree are collapsed into one. Each item is a dict with:
+        sha, tree, epoch, subject, source ('sealed' | 'snapshot' | 'autosnap').
+        """
+        info = {}  # sha -> (epoch, tree, subject)
+        autosnap_label = {}  # sha -> host
+
+        def _parse4(line):
+            parts = (line.split("\t", 3) + ["", "", "", ""])[:4]
+            return parts[0], parts[1], parts[2], parts[3]
+
+        # 1) Reachable history (sealed commits + the current WIP), with tree oids.
+        res = self._run(["log", "--format=%H%x09%ct%x09%T%x09%s"], check=False)
+        for line in res.stdout.splitlines():
+            sha, ct, tree, subj = _parse4(line)
+            if sha and ct.isdigit():
+                info.setdefault(sha, (int(ct), tree, subj))
+
+        # 2) Reflog entries (intra-window snapshots), bounded for performance.
+        res = self._run(
+            ["log", "-g", "-n", "500", "--format=%H%x09%ct%x09%T%x09%s"], check=False
+        )
+        for line in res.stdout.splitlines():
+            sha, ct, tree, subj = _parse4(line)
+            if sha and ct.isdigit() and sha not in info:
+                info[sha] = (int(ct), tree, subj)
+
+        # 3) Autosnap refs (other machines' live mirrors; present after a fetch).
+        #    Their trees aren't in the two logs above — one rev-parse per ref is
+        #    fine (a handful of machines x branches at most).
+        for r in self.list_autosnap_refs():
+            sha = r["sha"]
+            autosnap_label[sha] = r["host"]
+            if sha in info:
+                continue
+            res = self._run(["rev-parse", f"{sha}^{{tree}}"], check=False)
+            tree = res.stdout.strip() if res.returncode == 0 else ""
+            if tree:
+                info[sha] = (r["epoch"], tree, f"autosnap: {r['host']}")
+
+        entries = []
+        for sha, (epoch, tree, subj) in info.items():
+            if sha in autosnap_label:
+                source, subject = "autosnap", f"(autosnap: {autosnap_label[sha]})"
+            elif subj.startswith(self.WIP_PREFIXES):
+                source, subject = "snapshot", "(auto-snapshot)"
+            else:
+                source, subject = "sealed", subj
+            entries.append({"sha": sha, "tree": tree, "epoch": epoch,
+                            "subject": subject, "source": source})
+        entries.sort(key=lambda e: e["epoch"], reverse=True)
+
+        # Collapse consecutive identical repo states into one.
+        out = []
+        last_tree = None
+        for e in entries:
+            if e["tree"] != last_tree:
+                out.append(e)
+                last_tree = e["tree"]
+            if len(out) >= limit:
+                break
+        return out
+
     def file_content_at(self, relpath: str, sha: str, max_bytes: int = 400_000) -> str | None:
         relpath = relpath.replace("\\", "/")
         res = self._run(["show", f"{sha}:{relpath}"], check=False)
@@ -999,21 +1089,48 @@ class GitRepo:
             return None
         return res.stdout[:max_bytes]
 
-    # --------------------------------------------------- readable text (docx, ...)
-    def file_text_at(self, relpath: str, sha: str, max_bytes: int = 400_000) -> str | None:
-        """Readable text of a file version. For .docx (with pandoc) it's the
-        markdown rendering; otherwise the raw content (file_content_at)."""
+    def file_bytes_at(self, relpath: str, sha: str) -> bytes | None:
+        """RAW bytes of the file's version at `sha` — no text decoding, no size
+        cap — for "Save a copy as…" exports (the recover-WITHOUT-overwriting
+        path). None if the file doesn't exist in that version."""
         rel = relpath.replace("\\", "/")
-        if rel.lower().endswith(".docx"):
+        try:
+            res = subprocess.run(
+                ["git", "-C", self.path, "show", f"{sha}:{rel}"],
+                capture_output=True, creationflags=_NO_WINDOW, timeout=60,
+            )  # binary-safe: no text= decoding
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise GitError(f"`git show {sha}:{rel}` failed: {e}") from e
+        return res.stdout if res.returncode == 0 else None
+
+    # ---------------------------------------------- readable text (docx, pptx, ...)
+    def _text_converter(self, rel: str):
+        """The bytes->markdown converter for this path, or None (plain text).
+        .docx goes through pandoc (external, lazily resolved); .pptx through
+        python-pptx (in-process, optional import). When a converter is
+        unavailable the caller falls back to raw content — same degradation as
+        versioning the file as an opaque blob."""
+        low = rel.lower()
+        if low.endswith(".docx"):
             self._ensure_pandoc()  # GUI may preview a .docx without one being staged
-        if self._pandoc and rel.lower().endswith(".docx"):
+            return self._docx_bytes_to_md if self._pandoc else None
+        if low.endswith(".pptx") and pptx_available():
+            return pptx_bytes_to_md
+        return None
+
+    def file_text_at(self, relpath: str, sha: str, max_bytes: int = 400_000) -> str | None:
+        """Readable text of a file version: markdown for .docx (pandoc) and
+        .pptx (python-pptx); otherwise the raw content (file_content_at)."""
+        rel = relpath.replace("\\", "/")
+        converter = self._text_converter(rel)
+        if converter is not None:
             try:
                 res = subprocess.run(
                     ["git", "-C", self.path, "show", f"{sha}:{rel}"],
                     capture_output=True, creationflags=_NO_WINDOW, timeout=30,
                 )  # binary blob (no text decode)
                 if res.returncode == 0:
-                    md = self._docx_bytes_to_md(res.stdout)
+                    md = converter(res.stdout)
                     if md is not None:
                         return md[:max_bytes]
             except (OSError, subprocess.TimeoutExpired):
@@ -1021,18 +1138,20 @@ class GitRepo:
         return self.file_content_at(rel, sha, max_bytes)
 
     def worktree_text(self, relpath: str, max_bytes: int = 400_000) -> str:
-        """The working-tree file as readable text (markdown for .docx). '' if missing."""
+        """The working-tree file as readable text (markdown for .docx/.pptx).
+        '' if missing."""
         rel = relpath.replace("\\", "/")
         full = os.path.join(self.path, rel.replace("/", os.sep))
-        if rel.lower().endswith(".docx"):
-            self._ensure_pandoc()  # GUI may preview a .docx without one being staged
-        if self._pandoc and rel.lower().endswith(".docx"):
+        converter = self._text_converter(rel)
+        if converter is not None:
             try:
                 with open(full, "rb") as fh:
                     data = fh.read()
             except OSError:
                 return ""
-            return (self._docx_bytes_to_md(data) or "")[:max_bytes]
+            md = converter(data)
+            if md is not None:
+                return md[:max_bytes]
         try:
             with open(full, "r", encoding="utf-8", errors="replace") as fh:
                 return fh.read(max_bytes)
@@ -1071,3 +1190,22 @@ class GitRepo:
         """
         relpath = relpath.replace("\\", "/")
         self._run(["checkout", sha, "--", relpath])
+
+    # Batched path operations run in chunks: a selective restore can name many
+    # files, and Windows caps a command line at ~32k characters.
+    _PATH_CHUNK = 100
+
+    def checkout_paths(self, sha: str, paths: list) -> None:
+        """Write each path's version at `sha` into the working tree AND index
+        (so the caller can amend the WIP right away). Raises GitError."""
+        paths = [p.replace("\\", "/") for p in paths]
+        for i in range(0, len(paths), self._PATH_CHUNK):
+            self._run(["checkout", sha, "--", *paths[i:i + self._PATH_CHUNK]])
+
+    def remove_paths(self, paths: list) -> None:
+        """Delete tracked paths from the working tree AND index (`git rm -f`) —
+        the selective restore uses it for files that don't exist in the target
+        version. Raises GitError."""
+        paths = [p.replace("\\", "/") for p in paths]
+        for i in range(0, len(paths), self._PATH_CHUNK):
+            self._run(["rm", "-f", "-q", "--", *paths[i:i + self._PATH_CHUNK]])

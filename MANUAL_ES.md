@@ -73,6 +73,7 @@ terminal y sale. Todo disparo necesita una config (autodetectada, o `--config PA
 | `--pick N` | Con `--history`: restaurar la versión N sin interacción. |
 | `--autosnaps` | Bajar + listar los puntos de recuperación autosnap (por máquina) de cada repo. |
 | `--apply-handoff REPO` | Aplicar a REPO el trabajo vivo pendiente de tu otra máquina. |
+| `--doctor` | Chequeo de salud: git, config, rama/remoto/credenciales de cada repo (push --dry-run), pandoc, backends de IA, demonio. Exit 0 = sano. |
 | `--force` | Ejecutar un disparo único aunque el demonio esté corriendo (salta el rechazo de seguridad). |
 | `--help`, `-h` | Mostrar el uso y salir. |
 
@@ -124,15 +125,34 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
 Ábrelo desde el icono de bandeja (doble clic) o *Open control panel*.
 
 - **Status** — la tabla de repos (rama, estado, tiempo desde el último sellado, última acción)
-  con botones por repo:
+  con botones por repo. Al pasar el ratón por la celda **State** se explica el estado (por qué
+  un conflicto pausó el repo, qué es un relevo pendiente, por qué un merge/rebase muestra
+  *Busy*). Botones:
   - **Pause / Resume** — parar/reanudar el autosync de ese repo.
+  - **Properties…** — la configuración de ese repo como formulario (rama, remoto, ritmos,
+    sync, modo de relevo, filtros de ficheros) en vez de YAML. Solo se escriben los campos
+    que cambies; el resto sigue heredando los defaults. Incluye **Remove repo…** (solo de la
+    config — el repo git del disco no se toca). Se aplica al reiniciar.
   - **Commit…** — Smart Commit (diálogo con mensaje propuesto por IA).
   - **Seal+Push** — sellar el WIP actual ya y pushear.
   - **Fetch+Pull** — traer y rebasar del remoto ahora.
+  - Mientras uno de estos (o un sync del motor) está en marcha, la barra dice *working…* y
+    los botones se desactivan — el resultado (incluidos "nothing to seal" o un rechazo)
+    aparece en el Log.
   - **Apply handoff** — aparece (azul) solo cuando tu otra máquina tiene trabajo esperando (en
-    modo `live_handoff: ask`).
-  - Barra superior: **File history…** (explorar/previsualizar/restaurar un fichero o el repo
-    entero) y **Add repo…** (opcionalmente deja un `.gitattributes` `* text=auto`).
+    modo `live_handoff: ask`). Muestra qué va a hacer (qué máquina, de hace cuánto) antes
+    de aplicar.
+  - **How to fix…** — aparece cuando un repo está pausado por conflicto: explica qué pasó
+    (el rebase se abortó; tus ficheros están intactos) y qué hacer, con botón *Open folder*.
+  - Barra superior: **File history…** (elige un FICHERO y explora sus versiones), **Time
+    machine…** (elige una VERSIÓN, ve todos los ficheros que difieren y restaura un
+    conjunto seleccionado), **Machines…** (el último espejo autosnap de cada máquina,
+    con la frescura por color — detecta una máquina que dejó de respaldarse, y *Fetch
+    latest* para refrescar) y **Add repo…** (opcionalmente deja un `.gitattributes`
+    `* text=auto`).
+  - Clic derecho en una fila: **Open folder / File history / Time machine / Properties**.
+  - Una línea de **resumen de actividad** bajo la barra de acciones: los snapshots /
+    seals / pushes / pulls de hoy (el detalle está en el Log; esto es el vistazo).
 - **Log** — eventos, lo más nuevo arriba y actualizándose en vivo (sin refresco manual);
   filtrables por repo / acción / nivel / texto, incluido el detalle DEBUG del log de fichero.
 - **Settings** — el formulario amable: ritmos (snapshot/sellado con checkbox de *modo
@@ -143,7 +163,24 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
 
 El diálogo de **File history** muestra a la izquierda el **árbol de ficheros** del repo
 (`.git` oculto) — clic en cualquier fichero para ver sus versiones (tiempos relativos y
-tipos con color: sellado / snapshot / autosnap) y un diff con tema frente al fichero actual.
+tipos con color: sellado / snapshot / autosnap — el tooltip explica cada uno) y un diff con
+tema frente al fichero actual, con los tramos cambiados **resaltados dentro de cada
+línea**. El campo de búsqueda cuenta un texto en todas las versiones y resalta dónde
+apareció, cambió o desapareció ("¿cuándo cambió esta función?"). **Save a copy…**
+escribe la versión elegida en un fichero NUEVO (sugerido `nombre (fecha).ext`) —
+recuperar una versión vieja con otro nombre, sin sobrescribir nada. **Restore ENTIRE
+repo…** calcula primero una **vista previa** de qué cambiaría exactamente (cuántos
+ficheros vuelven atrás / desaparecen / regresan, la lista completa en Details, y los
+ficheros en riesgo marcados) para que confirmes con datos, no a ciegas.
+
+El diálogo **Time machine** es el mismo historial navegado al revés: a la izquierda la
+**línea temporal de versiones** del repo (sellados, snapshots, autosnaps fetcheados);
+eliges un punto y la derecha lista **todos los ficheros que difieren del presente**, cada
+uno con su checkbox y su acción (*revert* / *delete* / *recreate*), más el diff del
+fichero pulsado (**unificado o side-by-side**). **Restore selected (N)** recupera el
+conjunto marcado en UN paso atómico, capturado como un único snapshot (reversible, como
+siempre). Los ficheros cuyo contenido actual los snapshots no pueden capturar aparecen
+con ⚠ y no se pueden seleccionar.
 
 El **color del icono de bandeja** refleja el estado: verde = activo, ámbar = pausado, rojo =
 conflicto (te necesita), gris = parado. El menú de bandeja tiene además Pause/Resume, Sync now,
@@ -156,8 +193,15 @@ Seal now, Quit.
 | Quiero… | Haz esto |
 |---------|----------|
 | **Añadir un repo** | Panel → Status → *Add repo…* (o edita `repos:` en la config y *Save and restart*). |
+| **Cambiar la config de UN repo** | Selecciónalo → *Properties…* (rama, ritmos, sync, filtros como formulario). O edita su entrada en Advanced (YAML). |
+| **Quitar un repo de SincroGit** | *Properties…* → *Remove repo…* (solo la config; el repo git del disco no se toca). |
 | **Recuperar una versión anterior de un fichero** | Panel → *File history…* → elige el fichero → elige versión → *Restore*. O `--history FILE`. |
-| **Revertir el repo entero** | Panel → *File history…* → *Restore whole repo* a un punto elegido. |
+| **Recuperar una versión vieja SIN sobrescribir** | *File history…* (o *Time machine…*) → elige la versión → *Save a copy…* → dale otro nombre. |
+| **Saber cuándo apareció/desapareció un texto** | *File history…* → elige el fichero → escribe el texto → *Find* (las transiciones se resaltan en azul). |
+| **Recuperar VARIOS ficheros a la vez** | Panel → *Time machine…* → elige una versión → marca los ficheros → *Restore selected*. |
+| **Comprobar que todo el montaje está sano** | `python -m sincrogit --doctor` (git, remotos, credenciales, pandoc, IA, demonio). |
+| **Ver si mis otras máquinas se respaldan** | Panel → *Machines…* (los espejos rancios salen en rojo; *Fetch latest* refresca). |
+| **Revertir el repo entero** | Panel → *File history…* → *Restore whole repo* a un punto elegido (con vista previa de qué cambia). |
 | **Hacer un commit limpio y documentado ya** | Botón **Commit…** del repo, o `--commit REPO`. |
 | **Llevar mi trabajo a otra máquina** | Solo **bloquea la pantalla / cierra la tapa** — SincroGit vuelca; en la otra, desbloquea y sincroniza. O **Smart Commit** antes de irte para un relevo instantáneo. |
 | **Recuperar tras un disco muerto** | En otra máquina: `--autosnaps` (o panel → *Fetch autosnaps*), luego *File history* / *Restore*. Pierdes ≤30 min. |
@@ -166,6 +210,11 @@ Seal now, Quit.
 | **Trabajar en una feature branch (equipo)** | Pon `track_current_branch: true`, trabaja en tu rama, Smart Commit → Pull Request. Ver [LEAME → Usar en equipo](LEAME.md#usar-sincrogit-en-equipo-repos-compartidos). |
 | **Sincronizar un repo más agresivo** | Sobreescribe sus intervalos por repo — ver [LEAME → Repo "en caliente"](LEAME.md#afinar-un-repo-en-caliente). |
 | **Pausar todo un momento** | Bandeja → *Pause* (o *Pause* por repo). |
+
+> Una restauración nunca destruye trabajo sin guardar: las ediciones pendientes se
+> fotografían primero, y si algún contenido actual es algo que los snapshots *no pueden*
+> capturar (excluido, sobre el límite de tamaño, binario) la restauración se **niega** y
+> nombra los ficheros a copiar antes a un lugar seguro.
 
 ---
 
@@ -182,7 +231,7 @@ default se puede sobreescribir por repo**. Las claves más usadas:
 | `live_handoff` | auto | Recoger el WIP de tu otra máquina: `auto` / `ask` / `off`. |
 | `track_current_branch` | false | Seguir la rama actual en vez de pausar fuera de `branch`. |
 | `push` / `pull` | true / true | Pushear sellados / pull periódico. |
-| `extra_excludes` / `extra_includes` | — | Rutas a saltar / binarios a versionar igualmente (p. ej. `**/*.docx`). |
+| `extra_excludes` / `extra_includes` | — | Rutas a saltar / binarios a versionar igualmente (p. ej. `**/*.docx`, `**/*.pptx`). |
 | `max_file_bytes` | 1048576 | Mayor fichero auto-versionado (1 MB). |
 | `suggest_excludes` | true | Sugerir excluir una carpeta ruidosa (Smart Ignore). |
 | `pandoc_path` | `pandoc` | (top-level) pandoc para diffs legibles de `.docx`. |
@@ -230,7 +279,10 @@ python -m sincrogit -c C:\repos\config.yaml --seal-once
 
 SincroGit está diseñado para convivir con el resto de tus herramientas git — se inhibe
 mientras *tú* operas (un merge/rebase en curso, el índice bloqueado, otra rama
-checkouteada) y se reanuda después. Las reglas de tráfico:
+checkouteada) y se reanuda después. Mientras se inhibe, tus ediciones no se están
+fotografiando; si la operación manual se alarga (10+ min) el Log y un toast te avisan
+una vez de que los snapshots quedan pospuestos, y el panel muestra el repo como
+*Busy (merge/rebase)*. Las reglas de tráfico:
 
 - **El commit `sincro: WIP autosnapshot` de la punta es de SincroGit; todo lo de abajo es
   tuyo.** Commitea, crea ramas, etiqueta o rebasa *por debajo* con libertad — el demonio
