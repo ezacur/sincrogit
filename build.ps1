@@ -79,6 +79,13 @@ $pyiArgs = @(
     "--name", "SincroGit",
     "--icon", "app.ico",
     "--collect-submodules", "watchdog",
+    # Pillow (a python-pptx dependency) optionally hooks numpy, and on an
+    # Anaconda Python that drags the whole MKL stack into the bundle
+    # (~230 MB of DLLs SincroGit never calls). Keep the scientific stack out.
+    "--exclude-module", "numpy",
+    "--exclude-module", "pandas",
+    "--exclude-module", "scipy",
+    "--exclude-module", "matplotlib",
     "--noconfirm"
 )
 if ($Fast) { $pyiArgs += "--onedir" } else { $pyiArgs += "--onefile" }
