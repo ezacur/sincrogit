@@ -112,3 +112,30 @@ def test_save_a_copy(dlg, monkeypatch, tmp_path, qspin):
     assert ctl.exported is not None and ctl.exported[2] == dest
     assert boxes and "Saved to" in boxes[-1][1]
     assert os.path.exists(dest)
+
+
+def test_switching_repo_clears_stale_versions(qapp, tmp_path, qspin):
+    """The versions table belongs to the repo it was loaded from: after a repo
+    switch its shas would be handed to the OTHER repo's engine on Restore. The
+    switch must clear the list, the path, the preview and the action buttons."""
+    class Ctl2(Ctl):
+        def repo_list(self):
+            return [("t", self.tmpdir), ("u", self.tmpdir)]
+
+    d = hd.HistoryDialog(Ctl2(str(tmp_path)))
+    try:
+        d.ed_file.setText("code.py")
+        d.show_history()
+        assert qspin(lambda: len(d._versions) == 3)
+        assert qspin(lambda: d.btn_restore.isEnabled())  # a row auto-selects
+
+        d.cb_repo.setCurrentIndex(1)                     # switch repo
+
+        assert d._versions == []
+        assert d.tbl.rowCount() == 0
+        assert d.ed_file.text() == ""
+        for b in (d.btn_restore, d.btn_hunks, d.btn_restore_repo, d.btn_saveas):
+            assert not b.isEnabled()
+    finally:
+        d.close()
+        d.deleteLater()

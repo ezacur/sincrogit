@@ -44,21 +44,26 @@ def _run_tray(explicit_config) -> int:
     # Authoritative single-instance guard (Windows named mutex; no-op elsewhere).
     # It can't be stolen by an app squatting on the lock port, so two instances can
     # never race git on the same repos — the failure Gemini flagged.
-    if acquire_instance_mutex():
+    mutex = acquire_instance_mutex()
+    if mutex:
         signal_existing_instance()  # best-effort: bring the running panel to front
         print("SincroGit is already running.", file=sys.stderr)
         return 0
     lock = acquire_single_instance()
     if lock is None:
-        # The lock port is taken. The mutex (on Windows) already guarantees we're the
-        # only instance, so this only costs us the "show the panel" activation channel.
-        if signal_existing_instance():
+        # The lock port is taken. When WE hold the mutex (False) that is
+        # authoritative — no other mutex-aware SincroGit runs — so an ACK from
+        # the port can only be an impostor (or a pre-mutex build): exiting on
+        # it would let any local process that spoofs the handshake keep
+        # SincroGit from ever starting. Only without a mutex (None: non-Windows
+        # or ctypes failure) does the port handshake get to decide.
+        if mutex is None and signal_existing_instance():
             print("SincroGit is already running.", file=sys.stderr)
             return 0
-        if sys.platform == "win32":
+        if mutex is False:
             print(
-                "Lock port held by another app; single-instance is still enforced "
-                "(mutex), but the 'show panel' channel is unavailable.",
+                "Lock port held by another process; single-instance is still "
+                "enforced (mutex), but the 'show panel' channel is unavailable.",
                 file=sys.stderr,
             )
         else:
@@ -267,8 +272,13 @@ def _daemon_running() -> bool:
     nothing, so it never false-positives). If no daemon runs, we end up HOLDING
     the mutex for the rest of this short-lived process — which conveniently also
     keeps a daemon from starting mid-command."""
-    if acquire_instance_mutex():
+    mutex = acquire_instance_mutex()
+    if mutex:
         return True
+    if mutex is False:
+        # We hold the authoritative mutex: no daemon runs. Don't consult the
+        # ping — a spoofed ACK would make every one-shot refuse to run.
+        return False
     return ping_existing_instance()
 
 
@@ -303,14 +313,15 @@ def _acquire_headless_instance(get_engine=None):
     doubles as the handshake channel. Returns (ok, lock_socket): ok=False means
     another SincroGit (tray or headless) already runs — two daemons amending the
     same repos' WIPs would race each other's git work."""
-    if acquire_instance_mutex():
+    mutex = acquire_instance_mutex()
+    if mutex:
         return False, None
     lock = acquire_single_instance()
     if lock is None:
-        # Port taken: a real SincroGit answers the handshake; an unrelated app
-        # squatting the port doesn't (then proceed — on Windows the mutex above
-        # already guarantees we're alone).
-        if signal_existing_instance():
+        # Port taken: when we hold the mutex it is authoritative (see
+        # _run_tray) — a spoofed ACK must not stop the daemon. Without one
+        # (non-Windows), a real SincroGit answering the handshake means back off.
+        if mutex is None and signal_existing_instance():
             return False, None
         print("Lock port held by another app; continuing.", file=sys.stderr)
         return True, None

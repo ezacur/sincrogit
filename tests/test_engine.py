@@ -33,9 +33,12 @@ def _force_nudge_gates(st):
     startup grace, throttle clear). Staleness is NOT faked here: the nudge
     re-reads the last permanent commit's real timestamp from git, so tests make
     that commit genuinely old (see _backdated_commit)."""
-    st._started_mono = 0.0                         # long uptime
-    st.last_event_mono = 0.0                       # quiet (no recent edits)
-    st._commit_nudge_mono = 0.0                    # not throttled
+    # -inf, not 0.0: monotonic time starts at boot, so on a recently-booted
+    # machine `now - 0.0` is SMALLER than these gates' windows and they'd stay
+    # closed (the throttle one for a whole day of uptime).
+    st._started_mono = float("-inf")               # long uptime
+    st.last_event_mono = float("-inf")             # quiet (no recent edits)
+    st._commit_nudge_mono = float("-inf")          # not throttled
 
 
 def test_commit_nudge_fires_in_purist_mode(make_repo, make_engine):
@@ -295,3 +298,26 @@ def test_giterror_falls_back_to_stdout(guarded):
     _, eng, _, _ = guarded
     with pytest.raises(GitError, match="No stash entries found"):
         eng.states[0].repo._run(["stash", "drop"])  # errors on stdout, not stderr
+
+
+# ------------------------------------------------------------- sync_soon
+def test_sync_soon_makes_pull_due_even_on_young_monotonic_clock(make_repo, make_engine):
+    """sync_soon used to set last_pull_mono = 0.0 as 'the distant past' — but the
+    monotonic clock starts at boot, so within the first pull_interval of uptime
+    an unlock/resume event silently did NOT make the sync due."""
+    eng, _ = make_engine(make_repo(), pull=True, pull_interval_min=10)
+    st = eng.states[0]
+    st.last_pull_mono = time.monotonic()   # just synced
+    eng.sync_soon()
+    # Due NOW regardless of how small time.monotonic() is on this machine.
+    assert time.monotonic() - st.last_pull_mono >= st.cfg.pull_interval_sec
+
+
+def test_sync_soon_keeps_disabled_interval_disabled(make_repo, make_engine):
+    """pull_interval_min: inf means 'never' — sync_soon must not turn it into
+    NaN arithmetic (now - inf) inside the idle-wait computation."""
+    eng, _ = make_engine(make_repo(), pull=True, pull_interval_min="inf")
+    st = eng.states[0]
+    before = st.last_pull_mono
+    eng.sync_soon()
+    assert st.last_pull_mono == before

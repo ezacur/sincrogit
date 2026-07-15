@@ -154,26 +154,39 @@ def ensure_config(explicit: str | None) -> tuple:
 _instance_mutex_handle = None  # kept for the process lifetime (never CloseHandle)
 
 
-def acquire_instance_mutex(name: str = "Local\\SincroGit-tray-instance") -> bool:
+def acquire_instance_mutex(name: str = "Local\\SincroGit-tray-instance") -> bool | None:
     """Authoritative single-instance guard on Windows: a named mutex. Unlike a
     lockfile it has NO stale-lock problem (the OS releases it when the process
     dies), and unlike the port lock it can't be stolen by an unrelated app
-    squatting on the port. Returns True if ANOTHER instance already holds it.
+    squatting on the port. Tri-state:
 
-    On non-Windows it's a no-op (returns False) — the port lock remains the
-    mechanism there. The handle is kept in a module global for the process
-    lifetime; we never CloseHandle it, so the mutex is held until we exit.
+      True  — ANOTHER instance already holds it (authoritative: back off).
+      False — WE hold it now (authoritative: no other mutex-aware SincroGit
+              runs — callers must NOT let a port ACK override this, or any
+              local process spoofing the handshake could block startup).
+      None  — the mutex isn't available (non-Windows, or ctypes failed): the
+              port handshake remains the only signal there.
+
+    The handle is kept in a module global for the process lifetime; we never
+    CloseHandle it, so the mutex is held until we exit.
     """
     global _instance_mutex_handle
     if sys.platform != "win32":
-        return False
+        return None
     try:
         import ctypes
-        kernel32 = ctypes.windll.kernel32
+        from ctypes import wintypes
+        # use_last_error=True + get_last_error(): reading GetLastError through
+        # windll is officially unreliable (ctypes' own interposed Win32 calls
+        # can clobber the thread's last error in between).
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL,
+                                          wintypes.LPCWSTR)
         handle = kernel32.CreateMutexW(None, False, name)
-        already = (kernel32.GetLastError() == 183)  # ERROR_ALREADY_EXISTS
+        already = (ctypes.get_last_error() == 183)  # ERROR_ALREADY_EXISTS
         if not handle:
-            return already  # creation failed (NULL): nothing to keep or close
+            return already if already else None  # creation failed: nothing held
         if _instance_mutex_handle is None:
             _instance_mutex_handle = handle  # keep alive (the ONE per-process handle)
         else:
@@ -182,7 +195,7 @@ def acquire_instance_mutex(name: str = "Local\\SincroGit-tray-instance") -> bool
             kernel32.CloseHandle(handle)
         return already
     except Exception:  # noqa: BLE001 — if the mutex can't be created, fall back to the port
-        return False
+        return None
 
 
 def release_instance_mutex() -> None:

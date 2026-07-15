@@ -191,7 +191,7 @@ class HistoryDialog(QDialog):
         self.tree.setAlternatingRowColors(False)
         self.tree.clicked.connect(self._tree_clicked)
         outer.addWidget(self.tree)
-        self.cb_repo.currentIndexChanged.connect(self._reroot_tree)
+        self.cb_repo.currentIndexChanged.connect(self._repo_changed)
         self._reroot_tree()
 
         right = QSplitter(Qt.Vertical)
@@ -270,6 +270,23 @@ class HistoryDialog(QDialog):
         v.addLayout(row)
 
     # ----------------------------------------------------------- file tree
+    def _repo_changed(self):
+        """Switching repo invalidates everything on screen: the listed versions'
+        shas belong to the OLD repo (a Restore would hand one to the new repo's
+        engine), and the typed path likely doesn't exist there. Clear it all,
+        then reroot the tree."""
+        self._history_gen += 1   # discard any in-flight history/preview result
+        self._preview_gen += 1
+        self._versions = []
+        self.tbl.setRowCount(0)
+        self.preview.clear()
+        self.ed_file.clear()
+        self.lbl_info.setText("")
+        for b in (self.btn_restore, self.btn_hunks, self.btn_restore_repo,
+                  self.btn_saveas):
+            b.setEnabled(False)
+        self._reroot_tree()
+
     def _reroot_tree(self):
         """Point the tree at the selected repo's working tree."""
         base = self._repo_path()
@@ -572,7 +589,9 @@ class HistoryDialog(QDialog):
             return
         dlg = HunkRestoreDialog(self.c, self._repo_name(), rel, ver["sha"],
                                 _fmt(ver["epoch"]), parent=self)
-        if dlg.exec_() == QDialog.Accepted:
+        accepted = dlg.exec_() == QDialog.Accepted
+        dlg.deleteLater()  # parented dialogs outlive exec_() otherwise
+        if accepted:
             self.show_history()
 
     def _restore_repo(self):
@@ -643,7 +662,9 @@ class HistoryDialog(QDialog):
         box.setDetailedText(detail)
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
         box.setDefaultButton(QMessageBox.Cancel)
-        if box.exec_() != QMessageBox.Yes:
+        confirmed = box.exec_() == QMessageBox.Yes
+        box.deleteLater()  # parented boxes outlive exec_() otherwise
+        if not confirmed:
             return
         # Background thread (same reason as _restore): restore_repo holds the
         # repo's op_lock and rewrites the whole worktree.

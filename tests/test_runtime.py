@@ -140,3 +140,48 @@ def test_acquire_instance_mutex_and_release():
     assert runtime._instance_mutex_handle is not None
     runtime.release_instance_mutex()
     assert runtime._instance_mutex_handle is None
+
+
+# ------------------------------------- single-instance: mutex vs port ACK trust
+def test_daemon_running_ignores_spoofed_ack_when_mutex_is_ours(monkeypatch):
+    """When WE hold the authoritative mutex, a (spoofed) ACK on the port must
+    not make one-shots believe a daemon runs — else any local process squatting
+    the port could block every CLI command."""
+    from sincrogit import __main__ as m
+    monkeypatch.setattr(m, "acquire_instance_mutex", lambda: False)  # ours
+    monkeypatch.setattr(m, "ping_existing_instance", lambda: True)   # impostor ACK
+    assert m._daemon_running() is False
+
+
+def test_daemon_running_uses_ping_without_mutex(monkeypatch):
+    from sincrogit import __main__ as m
+    monkeypatch.setattr(m, "acquire_instance_mutex", lambda: None)   # no mutex support
+    monkeypatch.setattr(m, "ping_existing_instance", lambda: True)
+    assert m._daemon_running() is True
+
+
+def test_daemon_running_true_when_other_holds_mutex(monkeypatch):
+    from sincrogit import __main__ as m
+    monkeypatch.setattr(m, "acquire_instance_mutex", lambda: True)   # another instance
+    assert m._daemon_running() is True
+
+
+def test_headless_starts_despite_spoofed_ack_when_mutex_is_ours(monkeypatch, capsys):
+    """Same distrust for the headless daemon: mutex ours + port taken + impostor
+    ACK -> start anyway (without the activation channel), don't exit."""
+    from sincrogit import __main__ as m
+    monkeypatch.setattr(m, "acquire_instance_mutex", lambda: False)
+    monkeypatch.setattr(m, "acquire_single_instance", lambda: None)  # port taken
+    monkeypatch.setattr(m, "signal_existing_instance", lambda: True)
+    ok, lock = m._acquire_headless_instance()
+    assert ok is True and lock is None
+
+
+def test_headless_backs_off_on_ack_without_mutex(monkeypatch):
+    """Without a mutex (non-Windows), the port handshake still decides."""
+    from sincrogit import __main__ as m
+    monkeypatch.setattr(m, "acquire_instance_mutex", lambda: None)
+    monkeypatch.setattr(m, "acquire_single_instance", lambda: None)
+    monkeypatch.setattr(m, "signal_existing_instance", lambda: True)
+    ok, lock = m._acquire_headless_instance()
+    assert ok is False and lock is None

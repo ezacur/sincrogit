@@ -441,7 +441,12 @@ class ControlPanel(QMainWindow):
         b_open = box.addButton("Open folder", QMessageBox.ActionRole)
         box.addButton(QMessageBox.Close)
         box.exec_()
-        if box.clickedButton() is b_open:
+        opened = box.clickedButton() is b_open
+        # Modal dialogs are parented to this panel, which lives for weeks in the
+        # tray — without an explicit release after exec_() every open would
+        # accumulate a dead dialog (deleteLater, here and in every _open_*).
+        box.deleteLater()
+        if opened:
             try:
                 os.startfile(r["path"])
             except OSError:
@@ -456,7 +461,9 @@ class ControlPanel(QMainWindow):
 
     def _open_add_repo(self):
         dlg = AddRepoDialog(self.c, parent=self)
-        if dlg.exec_():
+        accepted = dlg.exec_()
+        dlg.deleteLater()
+        if accepted:
             self.refresh_status()
 
     def _open_repo_properties(self, name):
@@ -464,6 +471,7 @@ class ControlPanel(QMainWindow):
             return
         dlg = RepoPropertiesDialog(self.c, name, parent=self)
         dlg.exec_()
+        dlg.deleteLater()
         self.refresh_status()
 
     # Max rows the live Log table holds; the full history lives in _events_cache.
@@ -500,7 +508,9 @@ class ControlPanel(QMainWindow):
 
     def _open_smart_commit(self, name):
         dlg = SmartCommitDialog(self.c, name, parent=self)
-        if dlg.exec_():
+        accepted = dlg.exec_()
+        dlg.deleteLater()
+        if accepted:
             self.refresh_status()
 
     def _open_history(self):
@@ -510,15 +520,19 @@ class ControlPanel(QMainWindow):
             preselect = self.tbl_repos.item(row, 0).text()
         dlg = HistoryDialog(self.c, parent=self, preselect_repo=preselect)
         dlg.exec_()
+        dlg.deleteLater()  # also frees its QFileSystemModel watching the tree
 
     def _open_time_machine(self):
         preselect = self._selected_repo() or None
         dlg = TimeMachineDialog(self.c, parent=self, preselect_repo=preselect)
         dlg.exec_()
+        dlg.deleteLater()
         self.refresh_status()
 
     def _open_machines(self):
-        MachinesDialog(self.c, parent=self).exec_()
+        dlg = MachinesDialog(self.c, parent=self)
+        dlg.exec_()
+        dlg.deleteLater()
 
     # ================================================================== LOG
     def _build_log_tab(self) -> QWidget:

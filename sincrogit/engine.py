@@ -92,7 +92,11 @@ class RepoState:
         self._handoff_warned_sha = None  # last diverging peer WIP we warned about (throttle)
         self.pending_handoff = None  # {sha, host} a safe FF awaiting the user (ask mode)
         self._started_mono = time.monotonic()  # for the post-startup grace of the commit nudge
-        self._commit_nudge_mono = 0.0  # last purist "time to Smart Commit?" nudge (throttle)
+        # Last purist "time to Smart Commit?" nudge, for the 24 h throttle.
+        # -inf, NOT 0.0: the monotonic clock starts at boot, so with 0.0 the
+        # throttle check (now - last < 24 h) would silently suppress the FIRST
+        # nudge during the machine's first day of uptime.
+        self._commit_nudge_mono = -math.inf
 
         # For the control panel (wall-clock time, not monotonic):
         self.branch = None
@@ -723,8 +727,15 @@ class Engine:
         """Make a fetch/pull/handoff due on the NEXT tick for every repo and wake the
         loop now (non-blocking). Used on an 'arrived at this machine' OS event
         (unlock/resume) and by the resume detector."""
+        now = time.monotonic()
         for st in self._states_snapshot():
-            st.last_pull_mono = 0.0  # monotonic in the distant past -> sync is due
+            # Exactly one interval in the past -> due NOW. Not 0.0: the monotonic
+            # clock starts at boot, so within the first pull_interval of uptime
+            # 0.0 isn't "the distant past" and the sync would silently not fire.
+            # A disabled interval (inf) keeps meaning "never" (now - inf = -inf,
+            # and -inf + inf in _wait_seconds would poison the min() with NaN).
+            if math.isfinite(st.cfg.pull_interval_sec):
+                st.last_pull_mono = now - st.cfg.pull_interval_sec
         self._wake.set()
 
     def flush_now(self, wait: bool = False):

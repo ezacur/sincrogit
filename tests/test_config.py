@@ -70,3 +70,50 @@ def test_remove_repo(tmp_path):
     loaded = load_config(path)
     assert [r.name for r in loaded.repos] == ["alpha"]
     assert "# Top comment MUST survive edits." in open(path, encoding="utf-8").read()
+
+
+# ---------------------------------------------------- load-time validation
+def _write(tmp_path, text, name="c.yaml"):
+    p = tmp_path / name
+    p.write_text(text, encoding="utf-8")
+    return str(p)
+
+
+def test_load_rejects_non_mapping_sections(tmp_path):
+    """A section of the wrong TYPE must fail as ValueError (the error every
+    caller shows as a clean config error), never as AttributeError/TypeError
+    (PyInstaller's crash box in the windowed exe)."""
+    import pytest
+    for i, bad in enumerate((
+        "- the top level\n- as a list\n",   # root not a mapping
+        "log: [1]\nrepos: []\n",            # log: not a mapping
+        'ai: "x"\nrepos: []\n',             # ai: not a mapping
+        "defaults: [1]\nrepos: []\n",       # defaults: not a mapping
+        "repos: {a: 1}\n",                  # repos: not a list
+    )):
+        with pytest.raises(ValueError):
+            load_config(_write(tmp_path, bad, f"bad{i}.yaml"))
+
+
+def test_load_rejects_mistyped_ai_mode(tmp_path):
+    """'hibrid' used to silently register NO AI providers (and --doctor printed
+    no AI line at all); now it fails at load like every other bad field."""
+    import pytest
+    with pytest.raises(ValueError, match="ai.mode"):
+        load_config(_write(tmp_path, "ai:\n  mode: hibrid\nrepos: []\n"))
+
+
+def test_ai_mode_is_case_normalized(tmp_path):
+    cfg = load_config(_write(tmp_path, "ai:\n  mode: 'Local'\nrepos: []\n"))
+    assert cfg.ai.mode == "local"
+
+
+def test_load_rejects_string_pattern_list(tmp_path):
+    """extra_excludes as a bare string used to pass load and then blow up inside
+    pathspec at engine setup — skipping the whole repo with a cryptic error."""
+    import pytest
+    with pytest.raises(ValueError, match="extra_excludes"):
+        load_config(_write(
+            tmp_path,
+            'defaults:\n  extra_excludes: "**/build/**"\n'
+            "repos:\n  - path: C:/tmp/x\n"))

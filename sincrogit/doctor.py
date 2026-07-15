@@ -110,7 +110,9 @@ def _check_ai(rep: _Report, ai) -> None:
         return
     if ai.mode in ("hybrid", "local"):
         try:
-            with urllib.request.urlopen(f"{ai.ollama_url}/api/tags", timeout=3):
+            # rstrip like ai.py does: a trailing slash in ollama_url would probe
+            # '//api/tags' -> 404 -> a false "not reachable" while generation works.
+            with urllib.request.urlopen(f"{ai.ollama_url.rstrip('/')}/api/tags", timeout=3):
                 rep.add(OK, "AI: Ollama", f"reachable at {ai.ollama_url}")
         except Exception:  # noqa: BLE001 — unreachable IS the finding
             state = WARN if ai.mode == "hybrid" else FAIL
