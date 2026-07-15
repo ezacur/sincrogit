@@ -534,6 +534,41 @@ class TrayApp:
         except Exception:  # noqa: BLE001 — the dialog's hint covers a failure
             return None
 
+    def detect_remote(self, path, remote="origin"):
+        """The URL of `remote` on the repo at `path`, or None. Lets the Add-repo
+        dialog pre-fill the field and skip onboarding when a remote already
+        exists. Runs off the GUI thread (see detect_branch)."""
+        from ..gitrepo import GitRepo
+        try:
+            return GitRepo(os.path.abspath(path)).remote_url(remote)
+        except Exception:  # noqa: BLE001 — treated as "no remote"
+            return None
+
+    def configure_remote(self, path, url, branch="main", remote="origin"):
+        """Set `remote` to `url` and verify it end to end, WITHOUT adding the
+        repo. Returns (ok, msg): read reachability first (ls-remote), then push
+        auth (a --dry-run that transfers nothing). The same two checks --doctor
+        runs, so 'passes here' means push/pull/autosnap will actually work.
+        Runs on the dialog's worker thread (network calls must not freeze Qt)."""
+        from ..gitrepo import GitError, GitRepo
+        url = (url or "").strip()
+        if not url:
+            return False, "Enter the remote URL first."
+        repo = GitRepo(os.path.abspath(path))
+        try:
+            repo.set_remote(remote, url)
+        except GitError as e:
+            return False, f"git rejected that URL: {e}"
+        ok, detail = repo.ls_remote_heads(remote, timeout=30)
+        if not ok:
+            return False, (f"Can't reach the remote (check the URL and your "
+                           f"access): {detail}")
+        ok, detail = repo.push_dry_run(remote, branch or "main", timeout=30)
+        if not ok:
+            return False, (f"Reachable, but a test push was rejected (check "
+                           f"write access / credentials): {detail}")
+        return True, "Remote reachable and push access confirmed."
+
     # ---- per-repo configuration (Properties dialog) ----
     def repo_config_view(self, name):
         """(entry, effective) for the Properties dialog: `entry` is the repo's RAW
@@ -617,6 +652,17 @@ class TrayApp:
 
     def restore_file(self, name, relpath, sha):
         return self.engine.restore_file(name, relpath, sha)
+
+    def file_hunks(self, name, relpath, sha):
+        """Changed blocks between a file's version at `sha` and the working
+        tree, for a partial restore. Blocking (git): the dialog runs it off
+        the GUI thread."""
+        return self.engine.file_hunks(name, relpath, sha)
+
+    def restore_hunks(self, name, relpath, sha, selected, base):
+        """Restore only the selected hunks of a file to its state at `sha`.
+        Blocking: the dialog runs it off the GUI thread."""
+        return self.engine.restore_hunks(name, relpath, sha, selected, base)
 
     def fetch_autosnaps(self, name):
         """Fetch + list other machines' autosnap recovery points. Blocking

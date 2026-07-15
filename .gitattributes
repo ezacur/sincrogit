@@ -1,4 +1,13 @@
 # Normalize line endings: store text blobs as LF in the repo, regardless of each
 # machine's core.autocrlf. This keeps a CRLF/LF-only change from ever showing up
 # as an edit — and prevents phantom full-file diffs when syncing across machines.
-* text=auto
+# eol=lf also keeps the WORKING TREE on LF (fine for Python/Qt on Windows), which
+# silences the per-file "LF will be replaced by CRLF" warning autocrlf printed on
+# every git operation.
+* text=auto eol=lf
+
+# Binary assets must never be normalized.
+*.png binary
+*.ico binary
+*.docx binary
+*.pptx binary

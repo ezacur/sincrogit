@@ -149,7 +149,9 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
     conjunto seleccionado), **Machines…** (el último espejo autosnap de cada máquina,
     con la frescura por color — detecta una máquina que dejó de respaldarse, y *Fetch
     latest* para refrescar) y **Add repo…** (opcionalmente deja un `.gitattributes`
-    `* text=auto`).
+    `* text=auto`; también puedes pegar una **URL de remoto** y **Verify**-icarla
+    —accesibilidad más un push --dry-run para el acceso de escritura— antes de añadir, para
+    que push/pull/sync funcionen desde el principio).
   - Clic derecho en una fila: **Open folder / File history / Time machine / Properties**.
   - Una línea de **resumen de actividad** bajo la barra de acciones: los snapshots /
     seals / pushes / pulls de hoy (el detalle está en el Log; esto es el vistazo).
@@ -170,10 +172,13 @@ tema frente al fichero actual, con los tramos cambiados **resaltados dentro de c
 línea**. El campo de búsqueda cuenta un texto en todas las versiones y resalta dónde
 apareció, cambió o desapareció ("¿cuándo cambió esta función?"). **Save a copy…**
 escribe la versión elegida en un fichero NUEVO (sugerido `nombre (fecha).ext`) —
-recuperar una versión vieja con otro nombre, sin sobrescribir nada. **Restore ENTIRE
-repo…** calcula primero una **vista previa** de qué cambiaría exactamente (cuántos
-ficheros vuelven atrás / desaparecen / regresan, la lista completa en Details, y los
-ficheros en riesgo marcados) para que confirmes con datos, no a ciegas.
+recuperar una versión vieja con otro nombre, sin sobrescribir nada. **Restore this file**
+revierte el fichero entero; **Restore hunks…** abre un selector donde marcas solo los
+bloques cambiados que quieres recuperar (solo ficheros de texto) y conservas el resto de
+tus ediciones actuales — la restauración parcial también queda capturada como snapshot.
+**Restore ENTIRE repo…** calcula primero una **vista previa** de qué cambiaría exactamente
+(cuántos ficheros vuelven atrás / desaparecen / regresan, la lista completa en Details, y
+los ficheros en riesgo marcados) para que confirmes con datos, no a ciegas.
 
 El diálogo **Time machine** es el mismo historial navegado al revés: a la izquierda la
 **línea temporal de versiones** del repo (sellados, snapshots, autosnaps fetcheados);

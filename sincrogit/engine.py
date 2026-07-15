@@ -284,6 +284,11 @@ class Engine:
             ok, current = self._branch_ok(st)  # fresh: following needs accuracy
             if current != st.branch:
                 st.branch = current
+                # A pending handoff was recorded for the PREVIOUS branch; the
+                # offer (panel button / toast) must not survive the switch.
+                # The next sync re-detects the peer state for THIS branch.
+                st.pending_handoff = None
+                st._handoff_warned_sha = None
                 if ok:
                     self._emit(st.cfg.name, "info", f"now following branch '{current}'")
             st.off_branch = False
@@ -297,6 +302,10 @@ class Engine:
         if not ok and not st.off_branch:
             st.off_branch = True
             st.branch = current
+            # Off the configured branch nothing can be applied; drop the stale
+            # handoff offer (the sync loop re-detects it on return).
+            st.pending_handoff = None
+            st._handoff_warned_sha = None
             self._emit(
                 st.cfg.name, "info",
                 f"HEAD on '{current}' != configured '{st.cfg.branch}'; autosync "
@@ -1391,12 +1400,10 @@ class Engine:
             risky = self._handoff_risky(st, mine, peer["sha"])
             if risky:
                 st.pending_handoff = None
-                sample = ", ".join(risky[:3]) + ("…" if len(risky) > 3 else "")
                 self._warn_handoff_once(
                     st, peer["sha"],
-                    f"newer work on '{peer['host']}' NOT applied: it would "
-                    f"overwrite local content snapshots don't hold ({sample}). "
-                    f"Move or commit those files first, then sync.",
+                    f"newer work on '{peer['host']}' NOT applied — "
+                    f"{self._risky_refusal(st, risky)}",
                     notify_user=True)
                 return
             if cfg.live_handoff == "ask":
@@ -1489,9 +1496,7 @@ class Engine:
                     return False, f"can no longer apply safely (now '{rel}'); resolve by hand"
                 risky = self._handoff_risky(st, mine, peer["sha"])
                 if risky:
-                    return False, (f"local content snapshots don't hold in "
-                                   f"{len(risky)} file(s) (e.g. '{risky[0]}'); "
-                                   f"move or commit them first")
+                    return False, self._risky_refusal(st, risky)
                 if not self._apply_handoff(st, peer["sha"], peer["host"]):
                     return False, ("you saved an edit while it was being applied; "
                                    "nothing was touched (the edit is snapshotted) "
@@ -1821,6 +1826,35 @@ class Engine:
         return sorted(set(touched) & (set(self._uncaptured(st))
                                       | set(st.repo.untracked_collisions(sha))))
 
+    def _risky_refusal(self, st: RepoState, risky: list) -> str:
+        """Why the restore/handoff was refused, with the RIGHT advice per cause.
+        A risky path is either content the filter refuses (excluded / oversize /
+        binary — the user must move or commit it) or simply a save that landed
+        after the validation snapshot (harmless — the retry captures it first).
+        The old single message blamed the filter for both, sending people
+        hunting for an exclusion rule that didn't exist."""
+        filtered, fresh = [], []
+        for rel in risky:
+            abspath = os.path.join(st.cfg.path, rel.replace("/", os.sep))
+            if st.file_filter.reason_to_skip(abspath, rel) is None:
+                fresh.append(rel)
+            else:
+                filtered.append(rel)
+        parts = []
+        if filtered:
+            sample = ", ".join(filtered[:5]) + (", …" if len(filtered) > 5 else "")
+            parts.append(
+                f"{len(filtered)} file(s) have local content snapshots can't "
+                f"capture (excluded, over the size limit or binary): {sample}. "
+                f"Copy them somewhere safe (or commit them) first")
+        if fresh:
+            sample = ", ".join(fresh[:5]) + (", …" if len(fresh) > 5 else "")
+            parts.append(
+                f"{len(fresh)} file(s) were saved while this was being prepared "
+                f"(that edit is safe — it gets snapshotted): {sample}. Just try "
+                f"again")
+        return "; ".join(parts) or "refused (nothing risky reported)"
+
     def _apply_tree_to_worktree(self, st: RepoState, sha: str, changes: list) -> bool:
         """Make the WORKTREE match `sha` on the given (status, path) name-status
         (target->current): restore differing files to `sha`'s content, delete the
@@ -1971,12 +2005,9 @@ class Engine:
                 # Whatever that pass could NOT capture (content the filter
                 # refused, or an untracked-but-filtered file that `sha` tracks)
                 # would be destroyed by the restore. Refuse instead.
-                if self._risky_paths(st, sha, [relpath]):
-                    return False, (
-                        f"'{relpath}' has local content that snapshots can't "
-                        f"capture (excluded, over the size limit or binary); "
-                        f"copy it somewhere safe first, then restore"
-                    )
+                risky = self._risky_paths(st, sha, [relpath])
+                if risky:
+                    return False, self._risky_refusal(st, risky)
                 # Worktree-only write: the user's index stays theirs, so the
                 # restore shows up in their `git status` as a plain edit.
                 # ("M" = take `sha`'s content; the shared tail also closes the
@@ -1989,6 +2020,107 @@ class Engine:
                 return False, str(e)
         self._emit(repo_name, "info", f"restored '{relpath}' from {sha[:8]}")
         return True, "restored"
+
+    # ------------------------------------------------------ hunk-level restore
+    def _hunk_text_pair(self, st: RepoState, relpath: str, sha: str):
+        """(target_text, worktree_text) for a hunk restore, or (None, reason)
+        when the file can't be hunk-restored: it's binary, an Office document
+        (its readable form is a lossy render — restore whole-file instead), or
+        absent in one side (nothing to diff line by line). Text is decoded
+        UTF-8 with line terminators kept, so exact bytes round-trip."""
+        rel = relpath.replace("\\", "/")
+        if st.repo._text_converter(rel) is not None:
+            return None, (f"'{rel}' is an Office document; its diff is a "
+                          f"readable render, so restore the whole file instead")
+        target = st.repo.file_bytes_at(rel, sha)
+        if target is None:
+            return None, (f"'{rel}' doesn't exist in that version — use whole-file "
+                          f"restore to recreate or remove it")
+        full = os.path.join(st.cfg.path, rel.replace("/", os.sep))
+        try:
+            with open(full, "rb") as fh:
+                current = fh.read()
+        except OSError:
+            return None, f"'{rel}' can't be read from the working tree"
+        if b"\x00" in target or b"\x00" in current:
+            return None, (f"'{rel}' looks binary; restore the whole file "
+                          f"instead of individual hunks")
+        return (target.decode("utf-8", "replace"),
+                current.decode("utf-8", "replace")), None
+
+    def file_hunks(self, repo_name: str, relpath: str, sha: str):
+        """The changed blocks between `relpath`'s version at `sha` and the
+        CURRENT working tree, for a partial restore. Returns (ok, payload):
+        payload = {"base": <current text>, "hunks": [...]} (see hunks.py).
+        `base` is echoed back on restore so a mid-edit is caught. Read-only;
+        callers run it off the GUI thread. Text files only."""
+        from . import hunks as _hunks
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return False, "repo not found"
+        pair, reason = self._hunk_text_pair(st, relpath, sha)
+        if pair is None:
+            return False, reason
+        target, current = pair
+        hs = _hunks.compute_hunks(target.splitlines(keepends=True),
+                                  current.splitlines(keepends=True))
+        if not hs:
+            return True, {"base": current, "hunks": []}  # already matches
+        return True, {"base": current, "hunks": hs}
+
+    def restore_hunks(self, repo_name: str, relpath: str, sha: str,
+                      selected: list, base: str):
+        """Restore only the SELECTED hunks (indices from file_hunks) of
+        `relpath` to its version at `sha`, leaving every other current edit in
+        place. `base` is the worktree text file_hunks diffed against; if the
+        file has changed since, the restore refuses (the selection no longer
+        lines up) rather than apply a stale plan. Returns (ok, message)."""
+        from . import hunks as _hunks
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return False, "repo not found"
+        if not selected:
+            return False, "no hunks selected"
+        err = self._check_operable(st)  # off-branch: a capture would snapshot the wrong branch
+        if err:
+            return False, err
+        rel = relpath.replace("\\", "/")
+        with st.op_lock:  # don't race with the snapshot/seal cycle
+            if st.repo.is_busy():
+                return False, "repo busy (merge/rebase in progress)"
+            try:
+                # Capture pending edits first (nothing is destroyed beyond the
+                # reflog), then refuse if the current content is uncapturable.
+                self._shadow_snapshot(st)
+                risky = self._risky_paths(st, sha, [rel])
+                if risky:
+                    return False, self._risky_refusal(st, risky)
+                pair, reason = self._hunk_text_pair(st, rel, sha)
+                if pair is None:
+                    return False, reason
+                target, current = pair
+                # TOCTOU guard: the diff the user picked from was computed
+                # against `base`. If the file moved since, the indices are
+                # stale — refuse instead of restoring the wrong lines.
+                if current != base:
+                    return False, ("the file changed since you opened the diff; "
+                                   "reopen it and pick the hunks again")
+                old = target.splitlines(keepends=True)
+                new = current.splitlines(keepends=True)
+                total = len(_hunks.compute_hunks(old, new))
+                sel = {i for i in selected if 0 <= i < total}
+                if not sel:
+                    return False, "no matching hunks to restore"
+                rebuilt = "".join(_hunks.apply_selected(old, new, sel))
+                full = os.path.join(st.cfg.path, rel.replace("/", os.sep))
+                with open(full, "w", encoding="utf-8", newline="") as fh:
+                    fh.write(rebuilt)
+                self._shadow_snapshot(st)  # the partial restore is itself versioned
+            except GitError as e:
+                return False, str(e)
+        self._emit(repo_name, "info",
+                   f"restored {len(sel)} hunk(s) of '{rel}' from {sha[:8]}")
+        return True, f"restored {len(sel)} hunk(s)"
 
     def restore_files(self, repo_name: str, relpaths: list, sha: str):
         """Selectively restore SEVERAL files to their state at `sha`, atomically
@@ -2019,13 +2151,7 @@ class Engine:
                 self._shadow_snapshot(st)
                 risky = self._risky_paths(st, sha, relpaths)  # only the SELECTED paths
                 if risky:
-                    sample = ", ".join(risky[:5]) + (", …" if len(risky) > 5 else "")
-                    return False, (
-                        f"{len(risky)} selected file(s) have local content that "
-                        f"snapshots can't capture (excluded, over the size limit "
-                        f"or binary): {sample}. Copy them somewhere safe first, "
-                        f"then restore"
-                    )
+                    return False, self._risky_refusal(st, risky)
                 # Restrict the tree-vs-tree diff to the SELECTED paths: 'A'
                 # (created since `sha`) -> remove; any other difference -> take
                 # `sha`'s version; files that don't differ are already there.
@@ -2129,13 +2255,7 @@ class Engine:
                 # tracks) would be destroyed where the restore touches it.
                 risky = self._risky_paths(st, sha, [p for _s, p in changes])
                 if risky:
-                    sample = ", ".join(risky[:5]) + (", …" if len(risky) > 5 else "")
-                    return False, (
-                        f"{len(risky)} file(s) have local content that snapshots "
-                        f"can't capture (excluded, over the size limit or binary) "
-                        f"and the restore would destroy it: {sample}. Copy them "
-                        f"somewhere safe first, then restore"
-                    )
+                    return False, self._risky_refusal(st, risky)
                 # Worktree-only application of `sha`'s tree; the closing snapshot
                 # records the restored state (the user's index stays theirs).
                 if not self._apply_tree_to_worktree(st, sha, changes):

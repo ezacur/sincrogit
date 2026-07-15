@@ -144,7 +144,9 @@ Open it from the tray icon (double-click) or *Open control panel*.
     (pick a VERSION, see every file that differs, restore a selected set),
     **Machines…** (each machine's last autosnap mirror, freshness color-coded — spot a
     machine that stopped backing itself up, and *Fetch latest* to refresh) and **Add
-    repo…** (optionally drops a `* text=auto` `.gitattributes`).
+    repo…** (optionally drops a `* text=auto` `.gitattributes`; you can also paste a
+    **remote URL** and **Verify** it — reachability plus a dry-run push for write access —
+    before adding, so push/pull/sync work from the start).
   - Right-click a repo row for **Open folder / File history / Time machine / Properties**.
   - A one-line **activity digest** under the action bar: today's snapshot / seal /
     push / pull counts (the Log has the detail; this is the glance).
@@ -164,10 +166,12 @@ current file, with the changed spans **highlighted inside each line**. The searc
 counts a text across every version and highlights where it appeared, changed or
 vanished ("when did this function change?"). **Save a copy…** writes the selected
 version to a NEW file (suggested `name (stamp).ext`) — recover an old version under
-another name, overwriting nothing. **Restore ENTIRE repo…** first computes a
-**preview** of exactly what would change (how many files revert / disappear / come
-back, the full list under Details, and any at-risk files flagged) so you confirm on
-facts, not on faith.
+another name, overwriting nothing. **Restore this file** rolls the whole file back;
+**Restore hunks…** opens a picker where you tick only the changed blocks you want back
+(text files only) and keep the rest of your current edits — the partial restore is
+captured as a snapshot too. **Restore ENTIRE repo…** first computes a **preview** of
+exactly what would change (how many files revert / disappear / come back, the full list
+under Details, and any at-risk files flagged) so you confirm on facts, not on faith.
 
 The **Time machine** dialog is the same history navigated the other way around: the
 repo's **version timeline** on the left (seals, snapshots, fetched autosnaps); pick a

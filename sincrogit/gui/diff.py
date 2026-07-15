@@ -18,7 +18,9 @@ DIFF_DARK = {"meta": "#9aa3af", "hunk": "#6cb0f0", "add": "#4cc07a", "add_bg": "
              "del": "#ec7272", "del_bg": "#3a2628", "ctx": "#c8cdd4",
              "add_hl": "#2f5c3f", "del_hl": "#6e3a3f"}
 
-_MAX_SBS_ROWS = 5000  # side-by-side rows cap: keeps QTextEdit responsive on huge files
+# Row cap for BOTH renderers: keeps QTextEdit responsive on huge files. The
+# cut is always announced with a visible "… truncated …" row, never silent.
+_MAX_ROWS = 5000
 
 
 def mark_intraline(old_line: str, new_line: str, c: dict) -> tuple:
@@ -56,7 +58,7 @@ def diff_html(old_text: str, current_text: str, dark: bool = False) -> str:
 
     in_hunk = False  # the ---/+++ headers only appear before the first @@
     i = 0
-    while i < len(diff):
+    while i < len(diff) and len(rows) <= _MAX_ROWS:
         ln = diff[i]
         if not in_hunk and ln.startswith(("+++", "---")):
             rows.append(f'<span style="color:{c["meta"]};">{html.escape(ln)}</span>')
@@ -92,6 +94,14 @@ def diff_html(old_text: str, current_text: str, dark: bool = False) -> str:
     if not rows:
         return (f'<pre style="color:{c["meta"]};font-family:Consolas,monospace;'
                 f'padding:8px;">(no differences vs the current file)</pre>')
+    # A single -/+ run can push far past the cap in one iteration, so trim here
+    # and ALWAYS announce it — a preview that just stops looks like the whole
+    # change; the file itself is untouched.
+    if len(rows) > _MAX_ROWS:
+        rows = rows[:_MAX_ROWS]
+        rows.append(f'<span style="color:{c["meta"]};display:block;">'
+                    f'… diff truncated at {_MAX_ROWS} lines (the full file is '
+                    f'intact — this is only the preview) …</span>')
     body = "\n".join(rows)
     return (f'<pre style="font-family:Consolas,monospace;font-size:10pt;'
             f'margin:0;padding:6px;line-height:1.35;">{body}</pre>')
@@ -137,8 +147,8 @@ def diff_html_sbs(old_text: str, new_text: str, dark: bool = False) -> str:
                     + cell(right, bg=c["add_bg"] if has_r else None,
                            color=c["add"] if has_r else None)
                     + "</tr>")
-        if len(rows) > _MAX_SBS_ROWS:
-            rows.append("<tr>" + cell(f"… truncated at {_MAX_SBS_ROWS} lines …")
+        if len(rows) > _MAX_ROWS:
+            rows.append("<tr>" + cell(f"… truncated at {_MAX_ROWS} lines …")
                         + cell("") + "</tr>")
             break
     if not rows:

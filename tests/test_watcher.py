@@ -104,3 +104,34 @@ def test_no_ignore_callback_passes_normal_events():
     h, calls = _handler(ignore=None)
     h.on_any_event(FakeEvent(src_path=_p("deep", "nested", "file.txt")))
     assert calls == [1]
+
+
+def test_real_observer_fires_on_a_file_save(tmp_path):
+    """Integration (real watchdog Observer, not the fake handler): a genuine
+    file write under the watched tree calls on_change, and an excluded folder's
+    churn does not. Skipped if watchdog isn't installed."""
+    import threading
+    import time
+
+    pytest.importorskip("watchdog", reason="watchdog not installed")
+    from sincrogit.watcher import WatchManager
+
+    root = str(tmp_path / "proj")
+    os.makedirs(os.path.join(root, "node_modules"))
+    fired = threading.Event()
+    wm = WatchManager()
+    wm.watch(root, fired.set,
+             ignore=lambda rel: rel.replace(os.sep, "/").startswith("node_modules/"))
+    wm.start()
+    try:
+        # Churn under an excluded folder must NOT wake it.
+        with open(os.path.join(root, "node_modules", "x.js"), "w") as fh:
+            fh.write("noise\n")
+        assert not fired.wait(1.0)
+        # A real save to a tracked file must.
+        with open(os.path.join(root, "app.py"), "w") as fh:
+            fh.write("print(1)\n")
+        assert fired.wait(5.0), "watcher never fired on a real file save"
+    finally:
+        wm.stop()
+        time.sleep(0.05)  # let the observer thread unwind before tmp cleanup

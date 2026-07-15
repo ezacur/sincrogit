@@ -154,9 +154,11 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
   **solo ese fichero o el repo entero** — desde la CLI (`--history`, `--autosnaps`) y
   el panel de control. La restauración del repo entero muestra antes una **vista
   previa** de qué cambiaría exactamente (y marca los ficheros cuyo contenido los
-  snapshots no pueden capturar) antes de pedir confirmación. Las versiones se pueden
-  **buscar** ("¿cuándo cambió esta función?") y cualquier versión puede **guardarse
-  como copia** con otro nombre — recuperar sin sobrescribir nada.
+  snapshots no pueden capturar) antes de pedir confirmación. Un fichero de texto también
+  puede restaurarse **bloque a bloque** — marca solo los cambios que quieres recuperar y
+  conserva el resto de tus ediciones actuales. Las versiones se pueden **buscar**
+  ("¿cuándo cambió esta función?") y cualquier versión puede **guardarse como copia** con
+  otro nombre — recuperar sin sobrescribir nada.
 - ✅ **Explorador Time machine**: el mismo historial navegado **por versión** — eliges
   un punto de la línea temporal del repo, ves todos los ficheros que difieren del
   presente (con su diff, **unificado o side-by-side, con resaltado intra-línea**),
@@ -174,12 +176,14 @@ Por orden de prioridad:
 
 1. **Onboarding sin fricción para quien no sabe Git.** El público que más necesita
    SincroGit es el menos preparado para crear un remoto y configurar credenciales — hoy
-   ese montaje es la barrera de entrada real, no el demonio. Plan: un flujo guiado en
-   "Add repo…" que cree/conecte un remoto privado (GitHub/GitLab), lo verifique con un
-   push de prueba y aplique defaults sensatos — sin que el usuario tenga que saber qué
-   es un remoto. Su pieza compañera, el **chequeo de salud `--doctor`, ya existe** (git
-   presente, remoto accesible, credenciales verificadas con un push --dry-run, pandoc,
-   backends de IA, demonio); lo pendiente es el montaje guiado del remoto.
+   ese montaje es la barrera de entrada real, no el demonio. **Ya disponible:** el diálogo
+   "Add repo…" acepta una URL de remoto y **la verifica de punta a punta** (accesibilidad
+   + un push --dry-run para el acceso de escritura) antes de añadir el repo, y pre-rellena
+   un remoto ya configurado. Su pieza compañera, el **chequeo de salud `--doctor`**, hace
+   las mismas comprobaciones para repos existentes (git presente, remoto accesible,
+   credenciales verificadas, pandoc, backends de IA, demonio). Sigue pendiente: crear un
+   remoto privado nuevo (GitHub/GitLab) desde el propio diálogo, para quien aún no tiene
+   uno.
 2. **Arranque automático al iniciar sesión** (la pieza de la Fase 3 que falta). La
    promesa de "cero disciplina" se rompe si hay que acordarse de lanzar la red de
    seguridad: un aviso en el primer arranque (o un paso del instalador) debería

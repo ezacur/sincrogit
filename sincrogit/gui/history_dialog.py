@@ -11,6 +11,8 @@ Talks to the app through the `controller`:
   file_text_at(name, relpath, sha) -> str | None   (markdown for .docx)
   current_text(name, relpath) -> str               (working-tree text; md for .docx)
   restore_file(name, relpath, sha) -> (ok, message)
+  file_hunks(name, relpath, sha) -> (ok, {"base": str, "hunks": [...]})
+  restore_hunks(name, relpath, sha, selected, base) -> (ok, message)
   restore_repo(name, sha) -> (ok, message)
   fetch_autosnaps(name) -> [ {host, branch, epoch, sha, ...}, ... ]
       (network: the dialog calls it from a background thread — it can take up to
@@ -245,6 +247,14 @@ class HistoryDialog(QDialog):
         self.btn_restore.clicked.connect(self._restore)
         self.btn_restore.setEnabled(False)
         row.addWidget(self.btn_restore)
+        self.btn_hunks = QPushButton("Restore hunks…")
+        self.btn_hunks.setToolTip(
+            "Roll back only SOME of the changed blocks to this version, keeping "
+            "your other current edits. Text files only."
+        )
+        self.btn_hunks.clicked.connect(self._restore_hunks)
+        self.btn_hunks.setEnabled(False)
+        row.addWidget(self.btn_hunks)
         self.btn_restore_repo = QPushButton("Restore ENTIRE repo…")
         self.btn_restore_repo.setProperty("cssClass", "danger")
         self.btn_restore_repo.setToolTip(
@@ -322,6 +332,7 @@ class HistoryDialog(QDialog):
         gen = self._history_gen
         self.preview.clear()
         self.btn_restore.setEnabled(False)
+        self.btn_hunks.setEnabled(False)
         self.btn_restore_repo.setEnabled(False)
         self.btn_saveas.setEnabled(False)
         self.lbl_info.setText(f"Loading history of '{rel}'…")
@@ -375,6 +386,7 @@ class HistoryDialog(QDialog):
         for .docx/.pptx, pandoc/python-pptx — up to tens of seconds inline."""
         ver = self._selected_version()
         self.btn_restore.setEnabled(ver is not None)
+        self.btn_hunks.setEnabled(ver is not None)
         self.btn_restore_repo.setEnabled(ver is not None)
         self.btn_saveas.setEnabled(ver is not None)
         if not ver:
@@ -520,6 +532,7 @@ class HistoryDialog(QDialog):
         """Disable the restore/save buttons and show a note while a restore runs
         on a worker (re-enabled by _on_restore_done)."""
         self.btn_restore.setEnabled(False)
+        self.btn_hunks.setEnabled(False)
         self.btn_restore_repo.setEnabled(False)
         self.btn_saveas.setEnabled(False)
         self.lbl_info.setText(note)
@@ -538,6 +551,7 @@ class HistoryDialog(QDialog):
     def _on_restore_done(self, ok, msg):
         ver = self._selected_version()
         self.btn_restore.setEnabled(ver is not None)
+        self.btn_hunks.setEnabled(ver is not None)
         self.btn_restore_repo.setEnabled(ver is not None)
         self.btn_saveas.setEnabled(ver is not None)
         self.lbl_info.setText("")
@@ -546,6 +560,20 @@ class HistoryDialog(QDialog):
             self.show_history()  # reload (threaded); the restore is a new version
         else:
             QMessageBox.critical(self, "Restore failed", msg)
+
+    def _restore_hunks(self):
+        """Open the hunk picker for the selected version. It applies the
+        restore itself; on success reload history (the restore is a new
+        version, just like a whole-file one)."""
+        from .hunk_dialog import HunkRestoreDialog
+        ver = self._selected_version()
+        rel = self._relpath()
+        if not ver or not rel:
+            return
+        dlg = HunkRestoreDialog(self.c, self._repo_name(), rel, ver["sha"],
+                                _fmt(ver["epoch"]), parent=self)
+        if dlg.exec_() == QDialog.Accepted:
+            self.show_history()
 
     def _restore_repo(self):
         """Whole-repo restore, in two steps: first a background PREVIEW of what

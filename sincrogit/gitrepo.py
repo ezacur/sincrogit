@@ -750,6 +750,22 @@ class GitRepo:
     def has_remote(self, remote: str) -> bool:
         return self._run(["remote", "get-url", remote], check=False).returncode == 0
 
+    def remote_url(self, remote: str) -> str | None:
+        """The configured URL of `remote`, or None if it has none."""
+        res = self._run(["remote", "get-url", remote], check=False)
+        return res.stdout.strip() if res.returncode == 0 else None
+
+    def set_remote(self, remote: str, url: str) -> None:
+        """Point `remote` at `url`: add it, or update it if it already exists
+        (idempotent, so re-running onboarding with a corrected URL just works).
+        Git stores any string without validating it — whether the URL actually
+        works is what configure_remote's ls-remote/push checks are for. Raises
+        GitError only if git rejects the remote NAME."""
+        if self.has_remote(remote):
+            self._run(["remote", "set-url", remote, url])
+        else:
+            self._run(["remote", "add", remote, url])
+
     def fetch(self, remote: str, timeout: float | None = None) -> bool:
         res = self._run(["fetch", "--quiet", remote], check=False, timeout=timeout)
         if res.returncode != 0:

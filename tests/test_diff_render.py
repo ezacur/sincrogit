@@ -1,6 +1,12 @@
 """Diff HTML rendering (pure functions): unified, side-by-side, intra-line."""
 
-from sincrogit.gui.diff import DIFF_LIGHT, diff_html, diff_html_sbs, mark_intraline
+from sincrogit.gui.diff import (
+    _MAX_ROWS,
+    DIFF_LIGHT,
+    diff_html,
+    diff_html_sbs,
+    mark_intraline,
+)
 
 
 def test_mark_intraline_highlights_only_the_change():
@@ -34,3 +40,14 @@ def test_sbs_two_columns_and_intraline():
 
 def test_sbs_no_differences():
     assert "no differences" in diff_html_sbs("same\n", "same\n")
+
+
+def test_huge_diff_announces_truncation_not_silently():
+    """A diff past the row cap must SAY it was cut (the file is intact; only
+    the preview is capped), never trail off as if that were the whole change."""
+    old = "".join(f"old {i}\n" for i in range(_MAX_ROWS + 500))
+    new = "".join(f"new {i}\n" for i in range(_MAX_ROWS + 500))
+    uni = diff_html(old, new)
+    assert "truncated" in uni
+    sbs = diff_html_sbs(old, new)
+    assert "truncated" in sbs

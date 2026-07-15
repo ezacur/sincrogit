@@ -144,9 +144,11 @@ SincroGit relates to jj, GitButler, dura and friends, see
   vs the current file, and restore **just that file or the whole repo** — from the CLI
   (`--history`, `--autosnaps`) and the control panel. A whole-repo restore first shows a
   **preview** of exactly what would change (and flags any file whose content snapshots
-  can't capture) before asking for confirmation. Versions are **searchable** ("when did
-  this function change?") and any version can be **saved as a copy** under another
-  name — recovery without overwriting anything.
+  can't capture) before asking for confirmation. A text file can also be restored
+  **hunk by hunk** — tick only the changed blocks you want back and keep the rest of your
+  current edits. Versions are **searchable** ("when did this function change?") and any
+  version can be **saved as a copy** under another name — recovery without overwriting
+  anything.
 - ✅ **Time machine explorer**: the same history navigated **by version** — pick a point
   in the repo's timeline, see every file that differs from the present (with its diff,
   **unified or side-by-side, with intra-line highlighting**), check the ones you want and
@@ -162,12 +164,13 @@ In priority order:
 
 1. **Frictionless onboarding for Git newcomers.** The audience that needs SincroGit most
    is the least equipped to create a remote and wire up credentials — today that setup is
-   the real entry barrier, not the daemon. Planned: a guided "Add repo…" flow that
-   creates/connects a private remote (GitHub/GitLab), verifies it with a test push, and
-   applies sensible defaults — without the user needing to know what a remote is. Its
-   companion piece, the **`--doctor` health check, now exists** (git present, remote
-   reachable, credentials verified with a dry-run push, pandoc, AI backends, daemon);
-   the guided remote setup is the part still pending.
+   the real entry barrier, not the daemon. **In place now:** the "Add repo…" dialog takes
+   a remote URL and **verifies it end to end** (reachability + a dry-run push for write
+   access) before adding the repo, and pre-fills an already-configured remote. Its
+   companion piece, the **`--doctor` health check**, does the same checks for existing
+   repos (git present, remote reachable, credentials verified, pandoc, AI backends,
+   daemon). Still planned: creating a brand-new private remote (GitHub/GitLab) from inside
+   the dialog, for users who don't have one yet.
 2. **Start at log-on, automatically** (the missing Phase-3 piece). The "zero discipline"
    promise breaks if you have to remember to launch the safety net: a first-run prompt
    (or installer step) should register the Windows scheduled task

@@ -208,6 +208,30 @@ def test_busy_warning_fires_mid_rebase(guarded, monkeypatch):
     assert eng.status()["repos"][0]["state"] == "busy"  # outranks off-branch
 
 
+def test_going_off_branch_drops_a_pending_handoff(guarded):
+    """A handoff offer recorded on the configured branch must not linger once
+    the user checks out another branch (nothing can be applied there)."""
+    repo, eng, _events, _sha = guarded
+    st = eng.states[0]
+    st.pending_handoff = {"sha": "x", "host": "laptop"}
+    git(repo, "checkout", "-q", "-b", "feature")
+    eng._ensure_on_branch(st, time.monotonic())
+    assert st.off_branch and st.pending_handoff is None
+
+
+def test_following_a_new_branch_drops_a_pending_handoff(make_repo, make_engine):
+    """With track_current_branch, switching branches re-scopes sync — the old
+    branch's handoff offer must be cleared (the next sync re-detects per branch)."""
+    repo = make_repo({"a.txt": "v1\n"})
+    eng, _ = make_engine(repo, track_current_branch=True)
+    st = eng.states[0]
+    eng._ensure_on_branch(st, time.monotonic())     # settle st.branch = 'main'
+    st.pending_handoff = {"sha": "x", "host": "laptop"}
+    git(repo, "checkout", "-q", "-b", "feature")
+    eng._ensure_on_branch(st, time.monotonic())
+    assert st.branch == "feature" and st.pending_handoff is None
+
+
 def test_state_precedence(guarded):
     _, eng, _, _ = guarded
     st = eng.states[0]
