@@ -75,7 +75,10 @@ class SmartCommitDialog(QDialog):
             ok, title, body, files = self.c.propose_seal_message(self.name)
         except Exception as e:  # noqa: BLE001
             ok, title, body, files = False, "", "", str(e)
-        self._proposed.emit(ok, title, body, files)
+        try:
+            self._proposed.emit(ok, title, body, files)
+        except RuntimeError:
+            pass  # dialog closed while loading
 
     def _on_proposed(self, ok, title, body, files):
         if not ok:
@@ -107,7 +110,10 @@ class SmartCommitDialog(QDialog):
             ok, m = self.c.smart_commit(self.name, self._msg)
         except Exception as e:  # noqa: BLE001
             ok, m = False, str(e)
-        self._committed.emit(ok, m)
+        try:
+            self._committed.emit(ok, m)
+        except RuntimeError:
+            pass  # dialog closed while loading
 
     def _on_committed(self, ok, m):
         if ok:

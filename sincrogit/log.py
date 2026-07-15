@@ -12,9 +12,20 @@ _FORMAT = "%(asctime)s %(levelname)-7s [%(name)s] %(message)s"
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
+def _resolve_level(level) -> int:
+    """A logging level from either a name ('DEBUG'/'warning') or a number (10).
+    YAML parses `level: 10` as an int, which str().upper() would turn into the
+    bogus attribute '10' and silently fall back to INFO — so handle ints first."""
+    if isinstance(level, bool):   # bool is an int subclass; not a real level
+        return logging.INFO
+    if isinstance(level, int):
+        return level
+    return getattr(logging, str(level).strip().upper(), logging.INFO)
+
+
 def setup_logging(log_file: str | None, level: str = "INFO") -> logging.Logger:
     logger = logging.getLogger("sincrogit")
-    logger.setLevel(getattr(logging, str(level).upper(), logging.INFO))
+    logger.setLevel(_resolve_level(level))
     logger.handlers.clear()
     logger.propagate = False
 

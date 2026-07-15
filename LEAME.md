@@ -36,13 +36,16 @@ trabajo te siga entre máquinas con esfuerzo casi nulo.
 
 ## ¿Ya dominas Git? El minuto del escéptico
 
-Un demonio que amendea commits y hace force-push de refs *suena* a algo que mantener
+Un demonio que fotografía tu repo y hace force-push de refs *suena* a algo que mantener
 lejos de tus repos — así que aquí va, por delante, exactamente qué toca y qué no toca
 nunca:
 
-- **El único commit que reescribe es el suyo.** El único commit `sincro: WIP autosnapshot` de
-  la punta es el que se amendea; tus commits no se amendean, rebasan ni descartan nunca,
-  y cada snapshot reemplazado sigue recuperable en el reflog (≈30 días).
+- **Nunca ocupa tu punta.** Los snapshots son commits construidos con un índice PRIVADO
+  y registrados en un ref lateral (`refs/sincro/wip/<rama>`) — tu `git log` muestra solo
+  tus commits y los sellados, tu staging no se toca jamás, y `git status` sigue diciendo
+  la verdad sobre tu worktree. Cualquier herramienta git ve un repo normal.
+- **Tus commits no se reescriben nunca.** Nada tuyo se amendea, rebasa ni descarta, y
+  cada snapshot sigue recuperable vía el reflog del ref lateral (≈30 días).
 - **Tu rama nunca recibe un force-push.** Solo recibe commits sellados, siempre como
   fast-forward. `--force` se usa únicamente sobre los refs laterales por máquina de
   SincroGit (`refs/autosnap/<user>/<host>/<rama>`), donde cada máquina es la única que
@@ -51,11 +54,15 @@ nunca:
   rebase? Se detiene, pausa ese repo y te avisa; ambos estados quedan intactos (ver
   [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo)).
 - **Los commits de la máquina van etiquetados.** Todo sellado automático lleva el
-  prefijo `sincro:` — trivial de localizar, aplastar o descartar antes de un PR.
+  prefijo `sincro:` — trivial de localizar, aplastar o descartar antes de un PR. Y un
+  auto-sellado **cede si tienes algo staged** (nunca absorbe un commit que estés
+  preparando a mano) y **reinicia su reloj desde cualquier commit que hagas tú** — un
+  `git commit` manual cuenta como el sello, así que nunca aterriza un checkpoint
+  `sincro:` pegado al tuyo.
 - **Puedes tener cero commits de máquina.** El modo purista (`seal_interval_min: inf`)
-  deja la rama 100 % tuya — solo aterrizan tus Smart Commits — mientras el WIP, el
-  espejo autosnap y el relevo entre máquinas siguen funcionando por debajo (ver
-  [Pragmática vs purista](#pragmática-vs-purista-tú-decides-qué-significa-un-commit)).
+  deja la rama 100 % tuya — solo aterrizan tus Smart Commits — mientras los snapshots,
+  el espejo autosnap y el relevo entre máquinas siguen funcionando en el ref lateral
+  (ver [Pragmática vs purista](#pragmática-vs-purista-tú-decides-qué-significa-un-commit)).
 
 Cómo se implementa cada garantía está documentado en [DISENO.md](DISENO.md) §11. Para
 ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
@@ -66,9 +73,12 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
 **Fase 1 (núcleo local):**
 
 - ✅ Watcher del sistema de ficheros (`watchdog`) + *debounce*.
-- ✅ **Snapshot** cada 5 min: `git commit --amend` sobre un commit WIP (no acumula commits).
+- ✅ **Snapshot** cada 5 min: un commit en un ref lateral privado (`refs/sincro/wip/…`),
+  construido con un índice privado — **invisible para `git log`/`git status`**, sin
+  acumular commits en tu rama y sin tocar jamás tu staging.
 - ✅ Snapshot inicial al arrancar (captura cambios previos, p. ej. tras un reinicio).
-- ✅ **Sellado** cada 6 h: convierte el WIP en commit permanente + crea un WIP nuevo.
+- ✅ **Sellado** cada 6 h: commitea el árbol acumulado de snapshots como UN commit real
+  en la rama (y re-ancla ahí la cadena de snapshots).
 - ✅ **Filtro**: solo versiona automáticamente texto < 1 MB; binarios/grandes a mano.
 - ✅ **Versionado opcional de binarios** (`extra_includes`, p. ej. `**/*.docx`,
   `**/*.pptx`): versiona también los binarios que elijas — con **diff legible para
@@ -96,7 +106,8 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
 - ✅ **Conflictos**: el rebase se aborta, el repo se pausa y se notifica. Nunca force,
   nunca pérdida de datos.
 - ✅ **Autosnap** (espejo en vivo, cada 30 min, solo si hubo cambios): hace `push --force`
-  de `HEAD` (incl. el WIP) a un ref lateral por usuario/máquina `refs/autosnap/<user>/<host>/<rama>`,
+  del **shadow tip** (el último snapshot: sellados + el WIP vivo) a un ref lateral por
+  usuario/máquina `refs/autosnap/<user>/<host>/<rama>`,
   de modo que un fallo total de disco pierde como mucho ~30 min. No toca la rama limpia;
   recuperación entre máquinas desde la CLI (`--autosnaps`) y el panel de control.
 - ✅ **Relevo entre máquinas** (WIP vivo, desacoplado del sellado): cada sync recoge el
@@ -135,7 +146,8 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
   - *Log*: eventos **filtrables por repo, acción, nivel y texto** (lo más nuevo arriba, en vivo).
   - *Settings*: formulario amable sobre los defaults globales (purista, relevo, IA, tema…).
   - *Advanced (YAML)*: editor del `config.yaml` crudo (guardar / guardar y reiniciar).
-- ✅ **Notificaciones** de escritorio (vía Qt) ante conflictos/errores.
+- ✅ **Notificaciones** de escritorio (toast de Windows vía `winotify`; la app de bandeja
+  además las muestra con globos Qt) ante conflictos, relevos y errores.
 - ✅ **Historial / restauración de ficheros** ("máquina del tiempo"): explora las
   versiones pasadas de un fichero (commits sellados + snapshots del reflog + estados
   autosnap fetcheados), con **diff coloreado** frente al fichero actual, y restaura
@@ -186,8 +198,9 @@ de la IA, privacidad por defecto (`cloud_send_content`) y cero dependencias nuev
   `ai.cloud_url`): un único cliente HTTP extra cubre OpenRouter, DeepSeek, Together,
   LM Studio, llama.cpp, Anthropic… en vez de mantener un cliente a medida por
   proveedor. Las API keys siguen en variables de entorno (nunca en el YAML).
-- **`ai.locale`**: mensajes de sellado y Smart Commit en el idioma del usuario (p. ej.
-  español) — un parámetro a nivel de prompt.
+- ✅ **Mensajes en el idioma del usuario** — *hecho*, como **`ai.language`** (`en` | `es`):
+  un parámetro a nivel de prompt, así con `ai.language: es` los mensajes de sellado y Smart
+  Commit salen en español. (Falta solo generalizarlo a locales arbitrarios.)
 - **Overrides de `ai:` por repo**: p. ej. un repo sensible fijado a `mode: local` (solo
   Ollama) mientras el resto puede usar la nube — coherente con los overrides por repo
   existentes.
@@ -213,16 +226,18 @@ cliente git en el panel):
 
 ### TODO — técnico (para desarrolladores)
 
-- **Batería de tests automatizados — la primera tanda YA EXISTE** (`tests/`, pytest,
-  50 tests, ~20 s): los rechazos de restauración (`untracked_collisions` +
-  `modified_unstaged`), el restore selectivo / línea temporal / exportar / búsqueda en
-  el historial, la cirugía del fichero de config, `--doctor`, el aviso de ocupado largo
-  y la precedencia de estados, el renderizado de diffs, y los diálogos de la GUI en
-  offscreen — todo contra repos locales desechables. Se ejecuta con
-  `pip install -e .[dev]` y `pytest`. **Sigue faltando**: los caminos multi-máquina
-  (clasificación de `work_relationship`, el fast-forward del relevo, aborto + pausa en
-  conflicto de rebase, idempotencia de sellado/push — necesitan *remotos* desechables),
-  y una CI que lo ejecute en cada push.
+- **Batería de tests automatizados — YA EXISTE** (`tests/`, pytest, ~90 tests, ~1 min):
+  los rechazos de restauración y el restore seguro ante renames, el restore selectivo /
+  línea temporal / exportar / búsqueda en el historial, la cirugía del fichero de config,
+  `--doctor`, el aviso de ocupado largo y la precedencia de estados, el renderizado de
+  diffs, los diálogos de la GUI en offscreen — **y los caminos multi-máquina contra
+  remotos bare desechables**: la clasificación de `work_relationship` (los cuatro
+  veredictos), el fast-forward del relevo (auto + ask + re-validación), el rechazo por
+  contenido no capturable, el relevo a través de un rename, las dos formas de conflicto
+  de rebase (aborto + pausa), el bucle de reconciliación tras un push rechazado, la
+  idempotencia de sellado/push y la poda de refs autosnap. Se ejecuta con
+  `pip install -e .[dev]` y `pytest`. **Sigue faltando**: una CI que lo ejecute en cada
+  push.
 
 ## Instalación
 
@@ -384,13 +399,16 @@ python -m sincrogit -c config.yaml --sync-once       # un pull+push y sale
 ## Cómo funciona (resumen)
 
 ```
-... ── sellado_N ── WIP        ← HEAD, se amendea cada 5 min (snapshot)
-cada 6h: el WIP se sella (mensaje descriptivo) y nace un WIP nuevo encima
-resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo)
+rama:    ... ── sellado_N ──────────────────── sellado_N+1   ← HEAD (tuyos + sellados)
+                     │                              ▲
+shadow:              └── s1 ── s2 ── … ── s42 ──────┘   refs/sincro/wip/<rama>
+                        (un commit-snapshot cada ~5 min, con un índice PRIVADO —
+                         invisible para git log/status)
+cada 6h: el árbol acumulado de snapshots se convierte en UN commit sellado en la rama
 ```
 
-- **Deshacer un error reciente**: el último snapshot está en `HEAD`; los estados guardados
-  anteriores de la ventana, en `git reflog` (resolución ≈5 min).
+- **Deshacer un error reciente**: los snapshots son commits reales del ref lateral
+  (resolución ≈5 min) — explóralos/restáuralos desde File history / Time machine.
 - **Volver a ayer**: `git checkout`/`restore` desde el commit sellado correspondiente.
 - **Fallo total de disco**: recupera en otra máquina desde el ref `autosnap` (≤30 min).
 
@@ -405,12 +423,12 @@ olvida de commitear y cambia de máquina. Los compromisos deliberados:
   atómicos. Cuando quieras un commit curado, usa **Smart Commit** (mensaje Conventional
   Commits propuesto por IA). El prefijo `sincro:` distingue los commits de la máquina de
   los tuyos.
-- **El WIP es un "botón de guardar" continuo — para ficheros *guardados*.** Un único commit
-  se amendea cada ~5 min, así que cualquier estado guardado anterior es recuperable del
-  reflog (resolución ≈5 min). Fotografía lo que está en disco, **no** el buffer no guardado
-  de tu editor — así que su valor es el *rollback*, no sobrevivir a un crash (un corte de
-  luz con el disco intacto no pierde nada de todos modos; los ficheros guardados ya están
-  en disco).
+- **La cadena de snapshots es un "botón de guardar" continuo — para ficheros
+  *guardados*.** Cada ~5 min aterriza un commit en el ref lateral, así que cualquier
+  estado guardado anterior es recuperable (resolución ≈5 min). Fotografía lo que está en
+  disco, **no** el buffer no guardado de tu editor — así que su valor es el *rollback*,
+  no sobrevivir a un crash (un corte de luz con el disco intacto no pierde nada de todos
+  modos; los ficheros guardados ya están en disco).
 - **El backup está desacoplado del historial.** `autosnap` hace force-push del estado vivo
   a un ref lateral por máquina cada ~30 min, mientras `main` se mantiene limpia (solo
   sellados) → el pull de la otra máquina es siempre un fast-forward limpio. Sirve tanto a la
@@ -440,6 +458,12 @@ seguridad por debajo:
   siguen funcionando por debajo, así que conservas la máquina del tiempo y la recuperación
   ante fallo de disco. Es "Git casi puro" con una red de seguridad invisible — un historial
   presentable incluso junto a un equipo.
+  La única trampa del modo purista — una rama que se estanca en silencio si olvidas hacer
+  Smart Commit — la cubre un recordatorio desactivable (`suggest_commit`, activado por
+  defecto): cuando se acumula trabajo sin sellar y el repo se queda **en calma** (parece
+  que terminaste algo) y hace tiempo del último commit permanente, SincroGit te lo
+  recuerda **una vez** (como mucho a diario). Tu trabajo está respaldado igualmente — el
+  recordatorio es solo para mantener al día tu *historial de rama*.
 
   > **Nota:** incluso en modo purista sigues teniendo continuidad automática entre
   > máquinas, porque el **[relevo en vivo](#relevo-entre-máquinas-wip-vivo)** funciona sobre
@@ -557,10 +581,10 @@ integración**:
       debounce_sec: 5             # los agentes escriben a ráfagas; asienta rápido
   ```
 
-  Los snapshots son amends locales (cero red), así que la cadencia fina no cuesta nada
-  en remoto — el `git gc` diario empaqueta los objetos sueltos extra. Puedes apurar
-  hasta casi un snapshot por ráfaga (`snapshot_interval_sec: 5`; el suelo real es el
-  debounce) a cambio de un reflog más ruidoso. Ver
+  Los snapshots son commits locales del ref lateral (cero red), así que la cadencia fina
+  no cuesta nada en remoto — el `git gc` diario empaqueta los objetos sueltos extra.
+  Puedes apurar hasta casi un snapshot por ráfaga (`snapshot_interval_sec: 5`; el suelo
+  real es el debounce) a cambio de una cadena de snapshots más larga. Ver
   [Afinar un repo "en caliente"](#afinar-un-repo-en-caliente).
 - **Rollback de cualquier cosa que hiciera.** ¿Una mala edición del agente de hace una
   hora? *File history* → restaura el fichero (o el repo entero) a justo antes.
@@ -586,7 +610,7 @@ foto). Leyenda: ✅ sí · ➖ parcial · ❌ no.
 
 | Herramienta | Snapshots sin acumular commits | Demonio "configura y olvida" | Mensajes de commit con IA | Relevo de WIP entre máquinas | Nunca auto-fusiona / force-pushea tu rama | GUI de máquina del tiempo |
 |------|------|------|------|------|------|------|
-| **SincroGit** | ✅ un único WIP amendado | ✅ demonio de bandeja | ✅ auto-sellado + Smart Commit (Ollama → Gemini → fallback) | ✅ refs por máquina + eventos de bloqueo/desbloqueo | ✅ | ✅ por fichero, app de bandeja |
+| **SincroGit** | ✅ ref lateral shadow (invisible para log/status) | ✅ demonio de bandeja | ✅ auto-sellado + Smart Commit (Ollama → Gemini → fallback) | ✅ refs por máquina + eventos de bloqueo/desbloqueo | ✅ | ✅ por fichero, app de bandeja |
 | [jujutsu (jj)](https://github.com/jj-vcs/jj) | ✅ mismo modelo (working copy = un commit amendado) | ➖ al guardar, vía watchman | ❌ (herramientas externas) | ❌ solo local | ✅ | ❌ CLI (`jj op restore`) |
 | [GitButler](https://github.com/gitbutlerapp/gitbutler) | ➖ snapshots del oplog alrededor de operaciones | ➖ app de escritorio | ✅ interactivo (Ollama/OpenAI/Anthropic) | ❌ | ➖ force-pushea sus ramas virtuales | ➖ restauración a nivel de proyecto, GUI de escritorio |
 | [dura](https://github.com/tkellogg/dura) | ❌ un commit por cambio (ramas sombra) | ✅ demonio | ❌ | ❌ (sin remoto) | ✅ (nunca pushea) | ❌ |
@@ -609,10 +633,11 @@ mecánica del relevo.
 
 ### jj (jujutsu): el pariente más cercano
 
-[jj](https://github.com/jj-vcs/jj) merece nota propia: es la única otra herramienta
-construida sobre la idea central de SincroGit — la working copy **es** un único commit,
-amendado en cada snapshot, sin acumular commits — y su `jj op log` / `jj op restore` es
-una verdadera máquina del tiempo local. La diferencia es de alcance y dirección:
+[jj](https://github.com/jj-vcs/jj) merece nota propia: es el pariente más cercano en
+espíritu — la working copy se captura continuamente como commits, sin staging manual —
+y su `jj op log` / `jj op restore` es una verdadera máquina del tiempo local. (SincroGit
+guarda esas capturas en un ref lateral invisible, así que, a diferencia de jj, la
+superficie git de tu repo no se toca.) La diferencia es de alcance y dirección:
 
 - **jj es un VCS que adoptas.** Una CLI nueva y un modelo mental nuevo (convive con
   remotos git, pero *tú* dejas de teclear `git`). Su red de seguridad es solo local: sin
@@ -708,20 +733,41 @@ sobreescribibles por repo):
 
 | Clave | Por defecto | Significado |
 |-------|-------------|-------------|
-| `snapshot_interval_sec` | 300 | Cada cuánto se amendea el WIP (5 min) |
+| `snapshot_interval_sec` | 300 | Cada cuánto aterriza un snapshot en el ref lateral (5 min) |
 | `debounce_sec` | 25 | Espera tras el último cambio antes del snapshot |
-| `seal_interval_min` | 360 | Cada cuánto se sella un commit permanente (6 h) |
-| `autosnap` | true | Espejo en vivo de HEAD a `refs/autosnap/<user>/<host>/<rama>` (recuperación ante fallo de disco + relevo) |
+| `seal_interval_min` | 360 | Cada cuánto se sella un commit permanente (6 h). `inf`/`off` = modo purista (commit a mano) |
+| `pull_interval_min` | 10 | Cada cuánto hacer fetch; pull (rebase) solo si el remoto adelanta (10 min) |
+| `autosnap` | true | Espejo en vivo del último snapshot a `refs/autosnap/<user>/<host>/<rama>` (recuperación ante fallo de disco + relevo) |
 | `autosnap_interval_min` | 30 | Cada cuánto se hace force-push del espejo (solo si cambió) |
 | `live_handoff` | auto | Recoger el WIP vivo de tu otra máquina: `auto` (fast-forward + notifica), `ask` (aplicar a un clic), `off`. Ver [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo) |
 | `track_current_branch` | false | Seguir la rama **actual** en vez de pausar fuera de `branch` (flujo de feature branches; se acopla con el modo purista). Opt-in |
 | `suggest_excludes` | true | Sugerir (una vez, notificación) añadir una carpeta ruidosa a `extra_excludes` — nunca auto-edita |
+| `suggest_commit` | true | **Solo modo purista:** recordar (una vez/día, en un momento de calma) hacer Smart Commit cuando se acumula trabajo sin sellar en una rama estancada. Ignorado con auto-sellado activo |
 | `max_file_bytes` | 1048576 | Tamaño máximo de fichero a versionar (1 MB) |
 | `extra_excludes` | — | Patrones estilo `.gitignore` a excluir |
 | `extra_includes` | — | patrones versionados aunque sean binarios (p. ej. `**/*.docx`, `**/*.pptx`) |
 | `max_include_bytes` | 26214400 | tope de tamaño (25 MB) para `extra_includes` |
+| `push` | true | Empujar los commits sellados al remoto |
+| `pull` | true | Pull periódico (rebase) desde el remoto |
+| `git_timeout_sec` | 60 | Timeout para las operaciones git de red (fetch/push) |
 | `pandoc_path` | `pandoc` | **(top-level)** ruta a pandoc para diffs legibles de `.docx` |
 | `theme` | `auto` | **(top-level)** tema de la GUI: `auto` (sigue a Windows), `light`, `dark` |
+
+La sección `ai:` (generación de mensajes — top-level, no por repo; la API key va en
+una variable de entorno, nunca en el fichero):
+
+| Clave | Por defecto | Significado |
+|-------|-------------|-------------|
+| `ai.mode` | `hybrid` | `hybrid` (Ollama → nube → determinista), `local`, `cloud`, `none` |
+| `ai.cloud_provider` | `gemini` | Proveedor de nube |
+| `ai.cloud_model` | `gemini-2.5-flash-lite` | Modelo de nube |
+| `ai.cloud_send_content` | false | Si es false, a la nube solo van `--stat` + nombres de fichero (privacidad) |
+| `ai.language` | `en` | Idioma del mensaje de commit (`en` / `es`) |
+| `ai.ollama_url` | `http://localhost:11434` | Endpoint local de Ollama |
+| `ai.ollama_model` | `llama3.2` | Modelo local de Ollama |
+| `ai.timeout_sec` | 30 | Timeout por proveedor de la petición IA |
+| `ai.max_diff_chars` | 6000 | Máximo de caracteres de diff enviados al modelo |
+| `ai.api_key_env` | `SINCROGIT_GEMINI_KEY` | Variable de entorno con la API key de nube |
 
 Los valores se **validan al cargar**: los campos numéricos aceptan números o strings
 numéricos (`"300"`), y un booleano, un negativo o un valor sin sentido fallan al arrancar

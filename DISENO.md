@@ -32,30 +32,31 @@
 
 ---
 
-## 2. Modelo conceptual: dos niveles
+## 2. Modelo conceptual: dos niveles (el diseño "shadow")
 
-El truco para conciliar *"snapshot casi instantáneo"* con *"no quiero miles de commits"* es separar dos niveles:
+El truco para conciliar *"snapshot casi instantáneo"* con *"no quiero miles de commits"* — Y con *"mi `git log`/`git status` tienen que seguir siendo míos"* — es separar dos niveles, manteniendo el rápido FUERA de la rama del usuario:
 
-| Nivel | Qué es | Frecuencia | Visible en historial |
+| Nivel | Qué es | Frecuencia | Visible en `git log` |
 |-------|--------|-----------|----------------------|
-| **WIP (snapshot)** | Un **único** commit en la punta (`HEAD`) que se **amend**ea con el estado actual | Cada ~5 min (con debounce) | No (es transitorio, se sella o se reescribe) |
-| **Sellado (historia)** | El WIP se "congela" con un mensaje IA descriptivo y se crea un WIP nuevo encima | Cada ~6 h | Sí (commit permanente) |
+| **Snapshot (shadow)** | Un commit construido con un **índice privado** (`.git/sincro-index`) y añadido a un **ref lateral** `refs/sincro/wip/<rama>` — HEAD, el índice del usuario y su worktree no se tocan nunca | Cada ~5 min (con debounce) | No (ref lateral; cualquier herramienta git ve un repo normal) |
+| **Sellado (historia)** | El árbol acumulado de snapshots se commitea como **un commit real** en la rama (`commit-tree` + `update-ref`); la cadena shadow **se re-ancla** ahí | Cada ~6 h | Sí (commit permanente) |
 
 ```
-... ── sellado_N ── WIP        ← HEAD (se amendea cada ~5 min)
-                     │
-       cada 6h ──────┘ se sella (reword con mensaje IA) y nace un WIP nuevo encima
-
-resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
+rama:    ... ── sellado_N ─────────────────────── sellado_N+1   ← HEAD (solo commits reales)
+                     │                                 ▲
+shadow:              └── s1 ── s2 ── s3 ── … ── s42 ───┘  refs/sincro/wip/<rama>
+                        (un commit-snapshot cada ~5 min; al sellar, la cadena se
+                         re-ancla en sellado_N+1 y la vieja queda en el reflog del
+                         ref lateral ~30 días)
 ```
 
 **Por qué funciona:**
 
-- El estado guardado actual se commitea cada ~5 min → un **punto de rollback** con resolución ~5 min (`HEAD` = último snapshot, los anteriores en el reflog). OJO: esto *no* es protección ante cortes de luz — los ficheros guardados sobreviven al corte en el disco igualmente, y los buffers no guardados nunca se capturan; el valor es la máquina del tiempo.
-- Como se hace `amend`, no se acumulan cientos de commits: solo **~4 commits/día** (uno cada 6 h).
-- El historial "limpio" (sellados) es lo único que viaja al remoto → **pull siempre limpio, sin force-push** (ver §4).
+- El estado guardado actual se commitea cada ~5 min → un **punto de rollback** con resolución ~5 min (la punta shadow = último snapshot; los anteriores son commits reales de la cadena, y las cadenas pre-sellado quedan en el reflog del ref lateral). OJO: esto *no* es protección ante cortes de luz — los ficheros guardados sobreviven al corte en el disco igualmente, y los buffers no guardados nunca se capturan; el valor es la máquina del tiempo.
+- Los snapshots no aparecen jamás en la rama: solo aterrizan **~4 commits/día** (un sellado cada 6 h) — y `git status` sigue mostrando los cambios sin commitear reales del usuario, con su staging intacto.
+- El historial "limpio" (sellados) es lo único que viaja a la rama del remoto → **pull siempre limpio, sin force-push** (ver §4).
 
-> **Red de seguridad fina:** cada `amend` deja el snapshot anterior como commit *unreachable* en el **reflog** (≈30 días por defecto). Es decir, aunque el historial visible solo tenga 1 commit por ventana, internamente puedes recuperar estados intermedios con `git reflog`. *(Opcional, ver §12: una rama `autosnap` con commits reales cada ~5 min si quieres historial intra-ventana navegable.)*
+> **Historia de este diseño:** la v0.1 mantenía el snapshot como un único commit WIP *en la punta*, amendeado in situ. Funcionaba, pero ocupaba HEAD (confundía a toda herramienta git y secuestraba `git status`/staging). La v0.2 movió los snapshots al ref shadow — mismos ritmos, mismas ventanas de recuperación, invisible. Los repos antiguos se migran solos al arrancar (el WIP de la punta pasa al ref shadow y la rama vuelve a su padre; las ediciones sin sellar reaparecen como cambios sin commitear normales).
 
 ---
 
@@ -65,21 +66,26 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 1. Validar que es repo git (una carpeta ausente o inválida salta ese repo; los demás
    siguen). El remoto se comprueba perezosamente en cada sync (`has_remote`); estar en la
    rama configurada es trabajo de la guarda de rama (§11).
-2. Asegurar que existe un **WIP** en la punta (si no, crear uno vacío) y registrar el
-   repo en el watcher.
+2. **Migrar el WIP legado de la punta** si existe (repos v0.1; ver §2) y asegurar que
+   existe el **ref shadow** (anclado en HEAD; se pone `core.logAllRefUpdates=always`
+   local para que el ref lateral tenga reflog), y registrar el repo en el watcher.
 3. **Snapshot inicial**, antes de tocar la red: captura los cambios previos a esta
    ejecución (p. ej. ediciones hechas con SincroGit apagado, o tras un reinicio).
 4. **Sync inicial en un hilo de fondo** — una red lenta nunca retrasa la red de
-   seguridad local: `fetch` + (solo si el remoto adelanta) rebase del WIP encima
+   seguridad local: `fetch` + (solo si el remoto adelanta) rebase de la rama local
    (`--autostash`), exactamente como el pull periódico (§3.4).
    - **Si hay conflicto** → `git rebase --abort`, se **pausa el autosync de ese repo**, se notifica al usuario y se registra en log. **Nunca** se resuelve de forma destructiva ni se hace force. (Esto es raro en uso secuencial, pero la política es: ante la duda, no perder datos.)
 
 ### 3.2 Ciclo de snapshot (cada ~5 min, con debounce)
 - El **watcher** (eventos del sistema de ficheros) marca el repo como *dirty* y reinicia un debounce (p. ej. 20-30 s sin cambios).
 - Cuando el debounce se asienta **y** ha pasado ≥5 min desde el último snapshot:
-  1. Calcular ficheros candidatos y aplicar el **filtro** (§5).
-  2. `git add <solo los candidatos>`.
-  3. Si hay algo staged: `git commit --amend --no-edit` (mensaje WIP estático tipo `sincro: WIP autosnapshot`).
+  1. Sincronizar el **índice privado** con la punta shadow (barato en régimen), difearlo
+     contra el worktree — el "qué cambió desde el último snapshot" exacto — y aplicar el
+     **filtro** (§5) a los candidatos.
+  2. `git add <solo los candidatos>` EN el índice privado (`GIT_INDEX_FILE`).
+  3. `write-tree`; si el árbol difiere del de la punta shadow (con textconv, así un
+     reguardado de `.docx` solo-estilo no cuenta): `commit-tree` + `update-ref` del ref
+     shadow (`sincro: snapshot`). HEAD, el índice del usuario y `git status` intactos.
 - Sin cambios → no se hace nada.
 - **Anti-inanición:** una fuente que nunca se asienta (un build largo, un log que escribe
   dentro del repo) reinicia el debounce sin parar — así que pasadas **2× el intervalo de
@@ -90,10 +96,22 @@ resultado: ... ── sellado_N ── sellado_N+1 ── WIP(nuevo) ← HEAD
 ### 3.3 Sellado (cada 6 h)
 **Único disparador automático:** temporizador de **6 h desde el último sellado**.
 
-1. Si el WIP no tiene cambios respecto a `sellado_N` → **no sellar** (no ensuciar el historial).
-2. Generar mensaje con IA a partir de `git diff sellado_N..WIP` (§6).
-3. `git commit --amend -m "<mensaje IA>"` → el WIP pasa a ser `sellado_N+1`.
-4. Crear WIP nuevo vacío encima: `git commit --allow-empty -m "sincro: WIP autosnapshot"`.
+0. **Los commits del propio usuario cuentan como sellos.** Al vencer el temporizador, si
+   hay un commit permanente (no-WIP) más nuevo que la base del reloj — un `git commit`
+   manual hecho en una terminal, o commits que integró un pull — la ventana **se reinicia
+   desde él** en vez de apilar un checkpoint `sincro:` pegado al suyo. (El "external
+   commit detected; seal clock reset" de la v0.1, portado al modelo shadow; se comprueba
+   solo cuando un sello vence, así que no cuesta nada en régimen. El recordatorio purista
+   se refresca de la misma fuente.)
+1. Si el usuario tiene algo **staged** (un commit manual en preparación) → **ceder** este
+   ciclo; un auto-sellado nunca absorbe un commit hecho a mano. (Un Smart Commit
+   explícito sí procede — lo pidió el usuario.)
+2. Snapshot final; si el árbol del snapshot coincide con el de HEAD (con textconv) →
+   **no sellar** (no ensuciar el historial).
+3. Generar mensaje con IA a partir de `git diff HEAD <árbol-snapshot>` (§6).
+4. `commit-tree <árbol-snapshot> -p HEAD -m "<mensaje IA>"` + avanzar la rama, refrescar
+   el índice del usuario (reset mixed; el worktree — que ES ese árbol — no se toca) y
+   **re-anclar la cadena shadow** en el sellado nuevo.
 5. **Push** (§4).
 
 > No hay sellado por inactividad ni por apagado. Para forzar un sellado+push puntual (p. ej. justo antes de irme al portátil): *Seal now* / *Seal+Push* por repo en la bandeja, `--seal-once` desde la CLI, o un Smart Commit.
@@ -105,8 +123,16 @@ Además del pull de arranque (§3.1), el demonio comprueba el remoto cada **10 m
 2. Comprobar si el remoto tiene commits nuevos:
    `git rev-list --count HEAD..<remote>/<branch>`.
    - Si es **0** → no hay nada que traer → **no se hace nada** (caso habitual mientras trabajo en esta máquina).
-   - Si es **> 0** → **`git pull --rebase --autostash`** (rebasa mi WIP local encima de lo nuevo).
-3. **Conflicto en el rebase** → `git rebase --abort`, **pausar autosync de ese repo + notificar**; resolver a mano. Nunca force, nunca pérdida de datos.
+   - Si es **> 0** → primero un **snapshot** (la garantía de recuperación de todo lo de
+     abajo) y después **`git rebase --autostash <remote>/<rama>`** — las ediciones del
+     usuario viven sin commitear en el worktree, y el autostash las lleva por encima
+     del rebase.
+3. Dos formas de conflicto, ambas → **pausar autosync de ese repo + notificar**, resolver
+   a mano (nunca force, nunca pérdida de datos):
+   - el **rebase en sí conflicta** → `git rebase --abort`, árbol intacto;
+   - el rebase termina pero **re-aplicar las ediciones sucias conflicta** → git deja
+     marcadores en los ficheros afectados (y una entrada de stash); el estado exacto
+     pre-pull está a un restore de la máquina del tiempo gracias al snapshot del paso 2.
 
 > Como el uso es **secuencial** (nunca las dos máquinas a la vez), mientras trabajo en una, la otra no pushea → el paso 2 da 0 y el pull no se dispara. Al sentarme en la otra máquina, en ≤10 min coge sola lo que sellé en la primera.
 
@@ -116,9 +142,10 @@ Además del pull de arranque (§3.1), el demonio comprueba el remoto cada **10 m
 
 **Regla de oro: solo se pushean commits sellados; el WIP nunca sale de la máquina.**
 
-- Push: empujar el **último commit sellado** — el commit no-WIP más reciente, resuelto por
-  mensaje y no por el `HEAD~1` posicional (ver §11) — nunca el WIP vivo:
-  `git push origin <sha-sellado>:refs/heads/<rama>` → así el remoto recibe historia inmutable y el WIP local se queda por delante.
+- Push: en el modelo shadow **HEAD solo contiene sellados y commits del usuario** (el WIP
+  vive en el ref lateral `refs/sincro/wip/<rama>`, §2), así que empujar HEAD es seguro por
+  construcción y nunca filtra el WIP: `git push origin HEAD:refs/heads/<rama>` → el remoto
+  recibe historia inmutable. (Un backlog sin subir viaja implícito y reintenta en el próximo sync.)
 - Como los sellados son inmutables y nunca se reescriben, **el push es siempre fast-forward** y el **pull de la otra máquina es siempre limpio**. No hace falta force-push en ningún caso del flujo normal.
 
 **Handoff entre máquinas (uso secuencial):**
@@ -133,11 +160,11 @@ Sobremesa: arranca → pull --rebase (limpio) → continúa...
 
 ### 4.1 Autosnap (espejo en vivo) — recuperación ante desastre
 
-Como sellar cada 6 h dejaría hasta 6 h de trabajo fuera del remoto, **autosnap** desacopla el *backup remoto* del *historial*: cada **30 min** (y solo si hubo cambios) se hace `push --force` de `HEAD` (sellados **+ el WIP vivo**) a un ref lateral **por usuario y máquina** `refs/autosnap/<user>/<host>/<rama>` (el namespace se detalla en §4.2).
+Como sellar cada 6 h dejaría hasta 6 h de trabajo fuera del remoto, **autosnap** desacopla el *backup remoto* del *historial*: cada **30 min** (y solo si hubo cambios) se hace `push --force` del **shadow tip** (`refs/sincro/wip/<rama>` — sellados **+ el WIP vivo**) a un ref lateral **por usuario y máquina** `refs/autosnap/<user>/<host>/<rama>` (el namespace se detalla en §4.2).
 
 - **No ensucia la rama:** nadie pullea ese ref para trabajar; la rama `main` sigue recibiendo solo sellados → pull siempre limpio. Es la excepción deliberada a "el WIP no sale de la máquina", acotada a un ref de backup.
 - **RPO ante fallo total de disco ≈ 30 min** (en vez de 6 h). En la otra máquina: *Fetch autosnaps* → explorar/restaurar el último estado (fichero o repo entero).
-- **Coste:** hasta ~48 push/día/repo en trabajo activo (force-push barato; **nada** en repos inactivos, porque solo sube si HEAD cambió). Objetos huérfanos en el remoto hasta su GC.
+- **Coste:** hasta ~48 push/día/repo en trabajo activo (force-push barato; **nada** en repos inactivos, porque solo sube si el shadow tip cambió desde el último espejo). Objetos huérfanos en el remoto hasta su GC.
 - **Corte de luz / crash de SO** no necesita nada especial del autosnap: los ficheros guardados sobreviven en el disco local, y el snapshot de 5 min / el `reflog` dan los puntos de rollback. El autosnap es para el caso *la-máquina-ya-no-está* (y el relevo, §4.2).
 
 ### 4.2 Relevo entre máquinas (WIP vivo)
@@ -152,29 +179,30 @@ dispara). Dos puntos de diseño:
   *propias* otras máquinas frente a las de un compañero, así el relevo solo baja
   `refs/autosnap/<user>/*` — barato y *team-safe* (nunca toca `main`/feature, solo refs
   laterales personales).
-- **Comparar por CONTENIDO de trabajo, no por ancestría.** Sutileza clave: el WIP se
-  *amenda* continuamente, así que en cuanto una máquina adopta el WIP de otra y edita, su
-  nuevo WIP es *hermano* del del peer (mismo padre = el sello base), nunca descendiente — la
-  ancestría reportaría divergencia constantemente. En su lugar
-  `GitRepo.work_relationship(mine, theirs)` compara, respecto al merge base, las *rutas que
-  cambió cada lado*: si `theirs` coincide con `mine` en toda ruta que yo cambié (y tiene
-  más) es `theirs_contains` → seguro adoptar; si no, se clasifica `equal` / `mine_contains`
-  / `diverged`.
+- **Comparar por CONTENIDO de trabajo, no por ancestría.** Sutileza clave: las cadenas de
+  snapshots de dos máquinas son *hermanas* (ambas ancladas en el sello compartido), nunca
+  descendientes una de otra — la ancestría reportaría divergencia constantemente. En su
+  lugar `GitRepo.work_relationship(mine, theirs)` compara las dos puntas shadow, respecto
+  al merge base, por las *rutas que cambió cada lado*: si `theirs` coincide con `mine` en
+  toda ruta que yo cambié (y tiene más) es `theirs_contains` → seguro adoptar; si no, se
+  clasifica `equal` / `mine_contains` / `diverged`.
 
 Comportamiento — `live_handoff` es un mando de 3 estados (`auto` por defecto | `ask` | `off`):
-- **`theirs_contains` → fast-forward seguro** (`git reset --hard` al peer): demostrablemente
-  sin pérdida (el peer tiene todo mi contenido de las rutas que cambié; solo se descarta un
-  WIP vacío), reversible vía reflog, y se **rechaza (con notificación)** si pisara un fichero
-  untracked (`untracked_collisions`) **o** si hay ediciones locales que el snapshot no pudo
-  capturar (`modified_unstaged`: un fichero rastreado que creció más del límite, se volvió
-  binario o casa un exclude — esas ediciones no existen en ningún sitio de git, ni siquiera
-  el reflog, así que el reset las destruiría). En `auto` se aplica al momento **y se lanza una notificación de
+- **`theirs_contains` → apply seguro, primero-el-contenido**: el WORKTREE se hace coincidir
+  con el árbol del snapshot del peer (escrituras/borrados solo-worktree de las rutas que
+  difieren — el HEAD y la rama del usuario no se mueven jamás; la historia sellada se
+  reconcilia por el pull normal) y un snapshot de cierre lo registra en MI cadena.
+  Demostrablemente sin pérdida (el peer tiene todo mi contenido de las rutas que cambié),
+  reversible vía el reflog shadow, y se **rechaza (con notificación)** allí donde tocaría
+  contenido que los snapshots no tienen (`untracked_collisions`, o ediciones locales que
+  el filtro rechazó — no existen en ningún sitio de git, así que sobrescribirlas las
+  destruiría). En `auto` se aplica al momento **y se lanza una notificación de
   bandeja** (el nivel b nunca es *silencioso* — que el working tree cambie bajo tus pies
   sorprende aunque no se pierda nada). En `ask` NO se aplica: se registra el candidato
   (`pending_handoff`, expuesto en `status()` y el panel), se notifica, y un **Apply** de un
   clic (`Engine.apply_handoff` / `--apply-handoff`) revalida desde cero (re-fetch +
   re-clasificar + re-chequear colisiones, porque el peer pudo moverse) antes del
-  fast-forward (nivel a / consentimiento).
+  apply (nivel a / consentimiento).
 - **`diverged` → avisar, nunca auto-merge.** A propósito sin merge 3-way automático de dos
   montones de trabajo en curso sin revisar (un árbol roto en silencio es el peor desenlace).
   Avisa **una vez** por estado distinto del peer y deja ambos intactos; el usuario resuelve
@@ -236,7 +264,7 @@ Se generan al sellar (automático) y al hacer un **commit manual** (Smart Commit
 - **Commit manual (Smart Commit) → Conventional Commits** (`feat:`/`fix:`/`docs:`/`refactor:`/…). El usuario lo dispara desde la GUI, la IA **propone** el mensaje (editable) y al confirmar se sella el WIP actual con él y se **reinicia el temporizador de 6 h**.
 
 **Entrada al modelo:**
-- *Sellado automático:* `git diff sellado_N..WIP --stat` + diff troncado → mensaje `sincro:` conciso.
+- *Sellado automático:* `git diff <árbol-HEAD> <árbol-snapshot> --stat` + diff troncado (la ventana sellada: árbol de HEAD → árbol del último snapshot) → mensaje `sincro:` conciso.
 - *Commit manual:* diff **desde el último commit manual** (saltando los `sincro:`) hasta el WIP → la IA resume la *unidad de trabajo* completa. El commit solo contiene el delta del WIP, así que el cuerpo anota honestamente que es un **resumen acumulado** (parte del código está en sellados `sincro:` previos).
 
 ---
@@ -270,14 +298,14 @@ sincrogit/
 
 **Librerías:**
 - **`watchdog`** — eventos de sistema de ficheros.
-- **git vía `subprocess`** (no GitPython) — control exacto de `amend`/`push HEAD~1`/`rebase`, comportamiento transparente y predecible.
+- **git vía `subprocess`** (no GitPython) — control exacto de los snapshots por plumbing/`update-ref`/`rebase`, comportamiento transparente y predecible.
 - **`urllib`** (stdlib) — llamadas a la IA de nube y al **Ollama** local por HTTP (sin dependencias extra).
 - **`pyyaml`** — config.
 - **`PyQt5`** — bandeja del sistema + panel de control (solo para `--tray`).
 - **`logging`** (a fichero rotativo) + **`winotify`** — avisos (p. ej. "autosync pausado por conflicto").
 - Scheduling: bucle propio con un *tick* y temporizadores por repo (sin dependencias).
 
-**Decisión:** envolver el CLI de `git` con `subprocess` en vez de GitPython, porque las operaciones finas (amend continuo, push de `HEAD~1`, rebase con política de conflicto) son más claras y robustas con el CLI.
+**Decisión:** envolver el CLI de `git` con `subprocess` en vez de GitPython, porque las operaciones finas (snapshots por plumbing, cirugía de refs, rebase con política de conflicto) son más claras y robustas con el CLI.
 
 ---
 
@@ -286,11 +314,11 @@ sincrogit/
 ```yaml
 # config.yaml
 defaults:
-  snapshot_interval_sec: 300     # cada cuánto se amendea el WIP (5 min)
+  snapshot_interval_sec: 300     # cada cuánto aterriza un snapshot en el ref lateral (5 min)
   debounce_sec: 25               # espera tras el último cambio antes de snapshot
   seal_interval_min: 360         # commit "real" + push cada 6h (timeline permanente)
   pull_interval_min: 10          # fetch cada 10 min; pull solo si hay algo nuevo
-  autosnap: true                 # espejo en vivo de HEAD a refs/autosnap/<user>/<host>/<rama>
+  autosnap: true                 # espejo en vivo del último snapshot a refs/autosnap/<user>/<host>/<rama>
   autosnap_interval_min: 30      # force-push del espejo cada 30 min (solo si cambió)
   max_file_bytes: 1048576        # 1 MB
   extra_excludes:                # además del filtro texto/tamaño
@@ -328,7 +356,7 @@ repos:
 
 | Opción | Cómo | Pros | Contras |
 |--------|------|------|---------|
-| **Tarea programada "al iniciar sesión"** ⭐ | Task Scheduler → trigger *At log on*, acción `pythonw.exe -m sincrogit`, ventana oculta, reinicio automático | Corre **en tu sesión de usuario** → tiene acceso a tus **claves SSH / Credential Manager** para el push. Resiliente. | Solo corre con sesión iniciada (suficiente: solo editas logueado). |
+| **Tarea programada "al iniciar sesión"** ⭐ | Task Scheduler → trigger *At log on*, acción `pythonw.exe -m sincrogit --tray`, ventana oculta, reinicio automático | Corre **en tu sesión de usuario** → tiene acceso a tus **claves SSH / Credential Manager** para el push. Resiliente. | Solo corre con sesión iniciada (suficiente: solo editas logueado). |
 | **`pythonw.exe` en carpeta Inicio** | Acceso directo en `shell:startup` | Lo más simple | Menos control de reinicio/logs. |
 | **Servicio Windows real** (NSSM o `pywin32`) | NSSM envuelve el script como servicio | Arranca sin login | ⚠️ Corre como *LocalSystem* → **no ve tus claves SSH / credenciales de usuario** → el **push falla**. Habría que configurar credenciales a nivel de máquina. |
 
@@ -349,7 +377,7 @@ repos:
 
 | Escenario | Qué pasa | Cómo recupero |
 |-----------|----------|---------------|
-| **Corte de luz / crash de SO (disco intacto)** | Los ficheros guardados están en el disco; el último snapshot (≤5 min) está en `HEAD` (WIP) | Nada que recuperar para los ficheros guardados (el disco los tiene). Para *revertir* un estado guardado malo: `git reflog` (resolución ≈5 min). Los buffers sin guardar son cosa de tu editor. |
+| **Corte de luz / crash de SO (disco intacto)** | Los ficheros guardados están en el disco; el último snapshot (≤5 min) está en el ref shadow `refs/sincro/wip/<rama>` | Nada que recuperar para los ficheros guardados (el disco los tiene). Para *revertir* un estado guardado malo: el historial de ficheros, o el reflog del ref shadow (resolución ≈5 min). Los buffers sin guardar son cosa de tu editor. |
 | **"Quiero la versión de ayer"** | Está en los commits sellados | `git checkout`/`git restore` desde el sellado correspondiente. |
 | **Borré algo hace 20 min (dentro de la ventana)** | Snapshot anterior quedó *unreachable* en reflog | `git reflog` + `git checkout`. *(Más cómodo con la rama `autosnap` opcional, §12.)* |
 | **Fallo total de disco** | Lo sellado está en el remoto; el último estado (≤30 min) está en el ref `autosnap` (§4.1) | En otra máquina: *Fetch autosnaps* → restaurar (fichero o repo entero). Pérdida máx ≈ 30 min. Sin autosnap: hasta el último sellado (6 h). |
@@ -364,24 +392,23 @@ repos:
 - **Privacidad del código en la nube:** por defecto en modo híbrido se prioriza Ollama (local); si cae a nube, `cloud_send_content: false` envía solo estadísticas. La API key vive en variable de entorno.
 - **Operaciones git manuales mías** mientras corre el daemon (rebase, checkout de rama, etc.): la herramienta debe detectar `HEAD` cambiado/`rebase en curso`/índice ocupado y **ceder** (saltarse ese ciclo) en vez de pelearse. Detectar `.git/MERGE_HEAD`, `.git/rebase-*`, lock del índice. Mientras cede, las ediciones NO se están fotografiando — invisible desde el editor —, así que si la operación manual supera `BUSY_WARN_SEC` (10 min) avisa UNA vez (log + toast) de que los snapshots quedan pospuestos, y anota cuándo se reanudan. El umbral es lo bastante alto para que un merge normal — o el `index.lock` transitorio de cualquier comando git — nunca lo dispare.
 - **Guarda de rama / seguir rama.** Por defecto, cuando HEAD no está en la `branch` configurada, el repo **cede** (sin snapshot/seal/autosnap/push en la rama equivocada) — `_ensure_on_branch`, rate-limited. Con **`track_current_branch: true`** en su lugar **sigue** la rama actual: cada operación con rama usa `st.active_branch` (la rama viva de HEAD) en vez de `cfg.branch`, así snapshot/autosnap/relevo/push ocurren en la rama en la que estés (cada rama tiene su `refs/autosnap/<user>/<host>/<rama>`, y el relevo solo casa la misma rama). HEAD desacoplado (detached) sigue cediendo. Se acopla con el modo purista (sin auto-seal → nada se auto-pushea donde no debe). Opt-in; el default mantiene el guard seguro.
-- **El push apunta al último commit no-WIP** (resuelto por mensaje, no el `HEAD~1`
-  posicional): si el usuario commitea a mano encima del WIP, su commit es lo que se sube —
-  nunca el WIP transitorio. El reloj de sellado también se resetea al detectar un commit
-  externo (se respeta como sello manual).
+- **El push apunta a HEAD** — seguro por construcción en el modelo shadow: la rama solo
+  contiene sellados y commits del usuario (los snapshots viven en el ref lateral). Un
+  commit manual del usuario es simplemente… un commit; viaja en el siguiente push como
+  lo haría un sellado.
 - **Las restauraciones nunca destruyen trabajo sin fotografiar.** Antes de que
   `restore_file`/`restore_repo` sobrescriban nada, las ediciones pendientes se capturan
-  en el WIP (el mismo stage+amend que hace el relevo) — lo guardado desde el último
-  snapshot no existe en ningún otro sitio, ni siquiera el reflog. El amend del WIP es
-  `--allow-empty`: revertir a mano al contenido sellado, o restaurar el repo entero al
-  último sellado, vacía legítimamente el WIP y no debe fallar. El contenido que esa
-  pasada de captura *no puede* tomar (una edición trackeada que el filtro rechaza —
-  excluida / sobre el límite de tamaño / binaria, `modified_unstaged` — o un fichero
-  sin trackear que el árbol destino sí trackea, `untracked_collisions`) hace que la
-  restauración se **niegue**, nombrando los ficheros a copiar a un lugar seguro
-  primero: la misma política que el fast-forward del relevo, porque ese contenido no
-  existe en ningún sitio de git. Las restauraciones
-  respetan además la guarda de rama y el chequeo de ocupado, como toda operación
-  manual — fuera de rama la captura amendearía el WIP de la rama equivocada, y en
+  en un snapshot shadow — lo guardado desde el último snapshot no existe en ningún otro
+  sitio. Las restauraciones escriben SOLO en el worktree (`git restore --worktree` /
+  borrados planos): el índice del usuario sigue siendo suyo, la restauración aparece en
+  su `git status` como ediciones normales, y un snapshot de cierre la captura. El
+  contenido que esa pasada de captura *no puede* tomar (el filtro lo rechaza — excluido /
+  sobre el límite de tamaño / binario — o está sin trackear y el árbol destino trae otra
+  versión, `untracked_collisions`) hace que la restauración se **niegue** allí donde lo
+  TOCARÍA, nombrando los ficheros a copiar a un lugar seguro primero: la misma política
+  que el apply del relevo, porque ese contenido no existe en ningún sitio de git. Las
+  restauraciones respetan además la guarda de rama y el chequeo de ocupado, como toda
+  operación manual — fuera de rama la captura fotografiaría la cadena de otra rama, y en
   mitad de un merge/rebase pisarían un árbol en conflicto.
 - **Instancia única (que dos demonios no compitan por git).** La guarda autoritativa es un
   mutex con nombre de Windows (`acquire_instance_mutex`; sin lock-huérfano —el SO lo libera
@@ -434,7 +461,7 @@ repos:
 - **Nunca `--force`** en el flujo automático.
 - **Mantenimiento:** `git gc --auto` tras cada sello **y al menos una vez al día**
   (`Engine.GC_INTERVAL_SEC`, en un worker en segundo plano), para empaquetar los objetos
-  huérfanos que dejan los amends. El disparador diario está **desacoplado del sellado a
+  sueltos que deja la cadena de snapshots. El disparador diario está **desacoplado del sellado a
   propósito**: en modo purista (`seal_interval_min: inf`) el sello no se dispara nunca, así
   que sin él un WIP de larga vida acumularía objetos sueltos sin límite. El mismo worker
   diario también **poda los refs autosnap rancios de esta máquina** en el remoto — refs
@@ -452,6 +479,15 @@ repos:
   construye solo el **Smart Commit** manual, mientras el WIP + `autosnap` siguen dando la
   red de seguridad. (YAML solo entiende `.inf` como float; un `inf`/`off` pelado llega como
   string/bool, de ahí la normalización.)
+- **Recordatorio de commit purista (`suggest_commit`, activado por defecto).** La única
+  trampa del modo purista es una rama que se estanca en silencio si el usuario olvida el
+  Smart Commit (el trabajo está a salvo en el WIP/autosnap, pero no EN la rama — fácil de
+  confundir con "ya está subido"). El motor avisa (notificación + log) cuando se cumple
+  TODO: modo purista, hay trabajo sin sellar, el repo lleva ~20 min **en calma** (el proxy
+  de "terminaste algo" — por estado, no una alarma de reloj), el último commit permanente
+  tiene >1 día, y no se avisó en el último día. Sellar reinicia la puerta de antigüedad,
+  así que commitear lo silencia solo. Constantes: `Engine.COMMIT_NUDGE_*`; no-op con
+  auto-sellado activo.
 
 ---
 
@@ -459,7 +495,7 @@ repos:
 
 **✅ Fase 1 — MVP (historiador local automático) — COMPLETA:**
 - Config + validación de repos.
-- Watcher + debounce + snapshot (amend) cada 5 min (+ snapshot inicial al arrancar).
+- Watcher + debounce + snapshot (ref lateral shadow) cada 5 min (+ snapshot inicial al arrancar).
 - Filtro texto/tamaño.
 - Sellado cada 6 h con **mensaje de fallback**.
 - Logging.
@@ -469,20 +505,30 @@ repos:
 - Generador de mensajes IA híbrido (Ollama → Gemini → fallback). Nunca bloquea el sellado.
 - Push de sellados (refspec con SHA → `refs/heads/<branch>`) + reintento en cada sync.
 - `fetch` + pull con rebase del WIP, solo si el remoto adelanta; sync inicial al arrancar.
-- Política de conflicto: abortar rebase + pausar repo + notificar *(verificado a mano
-  aún — la batería automatizada todavía no cubre este camino multi-remoto; ver el TODO
-  técnico abajo)*.
+- Política de conflicto: abortar rebase + pausar repo + notificar. *(Superado después:
+  ambas formas de conflicto están ahora cubiertas por la batería automatizada sobre
+  remotos bare desechables — ver la sección técnica pendiente abajo y
+  `tests/test_multi_machine.py`.)*
 
 **✅ Fase 4 — Interfaz de bandeja (PyQt5) — COMPLETA:**
 - Icono en la bandeja del sistema (una "G" con reloj de arena, dibujado vectorial)
   cuyo **color refleja el estado** (activo/pausado/conflicto/parado).
 - Menú: abrir panel, pausar/reanudar, sincronizar ahora, sellar ahora, salir.
-- Panel de control con pestañas Estado / Registro (filtrable por repo, acción,
-  nivel, texto) / Configuración (editor YAML) / Acerca de.
+- Panel de control con pestañas Status / Log (filtrable por repo, acción,
+  nivel, texto) / Settings (un formulario sobre los defaults) / Advanced (el editor YAML crudo).
 - Registro estructurado de eventos (`events.jsonl`) + notificaciones de escritorio.
 - Arquitectura: motor en hilo de fondo, GUI en el hilo principal, comunicación por
   señales Qt; acciones manuales serializadas con un lock en el motor.
 - Arranque: `python -m sincrogit --tray` (o `pythonw` sin consola).
+
+**✅ Historial de fichero / restore ("máquina del tiempo") — COMPLETA:**
+- Navegar las versiones pasadas de un fichero, fusionando el historial alcanzable
+  (commits sellados, permanentes) y el reflog (snapshots intra-ventana, ~30 días),
+  colapsando contenidos idénticos.
+- Previsualizar cualquier versión y restaurarla (`git checkout <sha> -- fichero`);
+  la restauración se convierte en un snapshot nuevo, así que queda versionada a su vez.
+- CLI: `--history FICHERO` (interactivo) / `--history FICHERO --pick N` (no interactivo).
+- GUI: panel de control → Status → diálogo "File history…".
 
 **Fase 3 — Despliegue (parcial):**
 - ✅ `SincroGit.exe` autónomo de un solo fichero (GUI + CLI) vía PyInstaller
@@ -497,20 +543,24 @@ repos:
 - ⏳ Pendiente: tarea programada al iniciar sesión que auto-arranque `SincroGit.exe` —
   sin ella, la promesa de "cero disciplina" depende de acordarse de lanzar la herramienta.
 - ⏳ Pendiente: comando/pestaña `status` (el atajo "sellar+push ahora" ya está en el menú).
+- ✅ Chequeo de salud `sincrogit doctor` (git, config, rama/remoto de cada repo,
+  accesibilidad de lectura + credenciales de push, pandoc, backends de IA, demonio) —
+  `--doctor`, con su propia batería (`tests/test_doctor.py`).
 - ⏳ Pendiente: onboarding guiado en "Add repo" (crear/conectar un remoto privado y
-  verificarlo con un push de prueba, desde la GUI), más un chequeo de salud
-  `sincrogit doctor` (git, acceso al remoto, credenciales, pandoc, Ollama) — para el
-  público sin Git, el montaje de remoto/credenciales es la barrera de entrada real, no
-  el demonio.
+  verificarlo con un push de prueba, desde la GUI) — para el público sin Git, el montaje
+  de remoto/credenciales es la barrera de entrada real, no el demonio.
 
 **Pendiente — técnico (sin feature visible para el usuario):**
-- ⏳ Batería de tests automatizados — la **primera tanda existe** (`tests/`, pytest,
-  50 tests sobre repos locales desechables: rechazos de restauración, restore selectivo,
-  línea temporal, exportar, búsqueda en historial, cirugía de config, `--doctor`, aviso
-  de ocupado, precedencia de estados, renderizado de diffs, diálogos de la GUI en
-  offscreen). Sigue pendiente: clasificación de `work_relationship`, el fast-forward
-  del relevo, aborto + pausa en conflicto de rebase, e idempotencia de sellado/push
-  (necesitan *remotos* desechables); después, CI.
+- ⏳ Batería de tests automatizados — **existe** (`tests/`, pytest, 150+ tests): rechazos
+  de restauración y restore seguro ante renames, restore selectivo, línea temporal,
+  exportar, búsqueda en historial, cirugía de config, `--doctor`, aviso de ocupado,
+  precedencia de estados, renderizado de diffs, diálogos de la GUI en offscreen — más
+  los **caminos multi-máquina sobre remotos bare desechables**: clasificación de
+  `work_relationship` (los cuatro veredictos), fast-forward del relevo
+  (auto/ask/re-validación), el rechazo por contenido no capturable, el relevo a través
+  de un rename, las dos formas de conflicto de rebase, el bucle de reconciliación tras
+  un push rechazado, idempotencia de sellado/push y poda de refs autosnap. Sigue
+  pendiente: CI en cada push.
 
 **Opcional / futuro:**
 - Rama `autosnap` con commits reales cada 5 min (historial intra-ventana navegable *en el remoto*) en lugar del espejo force-push del último estado.
@@ -519,7 +569,9 @@ repos:
   privacidad por defecto, solo `urllib` estándar): **endpoint genérico
   OpenAI-compatible** (`ai.cloud_provider: compatible` + `ai.cloud_url`) que cubre
   OpenRouter/DeepSeek/LM Studio/Anthropic/… con un único cliente (las keys siguen en
-  variables de entorno); **`ai.locale`** para mensajes en el idioma del usuario;
+  variables de entorno); **mensajes en el idioma del usuario — ya hecho como
+  `ai.language`** (`en`|`es`: con `ai.language: es` los mensajes salen en español;
+  falta solo generalizarlo a locales arbitrarios);
   **overrides de `ai:` por repo** (p. ej. un repo sensible fijado a `mode: local`).
   Ver el LEAME → TODO.
 - Tanda inspirada en lazygit (lazygit es el complemento, no un donante — no se
@@ -536,8 +588,20 @@ repos:
 ## 13. Decisiones tomadas
 
 - ✅ Modelo **WIP+amend → seal cada 6h** + **autosnap** (espejo en vivo) cada 30 min.
+  *(Superado después por el modelo SHADOW de la v0.2, abajo — mismos ritmos, los
+  snapshots salen de la punta del usuario.)*
+- ✅ **v0.2: snapshots shadow** (`refs/sincro/wip/<rama>` + índice privado) en vez de un
+  commit WIP en HEAD. Motivación: el WIP en la punta confundía a toda herramienta git y
+  secuestraba `git status`/staging. Consecuencias aceptadas: un
+  `core.logAllRefUpdates=always` local por repo (los refs laterales no tienen reflog por
+  defecto — y ES la ventana de recuperación), y el pull ahora autostashea el worktree
+  sucio (un pop conflictivo pausa el repo con marcadores; el snapshot pre-pull garantiza
+  la recuperación). Validado por adelantado con tres spikes: el gating por textconv
+  funciona árbol-contra-árbol, el índice privado cuesta ~120 ms caliente con 2 000
+  ficheros, y un pop de autostash conflictivo NO deja el repo mid-rebase (se detecta por
+  entradas unmerged, no por is_busy).
 - ✅ **Intervalos: snapshot cada 5 min, sellado cada 6 h, autosnap cada 30 min.**
-- ✅ Push **solo de sellados** (WIP local; pull siempre limpio; sin force-push).
+- ✅ Push **solo de sellados** (los snapshots quedan en el ref lateral; pull siempre limpio; sin force-push).
 - ✅ IA **híbrida** (Ollama local → nube fallback; opción de enviar solo stats).
 - ✅ **Prefijos:** sellado automático `sincro:`; **commit manual (Smart Commit)** con mensaje Conventional Commits propuesto por IA (resumen acumulado desde el último manual) + reset del temporizador.
 - ✅ **Proveedor de nube: Gemini** (`gemini-2.5-flash-lite`), API key en variable de entorno.
@@ -548,7 +612,7 @@ repos:
 - ✅ Rama de trabajo: **`main`** (confirmar por repo).
 - ✅ **Sellado cada 6 h** (timeline permanente grueso); un sellado manual (*Seal now* / `--seal-once` / Smart Commit) para el handoff por la vía limpia.
 - ✅ **Pull periódico cada 10 min** (`fetch` + pull solo si el remoto tiene commits nuevos), además del pull de arranque.
-- ✅ **Autosnap** (espejo en vivo de `HEAD` a `refs/autosnap/<user>/<host>/<rama>`, force-push cada 30 min, solo si cambió): RPO de fallo de disco ≈ 30 min, recuperación cross-machine por fichero o repo entero (CLI `--autosnaps` + GUI). La variante "historial fino navegable en el remoto" (un commit por snapshot) sigue diferida.
+- ✅ **Autosnap** (espejo en vivo del **shadow tip** — el último snapshot, incl. el WIP vivo — a `refs/autosnap/<user>/<host>/<rama>`, force-push cada 30 min, solo si cambió): RPO de fallo de disco ≈ 30 min, recuperación cross-machine por fichero o repo entero (CLI `--autosnaps` + GUI). La variante "historial fino navegable en el remoto" (un commit por snapshot) sigue diferida.
 
 ## 14. Cómo configurar la API key de Gemini
 
@@ -563,4 +627,4 @@ repos:
 
 ## 15. Preguntas abiertas
 
-*(Ninguna pendiente — diseño cerrado. Listo para empezar la Fase 1.)*
+*(Ninguna pendiente — diseño cerrado.)*

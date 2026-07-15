@@ -1,13 +1,18 @@
-"""SincroGit engine: orchestrates snapshots and seals per repo.
+"""SincroGit engine: orchestrates snapshots and seals per repo (shadow model).
 
 - The watcher marks each repo as "dirty" (with a timestamp).
 - A tick loop (every few seconds) decides, per repo:
     * SNAPSHOT: if dirty, the debounce and the snapshot interval have elapsed
-      -> stage (filtered) + `git commit --amend` over the WIP.
+      -> capture the worktree (filtered) through a PRIVATE index into a commit
+      on refs/sincro/wip/<branch>. The user's HEAD/index/status are untouched.
     * SEAL: if the seal interval (default 6h) has passed since the last sealed
-      commit -> message (AI or fallback) + `git commit --amend` (seals) + new WIP + push.
-    * AUTOSNAP: every ~30 min, force-push HEAD to a per-host side ref (disaster backup).
-    * PULL: every 10 min, fetch + (if the remote has something) rebase the WIP on top.
+      commit -> message (AI or fallback) + the snapshot tree becomes ONE real
+      commit on the branch (the shadow chain re-anchors there) + push.
+    * AUTOSNAP: every ~30 min, force-push the shadow tip to a per-host side ref
+      (disaster backup + cross-machine handoff substrate).
+    * PULL: every 10 min, fetch + (if the remote has something) snapshot first,
+      then rebase the local branch with --autostash (the user's edits live
+      uncommitted in the worktree).
 
 Concurrency model (see §7 of DESIGN.md):
 - Each repo has its own `op_lock` that serializes git operations on THAT repo
@@ -22,6 +27,7 @@ Concurrency model (see §7 of DESIGN.md):
 See DESIGN.md.
 """
 
+import dataclasses
 import logging
 import math
 import os
@@ -85,6 +91,8 @@ class RepoState:
         self.user = ""            # "same person across machines" id for handoff (git email)
         self._handoff_warned_sha = None  # last diverging peer WIP we warned about (throttle)
         self.pending_handoff = None  # {sha, host} a safe FF awaiting the user (ask mode)
+        self._started_mono = time.monotonic()  # for the post-startup grace of the commit nudge
+        self._commit_nudge_mono = 0.0  # last purist "time to Smart Commit?" nudge (throttle)
 
         # For the control panel (wall-clock time, not monotonic):
         self.branch = None
@@ -132,6 +140,15 @@ class Engine:
     # one is taken anyway, debounce or not. A disabled (inf) debounce or interval
     # keeps its "never fire" meaning (inf flows through the arithmetic untouched).
     SNAPSHOT_STARVATION_FACTOR = 2
+    # Purist-mode commit nudge (see _maybe_nudge_commit). Fires only when ALL hold:
+    # auto-seal is off, un-sealed work exists, the repo has been QUIET this long (the
+    # "you paused / finished something" proxy) AND running at least this long since
+    # startup, the last permanent commit is older than STALE, and we haven't nudged
+    # within THROTTLE. Tuned so it reads as "you seem done and it's been a while",
+    # never as a clock alarm.
+    COMMIT_NUDGE_QUIET_SEC = 20 * 60        # settle window + post-startup grace (20 min)
+    COMMIT_NUDGE_STALE_SEC = 24 * 3600      # last permanent commit older than ~1 day
+    COMMIT_NUDGE_THROTTLE_SEC = 24 * 3600   # at most one nudge per repo per ~day
     # While a manual merge/rebase is in progress the daemon yields (see is_busy),
     # so edits made during it are NOT being snapshotted. That's invisible from the
     # editor, so past this long we tell the user once. High enough that a normal
@@ -292,16 +309,59 @@ class Engine:
             self._emit(st.cfg.name, "info", f"back on '{current}'; autosync resumed")
         return ok
 
-    def _ensure_wip(self, st: "RepoState"):
-        """Ensure HEAD is a WIP. If a WIP had to be created, HEAD was a non-WIP
-        commit — typically the user committed manually. We respect that as a
-        "manual seal" and reset the seal clock to count from that commit.
+    def _shadow_snapshot(self, st: "RepoState") -> bool:
+        """Capture the worktree into the SHADOW chain (see gitrepo's shadow
+        section): the user's HEAD, index and `git status` are never touched.
+        Files are filtered exactly like the old staging was (same dropped-file
+        warnings, same Smart Ignore feed). Returns True if a NEW snapshot
+        commit was created. Assumes the caller holds st.op_lock.
         """
-        if st.repo.ensure_wip():
-            sealed = st.repo.last_sealed_time()
-            st.last_seal_epoch = float(sealed) if sealed else time.time()
-            st.has_sealed = sealed is not None
-            self._emit(st.cfg.name, "info", "external commit detected; seal clock reset")
+        repo, branch = st.repo, st.active_branch
+        repo.ensure_shadow(branch)
+        tip = repo.shadow_tip(branch)
+        tip_tree = repo.sync_shadow_index(branch)
+
+        to_stage, dropped = [], []
+        for rel in repo.shadow_changed_paths():
+            full = os.path.join(st.cfg.path, rel)
+            if os.path.exists(full):
+                reason = st.file_filter.reason_to_skip(full, rel)
+                if reason is None:
+                    to_stage.append(rel)
+                else:
+                    log.debug("filtered out (%s): %s", reason, rel)
+                    dropped.append((rel, reason))
+                    if reason != "excluded":
+                        self._note_noise(st, rel, reason)
+            else:
+                to_stage.append(rel)  # deletion of something snapshotted
+
+        # Warn (once per file) about SNAPSHOTTED files that dropped out of the
+        # auto-snapshot — not for explicit excludes, and not for files we never
+        # captured.
+        reportable = [(r, why) for r, why in dropped if why != "excluded"]
+        if reportable:
+            tracked = repo.list_tracked([r for r, _ in reportable])
+            for rel, why in reportable:
+                if rel in tracked:
+                    self._note_dropped(st, rel, why)
+
+        if not to_stage:
+            return False
+        repo.shadow_stage(to_stage)
+        tree = repo.shadow_write_tree()
+        if repo.trees_match(tip_tree, tree):
+            return False  # e.g. a .docx resave whose markdown didn't change
+        repo.commit_shadow(branch, tree, tip)
+        st.autosnap_pending = True  # the live mirror is now stale
+        return True
+
+    def _uncaptured(self, st: "RepoState") -> list:
+        """Paths whose CURRENT worktree content the snapshots do NOT hold —
+        i.e. what the filter refused (excluded / over the size limit / binary).
+        Only meaningful right after a _shadow_snapshot pass; the restore and
+        handoff guards refuse to overwrite these (they exist nowhere in git)."""
+        return st.repo.shadow_changed_paths()
 
     def _ensure_docx_attributes(self, st: "RepoState"):
         """Map the binary documents this repo versions in .gitattributes: .docx
@@ -320,16 +380,6 @@ class Engine:
                            f".gitattributes: mapped {', '.join(ln.split()[0] for ln in lines)}")
         except Exception:  # noqa: BLE001 — best-effort convenience
             pass
-
-    def _stage(self, st: "RepoState") -> bool:
-        """Stage the filtered changes, warning once about any tracked file that
-        dropped out of auto-snapshot (see _note_dropped) and suggesting an exclude
-        for high-churn folders (see _note_noise). Returns True if staged."""
-        return st.repo.stage_changes(
-            st.file_filter,
-            on_drop=lambda rel, reason: self._note_dropped(st, rel, reason),
-            on_skip=lambda rel, reason: self._note_noise(st, rel, reason),
-        )
 
     def _note_dropped(self, st: "RepoState", relpath: str, reason: str):
         """A previously-tracked file is no longer auto-snapshotted (e.g. it grew
@@ -376,11 +426,15 @@ class Engine:
             )
 
     # ----------------------------------------------- background network task
-    def _dispatch_network(self, st: "RepoState", label: str, fn) -> bool:
-        """Run a network git op (fetch/pull/push) on a background thread so the
-        tick thread never blocks on I/O. At most one network task per repo at a
-        time; the task holds the repo's op_lock so it can't race the
-        snapshot/seal cycle. Returns False if one is already in flight.
+    def _dispatch_network(self, st: "RepoState", label: str, fn, hold_lock: bool = True) -> bool:
+        """Run a git op (fetch/pull/push/seal) on a background thread so the tick
+        thread never blocks on I/O. At most one such task per repo at a time.
+        Returns False if one is already in flight.
+
+        By default the worker holds the repo's op_lock for the whole `fn`, so it
+        can't race the snapshot/seal cycle. With hold_lock=False the worker runs
+        `fn` WITHOUT the lock and `fn` manages its own — needed by the automatic
+        seal, which deliberately releases the lock around its slow AI call.
         """
         with st._lock:
             if st.net_busy:
@@ -389,8 +443,11 @@ class Engine:
 
         def worker():
             try:
-                with st.op_lock:
-                    fn()
+                if hold_lock:
+                    with st.op_lock:
+                        fn()
+                else:
+                    fn()  # fn owns its locking (releases op_lock around slow work)
             except GitError as e:
                 log.error("[%s] %s failed: %s", st.cfg.name, label, e)
             except Exception as e:  # noqa: BLE001 — a worker must not die silently
@@ -549,10 +606,13 @@ class Engine:
         st = RepoState(repo, rc, ff)
 
         try:
-            if repo.ensure_wip():
-                log.info("[%s] initial WIP created", rc.name)
+            if repo.migrate_wip_tip(rc.branch):
+                self._emit(rc.name, "startup",
+                           "migrated to the shadow model — your unsealed edits "
+                           "now show as ordinary uncommitted changes", "WARNING")
+            repo.ensure_shadow(rc.branch)
         except GitError as e:
-            log.error("[%s] could not initialize the WIP: %s", rc.name, e)
+            log.error("[%s] could not initialize the snapshot chain: %s", rc.name, e)
             return
 
         sealed = repo.last_sealed_time()
@@ -776,9 +836,10 @@ class Engine:
                     continue  # user switched branches (git checkout): yield this repo
                 self._maybe_sync(st, now_mono)      # dispatched to a worker; returns at once
                 self._maybe_snapshot(st, now_mono)  # local; skipped if a worker holds the repo
-                self._maybe_seal(st, now_epoch)     # local seal; push dispatched to a worker
+                self._dispatch_seal(st, now_epoch)  # off-thread: the AI message must not block the tick
                 self._maybe_autosnap(st, now_mono)  # live mirror; dispatched to a worker
                 self._maybe_gc(st, now_mono)        # daily repo packing; background worker
+                self._maybe_nudge_commit(st, now_mono, now_epoch)  # purist "time to commit?"
             except GitError as e:
                 log.error("[%s] error in the cycle: %s", st.cfg.name, e)
             except Exception:  # noqa: BLE001 — one bad repo must not stop the others
@@ -808,6 +869,20 @@ class Engine:
                 and now_mono - st.busy_since_mono >= self.BUSY_WARN_SEC):
             st.busy_warned = True
             mins = int((now_mono - st.busy_since_mono) // 60)
+            # If what's "busy" is just an old index.lock, no merge is coming to
+            # free it — a crash stranded the lock and syncing is stuck until the
+            # user deletes it. Say THAT, not a misleading "merge in progress".
+            stale = st.repo.stale_lock(self.BUSY_WARN_SEC)
+            if stale:
+                self._emit(st.cfg.name, "busy",
+                           f"the repo looks busy, but it may just be a git lock "
+                           f"left behind by a crash: {stale}. If no git command "
+                           f"is running, delete that file (see --doctor); "
+                           f"snapshots resume then.", "WARNING")
+                notify("SincroGit: snapshots stuck",
+                       f"'{st.cfg.name}': a leftover git lock is blocking "
+                       f"snapshots. Run --doctor for instructions.")
+                return
             self._emit(st.cfg.name, "busy",
                        f"a manual merge/rebase has been in progress for {mins}+ min; "
                        f"snapshots are postponed until it finishes (edits saved "
@@ -863,51 +938,155 @@ class Engine:
                 log.error("[%s] error in initial snapshot: %s", st.cfg.name, e)
 
     def _do_snapshot(self, st: RepoState) -> bool:
-        """Stage (filtered) and amend the WIP. Returns True if there were changes.
+        """One snapshot pass (shadow model). Returns True if there were changes.
 
         Assumes the caller holds st.op_lock. Logs nothing: each caller writes its
         own log message according to the context (normal / initial / final).
         """
-        self._ensure_wip(st)
-        if self._stage(st) and st.repo.has_staged_changes():
-            st.repo.amend_keep_message()
-            st.autosnap_pending = True  # HEAD moved -> the live mirror is now stale
-            return True
-        return False
+        return self._shadow_snapshot(st)
 
-    def _maybe_seal(self, st: RepoState, now_epoch: float):
+    def _dispatch_seal(self, st: RepoState, now_epoch: float):
+        """Tick entry to the automatic seal: dispatch it to a worker (only when a
+        seal is due) so generating the message — which may call a ~30 s AI model —
+        never blocks the tick thread. The worker (`_maybe_seal`) manages its own
+        op_lock, releasing it around the AI, so the dispatch must NOT hold it."""
         if now_epoch - st.last_seal_epoch < st.cfg.seal_interval_sec:
             return
-        # Don't block the tick if a network op holds this repo: skip and retry.
+        self._dispatch_network(st, "seal",
+                               lambda e=now_epoch: self._maybe_seal(st, e),
+                               hold_lock=False)
+
+    def _maybe_seal(self, st: RepoState, now_epoch: float):
+        """Automatic seal. Runs off the tick (the tick dispatches it to a worker)
+        and generates the message WITHOUT holding op_lock, so a slow AI model
+        freezes neither the tick nor this repo's snapshots — the same split
+        propose_seal_message already uses for Smart Commit. Three phases:
+          1) under the lock: honor the user's own commits, snapshot, gather the diff;
+          2) no lock: compose the message (the AI call, the slow part);
+          3) under the lock: re-validate, commit + push.
+        """
+        if now_epoch - st.last_seal_epoch < st.cfg.seal_interval_sec:
+            return
+        # --- Phase 1: decide + gather, under the lock. Don't block if a network
+        # op holds this repo: skip and retry next tick.
         if not st.op_lock.acquire(blocking=False):
             return
         try:
-            sealed = self._do_seal(st, now_epoch)
-            push_due = sealed and st.cfg.push and st.repo.has_remote(st.cfg.remote)
+            # Respect the user's own commits (ported from v0.1's _ensure_wip): a
+            # manual `git commit` in a terminal — or commits a pull integrated —
+            # never passes through the seal, so the clock wouldn't know about it
+            # and an auto-checkpoint could land right on its heels. If a
+            # permanent (non-WIP) commit is newer than the clock's baseline,
+            # restart the window from it. Only checked when a seal is DUE, so
+            # the extra git reads cost nothing in steady state.
+            external = st.repo.last_sealed_time()
+            if external and external > st.last_seal_epoch:
+                st.last_seal_epoch = float(external)
+                st.has_sealed = True
+                if now_epoch - st.last_seal_epoch < st.cfg.seal_interval_sec:
+                    self._emit(st.cfg.name, "info",
+                               "found your own commit; the auto-seal clock "
+                               "restarts from it")
+                    return
+                # (An old external commit — or our own seal's sub-second clock
+                # skew — just refreshes the baseline; the due seal proceeds.)
+            payload = self._prepare_auto_seal(st, now_epoch)
         finally:
             st.op_lock.release()
-        # Push the sealed commit on a background thread so the tick never blocks
-        # on the network. If the remote is ahead and rejects it, the sync cycle
-        # reconciles (pull + retry).
-        if push_due:
-            self._dispatch_network(st, "push", lambda: self._do_push(st))
+        if payload is None:
+            return
+        # --- Phase 2: the message (AI or fallback), WITHOUT the lock (the slow part).
+        title, body = self._compose_seal_message(st, payload)
+        # --- Phase 3: commit + push, under the lock again. We're off the tick here
+        # (a worker, or a direct call from a test), so a synchronous push is fine.
+        with st.op_lock:
+            sealed = self._commit_seal(st, now_epoch, title, body)
+            if sealed and st.cfg.push and st.repo.has_remote(st.cfg.remote):
+                self._do_push(st)
+
+    def _prepare_auto_seal(self, st: RepoState, now_epoch: float):
+        """Phase 1 of the automatic seal, UNDER op_lock: take the final snapshot
+        and gather what the message will summarize. Returns that payload (see
+        _seal_message_inputs), or None when there's nothing to seal (and
+        reschedules the clock). The AI call itself is deferred to phase 2, unlocked.
+        """
+        repo, branch = st.repo, st.active_branch
+        if repo.is_busy():
+            return None
+        # The user's own staging area is THEIRS: an auto-seal must not absorb a
+        # hand-crafted commit in progress.
+        if repo.has_staged_changes():
+            log.info("[%s] auto-seal postponed: you have changes staged for a "
+                     "manual commit", st.cfg.name)
+            st.last_seal_epoch = now_epoch  # reschedule the clock
+            return None
+        self._shadow_snapshot(st)  # final snapshot: capture the latest edits
+        tree = repo.sync_shadow_index(branch)
+        head = repo.head_sha()
+        base_tree = repo.tree_of(head) if head else repo._empty_tree()
+        if repo.trees_match(base_tree, tree):
+            log.debug("[%s] nothing to seal", st.cfg.name)
+            st.last_seal_epoch = now_epoch
+            return None
+        return self._seal_message_inputs(st, base_tree, tree)
+
+    def _commit_seal(self, st: RepoState, now_epoch: float, title: str, body: str) -> bool:
+        """Phase 3 of the automatic seal, UNDER op_lock: re-snapshot and, if there
+        is still something to seal, commit the accumulated shadow tree as ONE real
+        commit + re-anchor. Returns True if a seal happened.
+
+        Re-validates because edits (and snapshots) may have landed while the AI
+        message was generated with the lock released. The message describes the
+        tree as of phase 1; a few extra edits folded in is the same staleness
+        Smart Commit already accepts.
+        """
+        repo, branch = st.repo, st.active_branch
+        if repo.is_busy():
+            return False
+        self._shadow_snapshot(st)
+        tree = repo.sync_shadow_index(branch)
+        head = repo.head_sha()
+        base_tree = repo.tree_of(head) if head else repo._empty_tree()
+        if repo.trees_match(base_tree, tree):
+            log.debug("[%s] nothing to seal", st.cfg.name)
+            st.last_seal_epoch = now_epoch
+            return False
+        new = repo.seal_from_shadow(branch, tree, title, body)
+        repo.reanchor_shadow(branch, new)
+        st.last_seal_epoch = now_epoch
+        st.has_sealed = True
+        st.autosnap_pending = True
+        self._mark_action(st, "seal")
+        self._emit(st.cfg.name, "seal", title)
+        st.repo.gc_auto()
+        return True
 
     def _do_seal(self, st: RepoState, now_epoch: float, message: str | None = None) -> bool:
-        """Core seal: final snapshot + reword the WIP + new WIP. Returns True if a
-        seal happened. Assumes the caller holds st.op_lock. Does NOT push.
+        """Core seal: final snapshot, then commit the accumulated shadow tree as
+        ONE real commit on the branch and re-anchor the shadow chain to it.
+        Returns True if a seal happened. Assumes the caller holds st.op_lock.
+        Does NOT push.
 
         `message` (a developer's manual commit message) overrides the automatic
         AI/fallback message; its first line is the subject, the rest the body.
         """
-        if st.repo.is_busy():
+        repo, branch = st.repo, st.active_branch
+        if repo.is_busy():
+            return False
+        # The user's own staging area is THEIRS: an auto-seal must not absorb a
+        # hand-crafted commit in progress. (A manual Smart Commit — message
+        # given — proceeds: the user asked for exactly that.)
+        if message is None and repo.has_staged_changes():
+            log.info("[%s] auto-seal postponed: you have changes staged for a "
+                     "manual commit", st.cfg.name)
+            st.last_seal_epoch = now_epoch  # reschedule the clock
             return False
 
-        # Final snapshot to capture the latest changes before sealing.
-        self._ensure_wip(st)
-        if self._stage(st) and st.repo.has_staged_changes():
-            st.repo.amend_keep_message()
-
-        if not st.repo.wip_differs_from_base():
+        self._shadow_snapshot(st)  # final snapshot: capture the latest edits
+        tree = repo.sync_shadow_index(branch)
+        head = repo.head_sha()
+        base_tree = repo.tree_of(head) if head else repo._empty_tree()
+        if repo.trees_match(base_tree, tree):
             log.debug("[%s] nothing to seal", st.cfg.name)  # DEBUG: avoids noise over idle days
             st.last_seal_epoch = now_epoch  # reschedule the clock
             return False
@@ -916,28 +1095,55 @@ class Engine:
             title, _, body = message.strip().partition("\n")
             title, body = title.strip(), body.strip()
         else:
-            title, body = self._seal_message(st)
-        st.repo.seal(title, body)
-        st.repo.new_wip()
+            title, body = self._seal_message(st, base_tree, tree)
+        new = repo.seal_from_shadow(branch, tree, title, body)
+        repo.reanchor_shadow(branch, new)
         st.last_seal_epoch = now_epoch
         st.has_sealed = True
-        st.autosnap_pending = True  # HEAD moved (new WIP) -> refresh the live mirror
+        st.autosnap_pending = True  # the mirror should now track the sealed tip
         self._mark_action(st, "seal")
         self._emit(st.cfg.name, "seal", title)
 
-        # Maintenance: pack the orphan objects left by the amends.
+        # Maintenance: pack the loose objects left by the snapshot chain.
         st.repo.gc_auto()
         return True
 
-    def _seal_message(self, st: RepoState):
-        """Seal message: AI if possible, otherwise the deterministic fallback."""
-        name_status = st.repo.name_status_for_seal()
+    def _seal_message(self, st: RepoState, base_tree: str, tree: str):
+        """Seal message for the manual/CLI path (caller holds op_lock): gather the
+        diff and compose in one call. The window is base_tree (HEAD's tree) ->
+        tree (the latest snapshot). The AUTOMATIC path splits these two steps so
+        the AI runs off the lock — see _prepare_auto_seal / _compose_seal_message.
+        """
+        return self._compose_seal_message(st, self._seal_message_inputs(st, base_tree, tree))
+
+    def _seal_message_inputs(self, st: RepoState, base_tree: str, tree: str):
+        """The git reads a seal message needs — name-status (for the fallback) and,
+        when AI is on, the --stat + truncated diff — as (name_status, ai_inputs)
+        where ai_inputs is None if AI is off. This is the part that MUST run under
+        op_lock; kept separate so the automatic seal can gather here and call the
+        (slow, lock-free) AI afterwards. See _compose_seal_message."""
+        repo = st.repo
+        name_status = repo.name_status_for_seal(base_tree, tree)
+        ai_inputs = None
+        if self.config.ai.mode != "none":
+            ai_inputs = (
+                repo.diff_stat_for_seal(base=base_tree, target=tree),
+                repo.diff_text_for_seal(self.config.ai.max_diff_chars,
+                                        base=base_tree, target=tree),
+            )
+        return name_status, ai_inputs
+
+    def _compose_seal_message(self, st: RepoState, payload) -> tuple:
+        """Turn the gathered diff into a message — AI if available, else the
+        deterministic fallback. No git and no lock (the AI call is the slow part we
+        deliberately keep off op_lock). `payload` is what _seal_message_inputs
+        returned: (name_status, ai_inputs | None)."""
+        name_status, ai_inputs = payload
         title, body = build_fallback_message(name_status)
-        if self.config.ai.mode == "none":
+        if ai_inputs is None:
             return title, body
+        stat, text = ai_inputs
         try:
-            stat = st.repo.diff_stat_for_seal()
-            text = st.repo.diff_text_for_seal(self.config.ai.max_diff_chars)
             ai_msg = generate_commit_message(self.config.ai, stat, text)
             if ai_msg and ai_msg[0]:
                 return ai_msg
@@ -960,8 +1166,9 @@ class Engine:
 
     # --------------------------------------------------------- autosnap (mirror)
     def _maybe_autosnap(self, st: RepoState, now_mono: float):
-        """Mirror HEAD (incl. the WIP) to the remote on a background worker, so a
-        total disk failure loses at most ~autosnap_interval. Only when something
+        """Mirror the shadow tip (the latest snapshot: sealed history + the live
+        WIP) to the remote on a background worker, so a total disk failure loses
+        at most ~autosnap_interval. Only when something
         actually changed since the last mirror (autosnap_pending), so a dormant
         repo never pushes. See §12 of DESIGN.md."""
         if not st.cfg.autosnap or not st.autosnap_pending:
@@ -975,8 +1182,9 @@ class Engine:
             st.last_autosnap_mono = now_mono
 
     def _do_autosnap(self, st: RepoState):
-        """Force-push HEAD to this host's autosnap ref. Assumes op_lock (runs in a
-        _dispatch_network worker). Clears the pending flag only on success."""
+        """Force-push the shadow tip to this host's autosnap ref. Assumes op_lock
+        (runs in a _dispatch_network worker). Clears the pending flag only on
+        success."""
         repo, cfg = st.repo, st.cfg
         ok, msg = repo.push_autosnap(
             cfg.remote, st.active_branch, st.user, self._autosnap_host, timeout=cfg.git_timeout_sec
@@ -1019,6 +1227,72 @@ class Engine:
         # Advance only on a real dispatch (a busy repo retries next interval).
         if self._dispatch_network(st, "gc", _gc):
             st.last_gc_mono = now_mono
+
+    def _maybe_nudge_commit(self, st: RepoState, now_mono: float, now_epoch: float):
+        """Purist mode's safety net for its one footgun: the permanent branch can
+        silently stagnate if the user never Smart Commits (the work is safe in the
+        WIP + autosnap, just not ON the branch). When un-sealed work has piled up
+        AND the repo has *settled* (a quiet moment = the "you finished something"
+        proxy) AND it's been a while since the last permanent commit, remind ONCE
+        (throttled) to Smart Commit. No-op outside purist mode (auto-seal keeps the
+        branch advancing there) or when suggest_commit is off. See the README.
+        """
+        cfg = st.cfg
+        # Cheap gates first (no git): only in purist mode, only if enabled.
+        if not cfg.suggest_commit or not math.isinf(cfg.seal_interval_sec):
+            return
+        # Don't nag right after launch, and only at a quiet moment (settled work).
+        if now_mono - st._started_mono < self.COMMIT_NUDGE_QUIET_SEC:
+            return
+        if now_mono - st.last_event_mono < self.COMMIT_NUDGE_QUIET_SEC:
+            return
+        if now_mono - st._commit_nudge_mono < self.COMMIT_NUDGE_THROTTLE_SEC:
+            return
+        # Staleness is measured off the last permanent (sealed/user) commit, which
+        # in purist mode is HEAD. last_seal_epoch tracks it (a Smart Commit refreshes
+        # it via _do_seal), so committing makes this gate close by itself.
+        if now_epoch - st.last_seal_epoch < self.COMMIT_NUDGE_STALE_SEC:
+            return
+        # Only now (rare: once/day for a stale purist repo) spend a git call to
+        # confirm there's actually un-sealed work. Non-blocking: skip if a worker
+        # holds the repo (we'll re-evaluate next tick).
+        if not st.op_lock.acquire(blocking=False):
+            return
+        try:
+            repo, branch = st.repo, st.active_branch
+            # A manual `git commit` in a terminal never passes through _do_seal,
+            # so refresh the staleness baseline from git first — the user who
+            # committed by hand yesterday must not be nagged today.
+            external = repo.last_sealed_time()
+            if external and external > st.last_seal_epoch:
+                st.last_seal_epoch = float(external)
+                st.has_sealed = True
+                if now_epoch - st.last_seal_epoch < self.COMMIT_NUDGE_STALE_SEC:
+                    return
+            head = repo.head_sha()
+            head_tree = repo.tree_of(head) if head else repo._empty_tree()
+            tip = repo.shadow_tip(branch)
+            tip_tree = repo.tree_of(tip) if tip else None
+            if not tip_tree or repo.trees_match(head_tree, tip_tree):
+                return  # nothing un-sealed: the branch is already current
+            n = len(repo.name_status_for_seal(head_tree, tip_tree))
+        except GitError:
+            return
+        finally:
+            st.op_lock.release()
+        st._commit_nudge_mono = now_mono
+        days = int((now_epoch - st.last_seal_epoch) // 86400)
+        since = f"{days} day(s)" if days >= 1 else "a while"
+        self._emit(
+            cfg.name, "info",
+            f"{n} file(s) of work aren't on your branch yet and there's been no "
+            f"permanent commit in {since}; consider a Smart Commit (it's already "
+            f"backed up — this is about your history)", "WARNING")
+        notify(
+            "SincroGit: time for a commit?",
+            f"'{cfg.name}': {n} file(s) of work aren't on your branch yet. A Smart "
+            f"Commit seals them as a permanent commit. (Already backed up; this is "
+            f"about keeping your history current.)")
 
     def _initial_sync(self):
         # Runs on its own thread at startup. Per-repo op_lock keeps each repo's
@@ -1097,46 +1371,32 @@ class Engine:
         if not peer:
             st.pending_handoff = None
             return
-        head = repo.head_sha()
-        if not head or head == peer["sha"]:
-            st.pending_handoff = None
-            return  # in sync (or no HEAD yet)
 
         # Capture pending local edits first, so the comparison is honest: only then
         # can we tell "I'm simply behind" from "I have my own new work".
-        self._ensure_wip(st)
-        if self._stage(st) and repo.has_staged_changes():
-            repo.amend_keep_message()
-        head = repo.head_sha()
-        if head == peer["sha"]:
+        self._shadow_snapshot(st)
+        mine = repo.shadow_tip(st.active_branch)
+        if not mine or mine == peer["sha"]:
             st.pending_handoff = None
-            return
+            return  # in sync (or nothing local yet)
 
-        # Compare actual WORK content (not commit ancestry — the amended WIPs of two
-        # machines are always siblings; see GitRepo.work_relationship).
-        rel = repo.work_relationship(head, peer["sha"])
+        # Compare actual WORK content (not commit ancestry — the snapshot chains
+        # of two machines are siblings; see GitRepo.work_relationship).
+        rel = repo.work_relationship(mine, peer["sha"])
         if rel == "theirs_contains":
-            # SAFE fast-forward: loses nothing of mine. Refuse if it would clobber an
-            # untracked file (notify instead).
-            if repo.untracked_collisions(peer["sha"]):
+            # SAFE to adopt: their state matches my content on every path I
+            # changed. Refuse if applying would still clobber something that
+            # exists nowhere in git: an untracked file their tree contains, or
+            # an uncaptured (filtered) local edit on a path being brought over.
+            risky = self._handoff_risky(st, mine, peer["sha"])
+            if risky:
                 st.pending_handoff = None
+                sample = ", ".join(risky[:3]) + ("…" if len(risky) > 3 else "")
                 self._warn_handoff_once(
                     st, peer["sha"],
-                    f"newer work on '{peer['host']}' NOT applied: it would overwrite "
-                    f"untracked file(s). Move/commit them first.", notify_user=True)
-                return
-            # Refuse if there are local edits the snapshot could NOT capture (file
-            # too large / binary / excluded): they live only in the working tree, so
-            # the reset would destroy them beyond even the reflog's reach.
-            unstaged = repo.modified_unstaged()
-            if unstaged:
-                st.pending_handoff = None
-                sample = ", ".join(unstaged[:3]) + ("…" if len(unstaged) > 3 else "")
-                self._warn_handoff_once(
-                    st, peer["sha"],
-                    f"newer work on '{peer['host']}' NOT applied: you have local "
-                    f"edits that auto-snapshot can't capture ({sample}). Applying "
-                    f"would destroy them — commit them by hand, then sync.",
+                    f"newer work on '{peer['host']}' NOT applied: it would "
+                    f"overwrite local content snapshots don't hold ({sample}). "
+                    f"Move or commit those files first, then sync.",
                     notify_user=True)
                 return
             if cfg.live_handoff == "ask":
@@ -1161,20 +1421,39 @@ class Engine:
                 f"the other). Not auto-merged: seal one side with Smart Commit, then sync. "
                 f"See the README's handoff section.", notify_user=True)
 
-    def _apply_handoff(self, st: RepoState, sha: str, host: str):
-        """Fast-forward the WIP to a peer's state. Caller MUST hold op_lock and have
-        verified work_relationship == 'theirs_contains' and no untracked_collisions."""
-        st.repo.fast_forward_wip(sha)
-        sealed = st.repo.last_sealed_time()
-        st.last_seal_epoch = float(sealed) if sealed else st.last_seal_epoch
-        st.has_sealed = sealed is not None or st.has_sealed
-        st.autosnap_pending = True       # my own ref should now track the new HEAD
+    def _handoff_risky(self, st: RepoState, mine: str, peer_sha: str) -> list:
+        """Paths applying the peer's tree would destroy beyond recovery: local
+        content the snapshots don't hold (post-snapshot leftovers = what the
+        filter refused, plus genuinely-untracked files) on paths the apply
+        would touch. Assumes a _shadow_snapshot just ran."""
+        touched = [p for _s, p in st.repo.diff_trees_name_status(peer_sha, mine)]
+        return self._risky_paths(st, peer_sha, touched)
+
+    def _apply_handoff(self, st: RepoState, sha: str, host: str) -> bool:
+        """Adopt a peer's state: make the WORKTREE match its snapshot tree and
+        record that as MY next snapshot. Content-first — the user's HEAD and
+        branch are never moved (sealed history reconciles via the normal pull).
+        Caller MUST hold op_lock and have verified work_relationship ==
+        'theirs_contains' and _handoff_risky() == []. False = a local save
+        landed mid-flight (captured, nothing touched); the next cycle
+        re-validates against it."""
+        repo, branch = st.repo, st.active_branch
+        mine = repo.shadow_tip(branch)
+        # target -> current: 'A' = exists here only (remove); rest = take theirs.
+        changes = repo.diff_trees_name_status(sha, mine)
+        if not self._apply_tree_to_worktree(st, sha, changes):
+            self._emit(st.cfg.name, "handoff",
+                       f"you saved an edit while '{host}' was being applied; "
+                       f"nothing was touched — re-checking on the next sync")
+            return False
+        st.autosnap_pending = True       # my own mirror should track the new state
         st._handoff_warned_sha = None
         st.pending_handoff = None
         self._mark_action(st, "handoff")
         self._emit(st.cfg.name, "handoff", f"applied newer work from '{host}' — you're up to date")
         notify("SincroGit: caught up",
                f"'{st.cfg.name}': applied newer work from '{host}'. You're up to date.")
+        return True
 
     def apply_handoff(self, name: str) -> tuple:
         """Apply a pending handoff (the 'ask'-mode one-click action / CLI). Re-validates
@@ -1183,12 +1462,9 @@ class Engine:
         st = self.repo_state_by_name(name)
         if not st:
             return False, "repo not found"
-        try:
-            ok, cur = self._branch_ok(st)
-        except GitError as e:
-            return False, str(e)
-        if not ok:
-            return False, self._branch_block_msg(st, cur)
+        err = self._check_operable(st)
+        if err:
+            return False, err
         repo = st.repo
         try:
             with st.op_lock:
@@ -1202,25 +1478,24 @@ class Engine:
                     st.pending_handoff = None
                     return False, "the other machine's work is no longer available"
                 # Snapshot local edits, then re-check the relationship from scratch.
-                self._ensure_wip(st)
-                if self._stage(st) and repo.has_staged_changes():
-                    repo.amend_keep_message()
-                head = repo.head_sha()
-                if head == peer["sha"]:
+                self._shadow_snapshot(st)
+                mine = repo.shadow_tip(st.active_branch)
+                if mine == peer["sha"]:
                     st.pending_handoff = None
                     return True, "already up to date"
-                rel = repo.work_relationship(head, peer["sha"])
+                rel = repo.work_relationship(mine, peer["sha"])
                 if rel != "theirs_contains":
                     st.pending_handoff = None
-                    return False, f"can no longer fast-forward safely (now '{rel}'); resolve by hand"
-                if repo.untracked_collisions(peer["sha"]):
-                    return False, "would overwrite untracked file(s); move them first"
-                unstaged = repo.modified_unstaged()
-                if unstaged:
-                    return False, (f"local edits in {len(unstaged)} file(s) auto-snapshot "
-                                   f"can't capture (e.g. '{unstaged[0]}'); commit or "
-                                   f"revert them first")
-                self._apply_handoff(st, peer["sha"], peer["host"])
+                    return False, f"can no longer apply safely (now '{rel}'); resolve by hand"
+                risky = self._handoff_risky(st, mine, peer["sha"])
+                if risky:
+                    return False, (f"local content snapshots don't hold in "
+                                   f"{len(risky)} file(s) (e.g. '{risky[0]}'); "
+                                   f"move or commit them first")
+                if not self._apply_handoff(st, peer["sha"], peer["host"]):
+                    return False, ("you saved an edit while it was being applied; "
+                                   "nothing was touched (the edit is snapshotted) "
+                                   "— try again")
         except GitError as e:
             return False, str(e)
         return True, f"applied '{peer['host']}'"
@@ -1237,16 +1512,25 @@ class Engine:
         self._emit(st.cfg.name, "handoff", message, "WARNING")
 
     def _pull_after_fetch(self, st: RepoState, remote_exists: bool) -> bool:
-        """Rebase the WIP onto new remote commits (assumes fetch already ran).
-        Returns False if a conflict occurred (and the repo was paused)."""
+        """Rebase the local branch onto new remote commits (assumes fetch ran).
+        Returns False if a conflict occurred (and the repo was paused).
+
+        The user's edits live UNCOMMITTED in the worktree (shadow model), so the
+        rebase autostashes them. Two conflict shapes, both leaving the repo
+        paused with an explanation:
+          - the REBASE conflicts -> aborted, tree intact (like always);
+          - the rebase succeeds but RE-APPLYING the dirty edits conflicts ->
+            git leaves conflict markers + a stash entry (phase-0 spike). We
+            snapshot BEFORE pulling, so the exact pre-pull content is one
+            Time-Machine restore away either way.
+        """
         repo, cfg = st.repo, st.cfg
         behind = repo.commits_behind(cfg.remote, st.active_branch) if (cfg.pull and remote_exists) else 0
         if behind <= 0:
             return True
-        self._ensure_wip(st)
-        if self._stage(st) and repo.has_staged_changes():
-            repo.amend_keep_message()
-        if repo.rebase_onto_remote(cfg.remote, st.active_branch):
+        self._shadow_snapshot(st)  # the recovery guarantee for everything below
+        ok, dirty_conflict = repo.rebase_onto_remote(cfg.remote, st.active_branch)
+        if ok and not dirty_conflict:
             self._mark_action(st, "pull")
             self._emit(cfg.name, "pull", f"integrated {behind} commit(s) from the remote")
             # A never-sealed repo may have just pulled sealed commits: reflect it
@@ -1259,21 +1543,30 @@ class Engine:
                     st.last_seal_epoch = float(sealed)
             return True
         st.paused = True
-        # The rebase already aborted (rebase_onto_remote), so the tree is intact.
         # Keep the explanation on the state: the GUI shows it next to "Conflict"
         # instead of making the user dig through the Log.
-        st.conflict_msg = (
-            f"Your local changes overlap commits on '{cfg.remote}/{st.active_branch}'. "
-            f"The rebase was aborted — your files are intact. Reconcile by hand "
-            f"(e.g. `git pull --rebase` in a terminal and resolve, or move your "
-            f"conflicting edits aside), then press Resume."
-        )
+        if dirty_conflict:
+            st.conflict_msg = (
+                f"The remote's commits were integrated, but re-applying your "
+                f"uncommitted edits conflicted: conflict markers were left in "
+                f"the affected file(s). Resolve them (your exact pre-pull state "
+                f"is in the time machine), then press Resume."
+            )
+            detail = "pull left conflict markers; repo PAUSED"
+        else:
+            st.conflict_msg = (
+                f"Your local changes overlap commits on '{cfg.remote}/{st.active_branch}'. "
+                f"The rebase was aborted — your files are intact. Reconcile by hand "
+                f"(e.g. `git pull --rebase` in a terminal and resolve, or move your "
+                f"conflicting edits aside), then press Resume."
+            )
+            detail = "rebase conflict; repo PAUSED"
         notify(
             "SincroGit: conflict",
-            f"Autosync PAUSED on '{cfg.name}'. Resolve the rebase by hand.",
+            f"Autosync PAUSED on '{cfg.name}'. Resolve the conflict by hand.",
         )
         self._mark_action(st, "conflict")
-        self._emit(cfg.name, "conflict", "rebase conflict; repo PAUSED", "ERROR")
+        self._emit(cfg.name, "conflict", detail, "ERROR")
         return False
 
     # ----------------------------------------------------------- shutdown
@@ -1371,7 +1664,8 @@ class Engine:
         st = RepoState(repo, rc, FileFilter(rc.max_file_bytes, rc.extra_excludes,
                                             rc.extra_includes, rc.max_include_bytes))
         try:
-            repo.ensure_wip()
+            repo.migrate_wip_tip(rc.branch)
+            repo.ensure_shadow(rc.branch)
             sealed = repo.last_sealed_time()
             st.last_seal_epoch = float(sealed) if sealed else time.time()
             st.has_sealed = sealed is not None
@@ -1397,12 +1691,9 @@ class Engine:
         st = self.repo_state_by_name(name)
         if not st:
             return False, "repo not found"
-        try:
-            ok, cur = self._branch_ok(st)
-        except GitError as e:
-            return False, str(e)
-        if not ok:
-            return False, self._branch_block_msg(st, cur)
+        err = self._check_operable(st)
+        if err:
+            return False, err
         with st.op_lock:
             try:
                 sealed = self._do_seal(st, time.time(), message=message)
@@ -1426,26 +1717,28 @@ class Engine:
         st = self.repo_state_by_name(name)
         if not st:
             return False, "", "", "repo not found"
-        try:
-            ok, cur = self._branch_ok(st)
-        except GitError as e:
-            return False, "", "", str(e)
-        if not ok:
-            return False, "", "", self._branch_block_msg(st, cur)
+        err = self._check_operable(st)
+        if err:
+            return False, "", "", err
 
-        # Quick git work under the lock: capture the WIP and the diffs.
+        # Quick git work under the lock: capture a snapshot and take the diffs.
         with st.op_lock:
             if st.repo.is_busy():
                 return False, "", "", "repo busy (merge/rebase in progress)"
-            self._ensure_wip(st)
-            if self._stage(st) and st.repo.has_staged_changes():
-                st.repo.amend_keep_message()
-            if not st.repo.wip_differs_from_base():
+            self._shadow_snapshot(st)
+            repo, branch = st.repo, st.active_branch
+            tree = repo.sync_shadow_index(branch)
+            head = repo.head_sha()
+            head_tree = repo.tree_of(head) if head else repo._empty_tree()
+            if repo.trees_match(head_tree, tree):
                 return False, "", "", "nothing to commit"
-            base = st.repo.last_manual_sha()
-            name_status = st.repo.name_status_for_seal()  # files in THIS commit (WIP window)
-            stat = st.repo.diff_stat_for_seal(base=base)
-            text = st.repo.diff_text_for_seal(self.config.ai.max_diff_chars, base=base)
+            base = repo.last_manual_sha()
+            # Files in THIS commit = the window HEAD -> latest snapshot; the AI
+            # context is the cumulative diff since the last MANUAL commit.
+            name_status = repo.name_status_for_seal(head_tree, tree)
+            stat = repo.diff_stat_for_seal(base=base or head_tree, target=tree)
+            text = repo.diff_text_for_seal(self.config.ai.max_diff_chars,
+                                           base=base or head_tree, target=tree)
 
         # Slow AI call OUTSIDE the lock (it doesn't touch git).
         title, body = build_fallback_message(name_status, prefix="chore")
@@ -1471,12 +1764,9 @@ class Engine:
         st = self.repo_state_by_name(name)
         if not st:
             return False, "repo not found"
-        try:
-            ok, cur = self._branch_ok(st)
-        except GitError as e:
-            return False, str(e)
-        if not ok:
-            return False, self._branch_block_msg(st, cur)
+        err = self._check_operable(st)
+        if err:
+            return False, err
         repo, cfg = st.repo, st.cfg
         with st.op_lock:
             if repo.is_busy():
@@ -1496,6 +1786,71 @@ class Engine:
                 return st
         return None
 
+    def repo_config_view(self, name: str) -> dict | None:
+        """The repo's EFFECTIVE config (defaults merged) as a plain dict, for
+        the GUI's properties dialog. Built with dataclasses.asdict so a new
+        RepoConfig field shows up here automatically — no mirror list to keep
+        in sync on the GUI side."""
+        st = self.repo_state_by_name(name)
+        return dataclasses.asdict(st.cfg) if st else None
+
+    def host_name(self) -> str:
+        """This machine's autosnap host name (the ref-path-safe identity used
+        in refs/autosnap/<user>/<host>/<branch>). Exposed so the GUI never
+        imports gitrepo internals."""
+        return self._autosnap_host
+
+    # ------------------------------------------- shared manual-action helpers
+    def _check_operable(self, st: RepoState) -> str | None:
+        """The branch-guard preamble every manual action shares: None if the repo
+        can be operated on right now, else a human-readable reason (off the
+        configured branch / detached HEAD / the git call itself failed). Sets
+        st.active_branch as a side effect (via _branch_ok)."""
+        try:
+            ok, cur = self._branch_ok(st)
+        except GitError as e:
+            return str(e)
+        return None if ok else self._branch_block_msg(st, cur)
+
+    def _risky_paths(self, st: RepoState, sha: str, touched) -> list:
+        """Of `touched` paths, those whose CURRENT worktree content the snapshots
+        do NOT hold — the filter refused it (excluded / oversize / binary), or
+        it's untracked while `sha` tracks it. Applying `sha` there would destroy
+        content that exists nowhere in git, so every restore/handoff refuses on a
+        non-empty result. Assumes a _shadow_snapshot just ran."""
+        return sorted(set(touched) & (set(self._uncaptured(st))
+                                      | set(st.repo.untracked_collisions(sha))))
+
+    def _apply_tree_to_worktree(self, st: RepoState, sha: str, changes: list) -> bool:
+        """Make the WORKTREE match `sha` on the given (status, path) name-status
+        (target->current): restore differing files to `sha`'s content, delete the
+        ones that exist only now ('A'). Worktree-only — the user's index stays
+        theirs — and a closing snapshot records the restore so it's itself
+        versioned. The shared tail of restore_files / restore_repo / handoff.
+
+        Returns False — WITHOUT touching the worktree — when a save landed
+        after the caller computed `changes`: validation snapshots first, but
+        the git reads that follow leave a small window, and an edit saved in
+        it exists nowhere else. The last-second snapshot here captures it (so
+        nothing is lost either way); the stale plan is refused and the caller
+        reports/retries against the new content."""
+        if self._shadow_snapshot(st):
+            return False
+        failed: list = []
+        try:
+            st.repo.restore_paths_worktree(sha, [p for s, p in changes if s != "A"])
+            failed = st.repo.delete_paths_worktree([p for s, p in changes if s == "A"])
+        finally:
+            self._shadow_snapshot(st)  # record what WAS applied, even mid-error
+        if failed:
+            sample = ", ".join(failed[:5]) + (", …" if len(failed) > 5 else "")
+            self._emit(st.cfg.name, "info",
+                       f"{len(failed)} file(s) slated for removal could not be "
+                       f"deleted (open in another program?): {sample}. Close "
+                       f"whatever holds them and run the restore again.",
+                       "WARNING")
+        return True
+
     def locate_file(self, abspath: str):
         """Map an absolute file path to (repo_name, relpath) or (None, None)."""
         abspath = os.path.abspath(abspath)
@@ -1514,7 +1869,7 @@ class Engine:
         if not st:
             return []
         try:
-            return st.repo.file_history(relpath, limit)
+            return st.repo.file_history(relpath, limit, branch=st.active_branch)
         except GitError as e:
             log.error("[%s] history failed: %s", repo_name, e)
             return []
@@ -1527,7 +1882,7 @@ class Engine:
         if not st:
             return []
         try:
-            return st.repo.repo_history(limit)
+            return st.repo.repo_history(limit, branch=st.active_branch)
         except GitError as e:
             log.error("[%s] repo history failed: %s", repo_name, e)
             return []
@@ -1602,33 +1957,34 @@ class Engine:
         st = self.repo_state_by_name(repo_name)
         if not st:
             return False, "repo not found"
-        try:
-            ok, cur = self._branch_ok(st)
-        except GitError as e:
-            return False, str(e)
-        if not ok:  # off-branch: the capture would WIP-amend the wrong branch
-            return False, self._branch_block_msg(st, cur)
+        err = self._check_operable(st)  # off-branch: a capture would snapshot the wrong branch
+        if err:
+            return False, err
         with st.op_lock:  # don't race with the snapshot/seal cycle
             if st.repo.is_busy():
                 return False, "repo busy (merge/rebase in progress)"
             try:
-                # Snapshot pending edits into the WIP BEFORE overwriting: an edit
-                # saved since the last snapshot exists nowhere else — without this,
-                # the checkout would destroy it beyond even the reflog's reach.
-                self._ensure_wip(st)
-                if self._stage(st) and st.repo.has_staged_changes():
-                    st.repo.amend_keep_message()
-                # Whatever that pass could NOT capture (tracked edits the filter
+                # Snapshot pending edits BEFORE overwriting: an edit saved since
+                # the last snapshot exists nowhere else — without this, the
+                # restore would destroy it beyond even the reflog's reach.
+                self._shadow_snapshot(st)
+                # Whatever that pass could NOT capture (content the filter
                 # refused, or an untracked-but-filtered file that `sha` tracks)
-                # would be destroyed by the checkout. Refuse instead.
-                if (relpath in st.repo.modified_unstaged()
-                        or relpath in st.repo.untracked_collisions(sha)):
+                # would be destroyed by the restore. Refuse instead.
+                if self._risky_paths(st, sha, [relpath]):
                     return False, (
                         f"'{relpath}' has local content that snapshots can't "
                         f"capture (excluded, over the size limit or binary); "
                         f"copy it somewhere safe first, then restore"
                     )
-                st.repo.restore_file(relpath, sha)
+                # Worktree-only write: the user's index stays theirs, so the
+                # restore shows up in their `git status` as a plain edit.
+                # ("M" = take `sha`'s content; the shared tail also closes the
+                # validate->write window and versions the restore itself.)
+                if not self._apply_tree_to_worktree(st, sha, [("M", relpath)]):
+                    return False, ("you saved an edit while the restore was "
+                                   "being prepared; nothing was touched (the "
+                                   "edit is snapshotted) — try again")
             except GitError as e:
                 return False, str(e)
         self._emit(repo_name, "info", f"restored '{relpath}' from {sha[:8]}")
@@ -1650,12 +2006,9 @@ class Engine:
             return False, "repo not found"
         if not relpaths:
             return False, "no files selected"
-        try:
-            ok, cur = self._branch_ok(st)
-        except GitError as e:
-            return False, str(e)
-        if not ok:  # off-branch: the capture would WIP-amend the wrong branch
-            return False, self._branch_block_msg(st, cur)
+        err = self._check_operable(st)  # off-branch: a capture would snapshot the wrong branch
+        if err:
+            return False, err
         with st.op_lock:  # don't race with the snapshot/seal cycle
             if st.repo.is_busy():
                 return False, "repo busy (merge/rebase in progress)"
@@ -1663,13 +2016,8 @@ class Engine:
                 # Snapshot pending edits into the WIP BEFORE overwriting (see
                 # restore_file), then refuse if a SELECTED file still has content
                 # that pass couldn't capture — it exists nowhere in git.
-                self._ensure_wip(st)
-                if self._stage(st) and st.repo.has_staged_changes():
-                    st.repo.amend_keep_message()
-                selected = set(relpaths)
-                risky = sorted(selected.intersection(
-                    set(st.repo.modified_unstaged())
-                    | set(st.repo.untracked_collisions(sha))))
+                self._shadow_snapshot(st)
+                risky = self._risky_paths(st, sha, relpaths)  # only the SELECTED paths
                 if risky:
                     sample = ", ".join(risky[:5]) + (", …" if len(risky) > 5 else "")
                     return False, (
@@ -1678,26 +2026,23 @@ class Engine:
                         f"or binary): {sample}. Copy them somewhere safe first, "
                         f"then restore"
                     )
-                # 'A' (created since `sha`) -> restoring means REMOVING it; any
-                # other difference -> checkout `sha`'s version. Files that don't
-                # differ are silently already-there.
-                diff = {p: s for s, p in st.repo.diff_name_status_vs(sha)}
-                to_remove = [p for p in relpaths if diff.get(p) == "A"]
-                to_checkout = [p for p in relpaths
-                               if p in diff and diff[p] != "A"]
-                if not to_remove and not to_checkout:
+                # Restrict the tree-vs-tree diff to the SELECTED paths: 'A'
+                # (created since `sha`) -> remove; any other difference -> take
+                # `sha`'s version; files that don't differ are already there.
+                # (Tree-vs-tree so files the user's HEAD doesn't track still count.)
+                mine = st.repo.shadow_tip(st.active_branch)
+                diff = {p: s for s, p in st.repo.diff_trees_name_status(sha, mine)}
+                changes = [(diff[p], p) for p in relpaths if p in diff]
+                if not changes:
                     return True, "nothing to restore (files already match)"
-                if to_checkout:
-                    st.repo.checkout_paths(sha, to_checkout)
-                if to_remove:
-                    st.repo.remove_paths(to_remove)
-                # Capture the restore right away (checkout/rm already staged it).
-                if st.repo.has_staged_changes():
-                    st.repo.amend_keep_message()
-                st.autosnap_pending = True
+                # One atomic capture; refused if a save landed since the plan.
+                if not self._apply_tree_to_worktree(st, sha, changes):
+                    return False, ("you saved an edit while the restore was "
+                                   "being prepared; nothing was touched (the "
+                                   "edit is snapshotted) — try again")
             except GitError as e:
                 return False, str(e)
-        n = len(to_remove) + len(to_checkout)
+        n = len(changes)
         self._emit(repo_name, "info", f"restored {n} file(s) from {sha[:8]}")
         return True, f"restored {n} file(s)"
 
@@ -1726,13 +2071,13 @@ class Engine:
 
         `changes` items are (verb, path): 'revert' (differs; goes back to `sha`'s
         content), 'delete' (created since `sha`; the restore removes it),
-        'recreate' (deleted since `sha`; it comes back). `risky` lists files
-        whose CURRENT content snapshots can't capture — restore_repo refuses
-        while they exist. Untracked files only show up in `risky` (git diff
-        doesn't list them; the restore leaves the others alone).
+        'recreate' (deleted since `sha`; it comes back). `risky` lists files the
+        restore would touch whose CURRENT content snapshots can't capture —
+        restore_repo refuses while they exist.
 
-        Read-only — pending edits are NOT snapshotted here. Callers run it off
-        the GUI thread (a git diff on a big repo can take a moment).
+        Takes a fresh snapshot first (invisible: it only moves the shadow ref),
+        so the comparison is exact and the preview doubles as a recovery point.
+        Callers run it off the GUI thread (git work on a big repo takes a moment).
         """
         st = self.repo_state_by_name(repo_name)
         if not st:
@@ -1742,20 +2087,16 @@ class Engine:
             if st.repo.is_busy():
                 return False, "repo busy (merge/rebase in progress)"
             try:
-                raw = st.repo.diff_name_status_vs(sha)
-                # Risky = what restore_repo's guard would refuse on: an unstaged
-                # edit the filter refuses (a capturable one gets snapshotted by
-                # the restore's pre-pass, so it is NOT at risk), or an untracked
-                # file that `sha` tracks (the read-tree would overwrite it).
-                risky = set(st.repo.untracked_collisions(sha))
-                for rel in st.repo.modified_unstaged():
-                    full = os.path.join(st.cfg.path, rel)
-                    if st.file_filter.reason_to_skip(full, rel) is not None:
-                        risky.add(rel)
+                self._shadow_snapshot(st)
+                mine = st.repo.shadow_tip(st.active_branch)
+                raw = st.repo.diff_trees_name_status(sha, mine)
+                # Risky = what restore_repo's guard would refuse on: uncaptured
+                # local content on a path the restore would touch.
+                risky = self._risky_paths(st, sha, [p for _s, p in raw])
             except GitError as e:
                 return False, str(e)
         changes = [(verb.get(s, "revert"), p) for s, p in raw]
-        return True, {"changes": changes, "risky": sorted(risky)}
+        return True, {"changes": changes, "risky": risky}
 
     def restore_repo(self, repo_name: str, sha: str):
         """Restore the WHOLE working tree to the state at `sha` (a sealed/snapshot/
@@ -1770,27 +2111,23 @@ class Engine:
         st = self.repo_state_by_name(repo_name)
         if not st:
             return False, "repo not found"
-        try:
-            ok, cur = self._branch_ok(st)
-        except GitError as e:
-            return False, str(e)
-        if not ok:  # off-branch: the capture would WIP-amend the wrong branch
-            return False, self._branch_block_msg(st, cur)
+        err = self._check_operable(st)  # off-branch: a capture would snapshot the wrong branch
+        if err:
+            return False, err
         with st.op_lock:  # don't race with the snapshot/seal cycle
             if st.repo.is_busy():
                 return False, "repo busy (merge/rebase in progress)"
             try:
-                self._ensure_wip(st)
-                # Snapshot pending edits into the WIP BEFORE overwriting: anything
-                # saved since the last snapshot exists nowhere else — without this,
-                # the read-tree would destroy it beyond even the reflog's reach.
-                if self._stage(st) and st.repo.has_staged_changes():
-                    st.repo.amend_keep_message()
-                # Whatever that pass could NOT capture (tracked edits the filter
+                # Snapshot pending edits BEFORE overwriting: anything saved
+                # since the last snapshot exists nowhere else — without this,
+                # the restore would destroy it beyond even the reflog's reach.
+                self._shadow_snapshot(st)
+                mine = st.repo.shadow_tip(st.active_branch)
+                changes = st.repo.diff_trees_name_status(sha, mine)
+                # Whatever that pass could NOT capture (content the filter
                 # refused, or untracked-but-filtered files that `sha`'s tree
-                # tracks) would be destroyed by the read-tree. Refuse instead.
-                risky = sorted(set(st.repo.modified_unstaged())
-                               | set(st.repo.untracked_collisions(sha)))
+                # tracks) would be destroyed where the restore touches it.
+                risky = self._risky_paths(st, sha, [p for _s, p in changes])
                 if risky:
                     sample = ", ".join(risky[:5]) + (", …" if len(risky) > 5 else "")
                     return False, (
@@ -1799,10 +2136,12 @@ class Engine:
                         f"and the restore would destroy it: {sample}. Copy them "
                         f"somewhere safe first, then restore"
                     )
-                st.repo.restore_tree(sha)
-                if st.repo.has_staged_changes():
-                    st.repo.amend_keep_message()
-                st.autosnap_pending = True
+                # Worktree-only application of `sha`'s tree; the closing snapshot
+                # records the restored state (the user's index stays theirs).
+                if not self._apply_tree_to_worktree(st, sha, changes):
+                    return False, ("you saved an edit while the restore was "
+                                   "being prepared; nothing was touched (the "
+                                   "edit is snapshotted) — try again")
             except GitError as e:
                 return False, str(e)
         self._emit(repo_name, "info", f"restored whole repo to {sha[:8]}")

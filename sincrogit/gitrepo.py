@@ -1,13 +1,16 @@
 """Thin wrapper over the git CLI (via subprocess).
 
 The CLI is used instead of GitPython because the fine-grained operations
-(continuous amend, sealing, WIP detection) are clearer and more predictable.
+(plumbing snapshots, sealing, ref surgery) are clearer and more predictable.
 See §7 of DESIGN.md.
 
-Two-tier model (see §2 of DESIGN.md):
-  - WIP (snapshot): a single commit at HEAD that is amended every few minutes.
-  - Sealed: periodically (seal_interval_min, default 6 h) the WIP is "frozen" with a
-    descriptive message and a new WIP is born.
+Two-tier SHADOW model (see §2 of DESIGN.md):
+  - Snapshot: a commit built through a PRIVATE index and appended every few
+    minutes to the side ref refs/sincro/wip/<branch> — the user's HEAD, index
+    and `git status` are never touched.
+  - Sealed: periodically (seal_interval_min, default 6 h) the accumulated
+    snapshot tree becomes ONE real commit on the branch, and the shadow chain
+    re-anchors there (the old chain stays in the side ref's reflog ~30 days).
 """
 
 import logging
@@ -49,8 +52,10 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
 def autosnap_host() -> str:
     """This machine's name, sanitized for use inside a git ref path.
 
-    The autosnap ref is per-machine (refs/autosnap/<host>/<branch>) so two
-    machines mirroring the same repo never clobber each other.
+    The autosnap ref is per-user AND per-machine
+    (refs/autosnap/<user>/<host>/<branch>) so two machines mirroring the same
+    repo never clobber each other, and a machine can tell its OWN other machines'
+    mirrors apart from a teammate's (see autosnap_ref / sincro_user).
     """
     name = socket.gethostname() or "host"
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name).strip("._-")
@@ -115,6 +120,7 @@ class GitRepo:
         # is pure os.path.exists after the first call (the idle-wait computation
         # consults it every tick — it must not spawn a subprocess).
         self._git_dir_cache = None
+        self._empty_tree_cache = None  # the empty-tree oid (repos with no commits)
 
     def _ensure_pandoc(self):
         """Resolve pandoc on first actual .docx use (lazy, once). After this call
@@ -133,6 +139,7 @@ class GitRepo:
         check: bool = True,
         stdin_data: str | None = None,
         timeout: float | None = None,
+        extra_env: dict | None = None,
     ):
         cmd = [
             "git",
@@ -158,6 +165,9 @@ class GitRepo:
             # 'porcelain'/'plumbing' commands that are locale-independent.)
             "LC_ALL": "C",
             "LANG": "C",
+            # The shadow snapshots run against a private index (GIT_INDEX_FILE),
+            # never the user's — see the shadow section.
+            **(extra_env or {}),
         }
         # Popen (not subprocess.run) so a timeout can kill the WHOLE process tree:
         # subprocess.run only kills the direct child (git.exe), and on Windows its
@@ -265,6 +275,25 @@ class GitRepo:
         )
         return any(os.path.exists(os.path.join(gd, m)) for m in markers)
 
+    # A real git command holds index.lock for seconds; one this old is a
+    # leftover from a crash (of git, the machine, or a force-killed daemon).
+    STALE_LOCK_SEC = 3600
+
+    def stale_lock(self, max_age_sec: float = STALE_LOCK_SEC) -> str | None:
+        """Path of a `.git/index.lock` untouched for `max_age_sec`, else None.
+
+        A crash strands the lock, is_busy() then reports busy FOREVER and the
+        daemon never syncs again — with nothing telling the user why. Detection
+        only: deleting a lock is the user's call (a git command could still be
+        legitimately running), so --doctor and the long-busy warning surface it
+        with instructions instead."""
+        lock = os.path.join(self._git_dir(), "index.lock")
+        try:
+            age = time.time() - os.path.getmtime(lock)
+        except OSError:
+            return None  # no lock (or unreadable): nothing to report
+        return lock if age >= max_age_sec else None
+
     # --------------------------------------------------- crash self-healing
     _SHA_RE = re.compile(r"[0-9a-f]{40}")
 
@@ -305,29 +334,36 @@ class GitRepo:
                 repairs.append(f"HEAD was corrupt; re-pointed at refs/heads/{branch}")
                 head_txt = f"ref: refs/heads/{branch}"
 
-            # --- the branch HEAD references ---
+            # --- the branch HEAD references, and its shadow ref (both are small
+            # loose files a power cut can zero; each has its own reflog) ---
             target = branch
             if head_txt.startswith("ref: refs/heads/"):
                 target = head_txt[len("ref: refs/heads/"):].strip() or branch
-            ref = f"refs/heads/{target}"
-            if self._run(["rev-parse", "--verify", "--quiet", ref], check=False).returncode == 0:
-                return repairs  # resolves fine — nothing (more) to do
-
-            sha = self._last_good_reflog_sha(gd, ref)
-            if not sha:
-                return repairs  # no trustworthy source: leave it for a human
-            loose = os.path.join(gd, *ref.split("/"))
-            try:
-                os.remove(loose)  # the zeroed file blocks update-ref's lock
-            except OSError:
-                pass
-            self._run(["update-ref", ref, sha], check=False)
-            if self._run(["rev-parse", "--verify", "--quiet", ref], check=False).returncode == 0:
-                repairs.append(
-                    f"{ref} was corrupt (power cut?); restored from its reflog to {sha[:8]}")
+            for ref in (f"refs/heads/{target}", self.shadow_ref(target)):
+                self._repair_one_ref(gd, ref, repairs)
         except Exception as e:  # noqa: BLE001 — healing must never block startup
             log.warning("ref auto-repair skipped: %s", e)
         return repairs
+
+    def _repair_one_ref(self, gd: str, ref: str, repairs: list) -> None:
+        """Restore ONE zeroed/corrupt ref from its own reflog (see above)."""
+        loose = os.path.join(gd, *ref.split("/"))
+        if self._run(["rev-parse", "--verify", "--quiet", ref], check=False).returncode == 0:
+            return  # resolves fine — nothing to do
+        if not os.path.exists(loose) and not os.path.exists(
+                os.path.join(gd, "logs", *ref.split("/"))):
+            return  # the ref never existed here (e.g. shadow not created yet)
+        sha = self._last_good_reflog_sha(gd, ref)
+        if not sha:
+            return  # no trustworthy source: leave it for a human
+        try:
+            os.remove(loose)  # the zeroed file blocks update-ref's lock
+        except OSError:
+            pass
+        self._run(["update-ref", ref, sha], check=False)
+        if self._run(["rev-parse", "--verify", "--quiet", ref], check=False).returncode == 0:
+            repairs.append(
+                f"{ref} was corrupt (power cut?); restored from its reflog to {sha[:8]}")
 
     def _last_good_reflog_sha(self, gitdir: str, ref: str):
         """Newest entry in the ref's OWN reflog whose commit object still exists
@@ -384,129 +420,274 @@ class GitRepo:
         except OSError:
             return []
 
-    def ensure_wip(self) -> bool:
-        """Ensure HEAD is a WIP commit. Returns True if it created one."""
-        if self.head_is_wip():
-            return False
-        # `--allow-empty` works even in a repo with no commits (creates the root).
-        self._run(["commit", "--allow-empty", "-m", self.WIP_MESSAGE])
-        return True
-
-    def changed_paths(self) -> list:
-        """Paths with changes (modified, new, deleted), one per entry."""
-        res = self._run(
-            ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]
-        )
-        paths = []
-        for token in res.stdout.split("\0"):
-            if not token:
-                continue
-            # porcelain v1 with -z: "XY PATH" (XY = 2 chars, then a space).
-            path = token[3:]
-            if path:
-                paths.append(path)
-        return paths
-
-    def stage_changes(self, file_filter, on_drop=None, on_skip=None) -> bool:
-        """Run `git add` ONLY on files that pass the filter.
-
-        Deletions of already-tracked files are always staged.
-        Returns True if anything was staged.
-
-        `on_drop(relpath, reason)` is called for files that are ALREADY tracked
-        but the filter now rejects (e.g. a text file that grew past the size
-        limit) so the caller can warn the user. New untracked binaries/large
-        files and user-configured excludes are skipped silently (expected).
-
-        `on_skip(relpath, reason)` is called for EVERY filtered-out file whose
-        reason isn't a user exclude (binary / too large), tracked or not — so the
-        caller can spot a high-churn "noise" folder and suggest excluding it.
-        """
-        to_stage = []
-        dropped = []  # (rel, reason) for existing files the filter rejected
-        for rel in self.changed_paths():
-            full = os.path.join(self.path, rel)
-            if os.path.exists(full):
-                reason = file_filter.reason_to_skip(full, rel)
-                if reason is None:
-                    to_stage.append(rel)
-                else:
-                    log.debug("filtered out (%s): %s", reason, rel)
-                    dropped.append((rel, reason))
-                    if on_skip is not None and reason != "excluded":
-                        on_skip(rel, reason)
-            else:
-                # The file is no longer on disk => deletion of something tracked.
-                to_stage.append(rel)
-
-        # Only warn about TRACKED files that stopped being snapshotted, and not
-        # for explicit excludes (those are intentional). The tracked check is one
-        # extra git call, made only when something was dropped (usually nothing).
-        if on_drop and dropped:
-            reportable = [(r, why) for r, why in dropped if why != "excluded"]
-            if reportable:
-                tracked = self.list_tracked([r for r, _ in reportable])
-                for rel, why in reportable:
-                    if rel in tracked:
-                        on_drop(rel, why)
-
-        if not to_stage:
-            return False
-
-        # A .docx is about to be versioned -> make sure pandoc is resolved now, so
-        # the caller's md-gating diff (has_staged_changes) already uses textconv.
-        # This is the ONLY moment a .docx repo probes pandoc, and only if one shows
-        # up (a no-op once resolved). See Engine._pandoc_cmd.
-        if any(p.lower().endswith(".docx") for p in to_stage):
-            self._ensure_pandoc()
-
-        # Pass the paths via stdin (NUL-separated) to avoid command-line length
-        # limits on Windows with many files.
-        data = "\0".join(to_stage) + "\0"
-        self._run(
-            ["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
-            stdin_data=data,
-        )
-        return True
-
     def list_tracked(self, paths: list) -> set:
-        """Subset of `paths` that are already tracked (present in the index).
+        """Subset of `paths` present in the SHADOW index (i.e. snapshotted).
 
-        Used to tell apart "a tracked file dropped out of auto-snapshot" from "a
-        brand-new file we never versioned". `paths` is small here (only rejected
-        files), so passing them as arguments is fine.
+        Used to tell apart "a snapshotted file dropped out of auto-snapshot"
+        from "a brand-new file we never versioned". `paths` is small here (only
+        rejected files), so passing them as arguments is fine.
         """
         if not paths:
             return set()
-        res = self._run(["ls-files", "-z", "--", *paths], check=False)
+        res = self._run(["ls-files", "-z", "--", *paths], check=False,
+                        extra_env=self._shadow_env())
         return {p for p in res.stdout.split("\0") if p}
 
     def has_staged_changes(self) -> bool:
         # `diff --cached --quiet` => code 1 if something is staged, 0 otherwise.
         return self._run(["diff", "--cached", "--quiet"], check=False).returncode != 0
 
-    def amend_keep_message(self):
-        """Rewrite the WIP with the current index, keeping its message.
-        `--allow-empty` because the WIP may legitimately become empty — e.g. the
-        user reverts an already-snapshotted edit back to the sealed content, or a
-        whole-repo restore targets the last sealed state; the WIP is created
-        empty (`ensure_wip`), so an empty amend must not fail either."""
-        self._run(["commit", "--amend", "--no-edit", "--allow-empty"])
+    # ------------------------------------------------------------ shadow model
+    # Snapshots live OUTSIDE the user's view of the repo: each one is a commit
+    # built through a PRIVATE index (GIT_INDEX_FILE = .git/sincro-index) and
+    # recorded on refs/sincro/wip/<branch>. HEAD, the user's index and their
+    # `git status` are never touched — `git log` stays clean and every git tool
+    # sees a completely normal repository. At each seal the ref re-anchors to
+    # the sealed commit; the pre-seal chain stays reachable through the ref's
+    # reflog (~30 days), which is the time machine's intra-window memory.
+    SNAPSHOT_MESSAGE = "sincro: snapshot"
 
-    def wip_differs_from_base(self) -> bool:
-        """Does the WIP have content worth sealing?"""
-        if self.head_has_parent():
-            return self._run(["diff", "--quiet", "HEAD~1", "HEAD"], check=False).returncode != 0
-        # Root commit: does it have any file?
-        res = self._run(["ls-tree", "-r", "--name-only", "HEAD"], check=False)
-        return bool(res.stdout.strip())
+    @staticmethod
+    def shadow_ref(branch: str) -> str:
+        return f"refs/sincro/wip/{branch}"
 
-    def name_status_for_seal(self) -> list:
-        """List of [(status, path)] for the changes in the window to be sealed."""
+    def _shadow_env(self) -> dict:
+        return {"GIT_INDEX_FILE": os.path.join(self._git_dir(), "sincro-index")}
+
+    def _empty_tree(self) -> str:
+        if self._empty_tree_cache is None:
+            self._empty_tree_cache = self._run(["mktree"], stdin_data="").stdout.strip()
+        return self._empty_tree_cache
+
+    def head_sha(self) -> str | None:
+        res = self._run(["rev-parse", "--verify", "--quiet", "HEAD"], check=False)
+        return res.stdout.strip() or None
+
+    def shadow_tip(self, branch: str) -> str | None:
+        res = self._run(["rev-parse", "--verify", "--quiet", self.shadow_ref(branch)],
+                        check=False)
+        return res.stdout.strip() or None
+
+    def tree_of(self, ref: str) -> str | None:
+        res = self._run(["rev-parse", f"{ref}^{{tree}}"], check=False)
+        return res.stdout.strip() if res.returncode == 0 else None
+
+    def ensure_shadow(self, branch: str) -> bool:
+        """Make sure the shadow ref exists (anchored at HEAD — or at an empty
+        root snapshot in a repo with no commits) and that git RECORDS its
+        reflog: side refs get none by default, and that reflog is both the
+        time machine's memory and the crash-repair source. True if created."""
+        # Local to this clone, invisible, idempotent. Without it update-ref
+        # writes no reflog for refs outside refs/heads/.
+        self._run(["config", "core.logAllRefUpdates", "always"], check=False)
+        if self.shadow_tip(branch):
+            return False
+        head = self.head_sha()
+        anchor = head or self._run(
+            ["commit-tree", self._empty_tree(), "-m", self.SNAPSHOT_MESSAGE]
+        ).stdout.strip()
+        self._run(["update-ref", "-m", "sincro: anchor",
+                   self.shadow_ref(branch), anchor])
+        return True
+
+    def sync_shadow_index(self, branch: str) -> str:
+        """Point the private index at the shadow tip's tree; returns that tree.
+        Cheap in steady state (the persistent index file is already there, with
+        a warm stat cache); the full read-tree only happens after a seal
+        re-anchor or an external surprise."""
+        tip = self.shadow_tip(branch)
+        tip_tree = self.tree_of(tip) if tip else self._empty_tree()
+        env = self._shadow_env()
+        if os.path.exists(env["GIT_INDEX_FILE"]):
+            res = self._run(["write-tree"], check=False, extra_env=env)
+            if res.returncode == 0 and res.stdout.strip() == tip_tree:
+                return tip_tree
+        self._run(["read-tree", tip_tree], extra_env=env)
+        return tip_tree
+
+    def shadow_changed_paths(self) -> list:
+        """Paths whose WORKTREE content differs from the private index (i.e.
+        from the last snapshot): tracked edits/deletions plus untracked files.
+        The precise 'what changed since the last snapshot' — and, right AFTER a
+        snapshot pass, the leftovers are exactly what the filter refused (the
+        uncapturable content the restore guards must protect)."""
+        env = self._shadow_env()
+        out = self._run(["diff", "--name-only", "-z"], check=False,
+                        extra_env=env).stdout
+        paths = [p for p in out.split("\0") if p]
+        out = self._run(["ls-files", "--others", "--exclude-standard", "-z"],
+                        check=False, extra_env=env).stdout
+        paths += [p for p in out.split("\0") if p]
+        return paths
+
+    def shadow_stage(self, paths: list) -> None:
+        """`git add -A` of these paths into the PRIVATE index (adds, updates
+        and deletions). Paths via stdin to dodge command-line length limits."""
+        if not paths:
+            return
+        if any(p.lower().endswith(".docx") for p in paths):
+            self._ensure_pandoc()  # the gating diff below needs the textconv
+        data = "\0".join(paths) + "\0"
+        self._run(["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                  stdin_data=data, extra_env=self._shadow_env())
+
+    def shadow_write_tree(self) -> str:
+        return self._run(["write-tree"], extra_env=self._shadow_env()).stdout.strip()
+
+    def trees_match(self, a: str, b: str) -> bool:
+        """Tree-vs-tree comparison THROUGH the textconv drivers (`--quiet`
+        honors them — verified in the phase-0 spike), so a .docx whose only
+        change is visual styling still counts as unchanged."""
+        if a == b:
+            return True
+        return self._run(["diff", "--quiet", a, b], check=False).returncode == 0
+
+    def commit_shadow(self, branch: str, tree: str, parent: str | None) -> str:
+        """One snapshot: a commit of `tree` appended to the shadow chain. The
+        update-ref passes the expected old value, so a concurrent mover fails
+        loudly instead of being silently overwritten."""
+        args = ["commit-tree", tree, "-m", self.SNAPSHOT_MESSAGE]
+        if parent:
+            args += ["-p", parent]
+        new = self._run(args).stdout.strip()
+        upd = ["update-ref", "-m", "sincro: snapshot", self.shadow_ref(branch), new]
+        if parent:
+            upd.append(parent)
+        self._run(upd)
+        return new
+
+    def migrate_wip_tip(self, branch: str) -> bool:
+        """One-time migration from the old model: if HEAD is a legacy WIP
+        commit, move it to the shadow chain and give the branch back to the
+        WIP's parent (the last sealed commit). The worktree is untouched, and
+        the user's index is refreshed — so the unsealed edits reappear as
+        ordinary uncommitted changes, which is exactly what they are. A ROOT
+        WIP (repo whose only commit is the WIP) is left in place: a branch
+        must point somewhere, and one initial commit is harmless history.
+        Returns True if a migration happened."""
+        if not self.head_is_wip():
+            return False
+        wip = self.head_sha()
+        self._run(["config", "core.logAllRefUpdates", "always"], check=False)
+        self._run(["update-ref", "-m", "sincro: migrate",
+                   self.shadow_ref(branch), wip])
         if self.head_has_parent():
-            res = self._run(["diff", "--name-status", "HEAD~1", "HEAD"])
-        else:
-            res = self._run(["show", "--name-status", "--format=", "HEAD"])
+            parent = self._run(["rev-parse", "HEAD~1"]).stdout.strip()
+            self._run(["update-ref", "-m", "sincro: migrate",
+                       f"refs/heads/{branch}", parent, wip])
+            self._refresh_user_index()
+        return True
+
+    def reanchor_shadow(self, branch: str, sha: str) -> None:
+        """Point the shadow ref at `sha` (a fresh seal, or a migrated WIP): the
+        new chain starts there; the previous chain stays reachable through the
+        ref's reflog for the usual ~30-day window."""
+        old = self.shadow_tip(branch)
+        args = ["update-ref", "-m", "sincro: reanchor", self.shadow_ref(branch), sha]
+        if old:
+            args.append(old)
+        self._run(args)
+
+    def seal_from_shadow(self, branch: str, tree: str, *messages: str) -> str:
+        """The REAL commit: `tree` (the latest snapshot) committed on top of
+        HEAD with the seal message; the branch advances and the user's index is
+        refreshed (mixed reset — their worktree, which IS `tree`, is untouched).
+        Returns the new sha."""
+        head = self.head_sha()
+        args = ["commit-tree", tree]
+        if head:
+            args += ["-p", head]
+        for m in messages:
+            if m:
+                args += ["-m", m]
+        new = self._run(args).stdout.strip()
+        upd = ["update-ref", "-m", "sincro: seal", f"refs/heads/{branch}", new]
+        if head:
+            upd.append(head)
+        self._run(upd)
+        self._refresh_user_index()  # user's index -> the new HEAD
+        return new
+
+    def _refresh_user_index(self) -> None:
+        """Mixed `git reset` so the user's index tracks the just-moved HEAD.
+
+        Must not fail the seal (the commit already exists), so no `check` — but
+        it must not fail SILENTLY either: a stale index makes `git status` show
+        phantom staged changes, and has_staged_changes() then postpones every
+        future auto-seal "because of a manual commit in progress". Retry once
+        (the realistic cause is a transient index.lock from an AV scan), then
+        say what state that leaves the repo in and how to get out."""
+        res = self._run(["reset", "-q"], check=False)
+        if res.returncode != 0:
+            time.sleep(0.5)
+            res = self._run(["reset", "-q"], check=False)
+        if res.returncode != 0:
+            log.warning(
+                "[%s] could not refresh the index after sealing (%s); `git "
+                "status` will show stale staged changes and auto-seals will be "
+                "postponed until a plain `git reset` succeeds",
+                os.path.basename(self.path), res.stderr.strip() or "unknown error")
+
+    def unmerged_paths(self) -> list:
+        """Paths with unmerged index entries (conflict markers pending) — e.g.
+        after an autostash pop that conflicted (the rebase itself SUCCEEDS in
+        that case, so is_busy sees nothing; verified in the phase-0 spike)."""
+        out = self._run(["ls-files", "-u", "-z"], check=False).stdout
+        return sorted({ln.split("\t", 1)[1] for ln in out.split("\0")
+                       if ln and "\t" in ln})
+
+    def restore_paths_worktree(self, sha: str, paths: list) -> None:
+        """Write these paths' content at `sha` into the WORKTREE only: the
+        user's index is not touched, so `git status` shows the restore as
+        ordinary modifications and the next snapshot captures it."""
+        paths = [p.replace("\\", "/") for p in paths]
+        for chunk in self._path_chunks(paths):
+            self._run(["restore", "--source", sha, "--worktree", "--", *chunk])
+
+    def delete_paths_worktree(self, paths: list) -> list:
+        """Remove these files from the WORKTREE only (plain deletes, no git rm:
+        the user's index stays theirs; their status shows the deletions).
+        Returns the relpaths that could NOT be removed — on Windows a file open
+        in another program can't be deleted — so the caller can SAY so instead
+        of leaving a silently half-applied restore. Already-missing files are
+        not failures: absent is the goal state."""
+        failed = []
+        for rel in paths:
+            try:
+                os.remove(os.path.join(self.path, rel.replace("/", os.sep)))
+            except FileNotFoundError:
+                pass  # already gone: that's the goal state
+            except OSError:
+                failed.append(rel)
+        return failed
+
+    def diff_trees_name_status(self, target: str, current: str) -> list:
+        """[(status, path)] of a pure tree-vs-tree `git diff` (target ->
+        current): 'A' = in current only, 'D' = in target only, 'M'/'T' =
+        differs. Unlike a worktree diff it also covers files the user's HEAD
+        doesn't track yet (snapshots know them). Raises GitError.
+
+        --no-renames is DELIBERATE: this feeds the restore/handoff logic, which
+        drives `git restore --source <target>` per path. Rename detection would
+        collapse a move old->new into a single 'R old new' whose recorded path
+        (new) does NOT exist in `target` — restoring it would delete new and
+        never bring old back (silent wrong restore). Disabling renames yields
+        'D old' + 'A new', both of which the callers handle correctly."""
+        res = self._run(["diff", "--no-renames", "--name-status", target, current])
+        out = []
+        for line in res.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                out.append((parts[0][:1], parts[-1]))
+        return out
+
+    def name_status_for_seal(self, base: str, target: str) -> list:
+        """[(status, path)] of the window being sealed: base (HEAD's tree, or
+        the empty tree in a fresh repo) -> target (the latest snapshot tree).
+        --no-renames so the file list matches what actually changed on disk (a
+        move reads as a delete + an add, consistent with diff_trees_name_status
+        and the restore logic) rather than a single 'R' the callers don't map."""
+        res = self._run(["diff", "--no-renames", "--name-status", base, target])
         items = []
         for line in res.stdout.splitlines():
             line = line.strip()
@@ -517,18 +698,6 @@ class GitRepo:
             path = parts[-1]
             items.append((status, path))
         return items
-
-    def seal(self, *messages: str):
-        """Turn the current WIP into a sealed commit (reword with --amend)."""
-        args = ["commit", "--amend"]
-        for m in messages:
-            if m:
-                args += ["-m", m]
-        self._run(args)
-
-    def new_wip(self):
-        """Create a new, empty WIP on top of the last sealed commit."""
-        self._run(["commit", "--allow-empty", "-m", self.WIP_MESSAGE])
 
     def gc_auto(self):
         """`git gc --auto`: packs loose objects only if the thresholds are exceeded.
@@ -563,24 +732,16 @@ class GitRepo:
         return None
 
     # ------------------------------------------------------------- diffs (AI)
-    def diff_stat_for_seal(self, max_chars: int = 4000, base: str | None = None) -> str:
-        if base:
-            out = self._run(["diff", "--stat", base, "HEAD"]).stdout
-        elif self.head_has_parent():
-            out = self._run(["diff", "--stat", "HEAD~1", "HEAD"]).stdout
-        else:
-            out = self._run(["show", "--stat", "--format=", "HEAD"]).stdout
+    def diff_stat_for_seal(self, max_chars: int = 4000, base: str = "HEAD",
+                           target: str = "HEAD") -> str:
+        out = self._run(["diff", "--stat", base, target]).stdout
         if max_chars and len(out) > max_chars:
             out = out[:max_chars] + "\n... [stat truncated]"
         return out
 
-    def diff_text_for_seal(self, max_chars: int, base: str | None = None) -> str:
-        if base:
-            out = self._run(["diff", base, "HEAD"]).stdout
-        elif self.head_has_parent():
-            out = self._run(["diff", "HEAD~1", "HEAD"]).stdout
-        else:
-            out = self._run(["show", "--format=", "HEAD"]).stdout
+    def diff_text_for_seal(self, max_chars: int, base: str = "HEAD",
+                           target: str = "HEAD") -> str:
+        out = self._run(["diff", base, target]).stdout
         if max_chars and len(out) > max_chars:
             out = out[:max_chars] + "\n... [diff truncated]"
         return out
@@ -609,70 +770,80 @@ class GitRepo:
         except (ValueError, AttributeError):
             return 0
 
-    def last_sealed_sha(self) -> str | None:
-        """SHA of the most recent commit that is NOT a WIP.
-
-        Robust to the user committing manually on top of the WIP: we never assume
-        the positional HEAD~1 is the sealed commit. Returns the sealed commit, or
-        a user's manual commit, or None if there's nothing but WIPs yet.
-        """
-        res = self._run(
-            ["log", "--first-parent", "--format=%H%x09%s", "-n", "50"], check=False
-        )
-        for line in res.stdout.splitlines():
-            sha, subj, _ = self._split3(line)
-            if sha and not subj.startswith(self.WIP_PREFIXES):
-                return sha
-        return None
-
     def has_unpushed_sealed(self, remote: str, branch: str) -> bool:
-        """Are there non-WIP commits not already on the remote?"""
-        sealed = self.last_sealed_sha()
-        if not sealed:
+        """Are there local commits not already on the remote? (In the shadow
+        model HEAD only holds sealed/user commits, so HEAD is the yardstick.)"""
+        if not self.head_sha():
             return False
         res = self._run(
-            ["rev-list", "--count", f"{remote}/{branch}..{sealed}"], check=False
+            ["rev-list", "--count", f"{remote}/{branch}..HEAD"], check=False
         )
         try:
             return int(res.stdout.strip()) > 0
         except (ValueError, AttributeError):
             return True  # when in doubt, attempt the push
 
-    def rebase_onto_remote(self, remote: str, branch: str) -> bool:
-        """Rebase the local branch (including the WIP) onto the remote.
+    def rebase_onto_remote(self, remote: str, branch: str) -> tuple:
+        """Rebase the local branch onto the remote, autostashing the dirty
+        worktree (in the shadow model the user's edits live there, uncommitted).
 
-        Returns True if it was clean; False if there was a conflict (and the
-        rebase is aborted to leave the repo intact). See §3.4 and §4 of DESIGN.md.
+        Returns (ok, dirty_conflict):
+          (True, False)  — clean: rebased, autostash re-applied.
+          (True, True)   — the REBASE succeeded but re-applying the dirty edits
+                           conflicted: git leaves conflict markers in the tree
+                           and a stash entry, and the repo is NOT mid-rebase
+                           (verified in the phase-0 spike) — the caller must
+                           pause + explain, or an auto-seal would seal markers.
+          (False, False) — the rebase itself conflicted; it was aborted so the
+                           repo is left intact. See §3.4 / §11 of DESIGN.md.
         """
         res = self._run(
             ["rebase", "--autostash", f"{remote}/{branch}"], check=False
         )
         if res.returncode == 0:
-            return True
+            return True, bool(self.unmerged_paths())
         # Conflict or other failure: abort so the repo isn't left half-done.
         self._run(["rebase", "--abort"], check=False)
         log.warning("rebase onto %s/%s failed: %s", remote, branch, res.stderr.strip())
-        return False
+        return False, False
 
     def push_sealed(self, remote: str, branch: str, timeout: float | None = None):
-        """Push ONLY up to the last sealed commit (HEAD~1), never the WIP.
-
-        Returns (ok: bool, message: str). Pushing the sealed commit also drags
-        along any previously-unpushed sealed commits (implicit retry).
+        """Push the branch. In the shadow model HEAD only ever holds sealed and
+        user commits (snapshots live on the side ref), so pushing HEAD is safe
+        by construction. Returns (ok: bool, message: str); an unpushed backlog
+        rides along implicitly (retry on the next sync).
         """
-        # Push the last NON-WIP commit (sealed or a user's manual commit), never
-        # the transient WIP. The refspec source must be a real SHA and the dest
-        # the full branch name (in case it doesn't exist on the remote yet).
-        sealed = self.last_sealed_sha()
-        if not sealed:
-            return True, "nothing to push (no sealed commit yet)"
+        head = self.head_sha()
+        if not head:
+            return True, "nothing to push (no commits yet)"
         res = self._run(
-            ["push", remote, f"{sealed}:refs/heads/{branch}"],
+            ["push", remote, f"{head}:refs/heads/{branch}"],
             check=False,
             timeout=timeout,
         )
         msg = (res.stderr.strip() or res.stdout.strip())
         return res.returncode == 0, msg
+
+    def ls_remote_heads(self, remote: str, timeout: float | None = None) -> tuple:
+        """Probe READ reachability of a remote (no worktree touch): `git ls-remote
+        --heads`. Returns (ok, detail); detail is the first error line on failure.
+        A public entry point for --doctor (it must not reach into _run)."""
+        res = self._run(["ls-remote", "--heads", remote], check=False, timeout=timeout)
+        if res.returncode == 0:
+            return True, ""
+        err = (res.stderr or res.stdout).strip().splitlines()
+        return False, (err[0] if err else "unreachable")
+
+    def push_dry_run(self, remote: str, branch: str, timeout: float | None = None) -> tuple:
+        """Probe WRITE (push) auth without transferring anything: `git push
+        --dry-run`. Returns (ok, detail); detail is the last error line on failure.
+        For --doctor, to catch credentials that would fail the real push/autosnap."""
+        res = self._run(["push", "--dry-run", remote, f"{branch}:{branch}"],
+                        check=False, timeout=timeout)
+        if res.returncode == 0:
+            return True, ""
+        detail = (res.stderr or res.stdout).strip().splitlines()
+        return False, (detail[-1] if detail else "?")
 
     # --------------------------------------------------------- autosnap (mirror)
     def sincro_user(self) -> str:
@@ -699,15 +870,18 @@ class GitRepo:
 
     def push_autosnap(self, remote: str, branch: str, user: str, host: str,
                       timeout: float | None = None):
-        """Force-push HEAD (sealed history + the live WIP) to this machine's
-        autosnap side ref, so the latest local state survives a total disk failure
-        AND your other machines can pick it up (handoff). The ref is single-writer
-        (only this host writes it), so a plain --force is safe and it never touches
-        the clean `branch`. Returns (ok, msg).
+        """Force-push the SHADOW TIP (sealed history + the live snapshots) to
+        this machine's autosnap side ref, so the latest local state survives a
+        total disk failure AND your other machines can pick it up (handoff).
+        The ref is single-writer (only this host writes it), so a plain --force
+        is safe and it never touches the clean `branch`. Returns (ok, msg).
         """
+        tip = self.shadow_tip(branch)
+        if not tip:
+            return True, "nothing to mirror (no snapshots yet)"
         ref = self.autosnap_ref(user, host, branch)
         res = self._run(
-            ["push", "--force", remote, f"HEAD:{ref}"], check=False, timeout=timeout
+            ["push", "--force", remote, f"{tip}:{ref}"], check=False, timeout=timeout
         )
         msg = (res.stderr.strip() or res.stdout.strip())
         return res.returncode == 0, msg
@@ -798,14 +972,26 @@ class GitRepo:
         return removed
 
     # ------------------------------------------------------ cross-machine handoff
-    def head_sha(self) -> str | None:
-        res = self._run(["rev-parse", "HEAD"], check=False)
-        return res.stdout.strip() if res.returncode == 0 else None
+    def _diff_names(self, a: str, b: str) -> list:
+        """Paths that differ between two commits (--no-renames, see
+        work_relationship). Raises GitError on failure: a failed diff must
+        surface as an error, never read as 'no differences' — the containment
+        test below would take that as safe-to-apply."""
+        res = self._run(["diff", "--no-renames", "--name-only", "-z", a, b])
+        return [p for p in res.stdout.split("\0") if p]
 
-    def _names(self, args: list) -> list:
-        """`git <args>` (a --name-only -z diff) -> list of paths."""
-        out = self._run(args, check=False).stdout
-        return [p for p in out.split("\0") if p]
+    def _differs_on(self, a: str, b: str, paths: list) -> bool:
+        """Do `a` and `b` differ on ANY of these paths? Chunked (_path_chunks):
+        a snapshot can touch thousands of files — the agent-churn scenario —
+        and Windows caps a command line at ~32k chars, so the paths can't ride
+        as arguments in one call. Short-circuits on the first differing chunk.
+        Raises GitError on failure (same fail-safe as _diff_names)."""
+        for chunk in self._path_chunks(paths):
+            res = self._run(["diff", "--no-renames", "--name-only", "-z", a, b,
+                             "--", *chunk])
+            if any(p for p in res.stdout.split("\0") if p):
+                return True
+        return False
 
     def work_relationship(self, mine: str, theirs: str) -> str:
         """Classify two commits by WORK CONTENT, not commit ancestry. Ancestry is
@@ -826,13 +1012,22 @@ class GitRepo:
         mb = self._run(["merge-base", mine, theirs], check=False).stdout.strip()
         if not mb:
             return "diverged"   # unrelated histories: never auto-apply
-        mine_changed = self._names(["diff", "--name-only", "-z", mb, mine])
-        theirs_changed = self._names(["diff", "--name-only", "-z", mb, theirs])
-        # "theirs has all my work" iff theirs == mine on every path I changed.
-        theirs_has_mine = not (mine_changed and self._names(
-            ["diff", "--name-only", "-z", mine, theirs, "--", *mine_changed]))
-        mine_has_theirs = not (theirs_changed and self._names(
-            ["diff", "--name-only", "-z", mine, theirs, "--", *theirs_changed]))
+        # --no-renames throughout: a rename must read as delete-old + add-new on
+        # BOTH sides so the per-path containment test below stays consistent with
+        # how the handoff apply (diff_trees_name_status) later rewrites the tree.
+        try:
+            mine_changed = self._diff_names(mb, mine)
+            theirs_changed = self._diff_names(mb, theirs)
+            # "theirs has all my work" iff theirs == mine on every path I changed.
+            theirs_has_mine = not (mine_changed
+                                   and self._differs_on(mine, theirs, mine_changed))
+            mine_has_theirs = not (theirs_changed
+                                   and self._differs_on(mine, theirs, theirs_changed))
+        except GitError as e:
+            # Unknown must NEVER pass for equal: a failed diff classified as
+            # "contained" would greenlight a handoff apply. Diverged only warns.
+            log.warning("work_relationship: diff failed (%s); reporting 'diverged'", e)
+            return "diverged"
         if theirs_has_mine and mine_has_theirs:
             return "equal"
         if theirs_has_mine:
@@ -852,12 +1047,13 @@ class GitRepo:
         return None
 
     def untracked_collisions(self, sha: str) -> list:
-        """Untracked working-tree files that a hard reset (or restore) to `sha`
-        would overwrite (they exist on disk AND are tracked in `sha`'s tree). Used
-        to refuse an otherwise-safe fast-forward — and a restore — that would
-        silently destroy unversioned files."""
+        """On-disk files the SNAPSHOTS don't hold (untracked relative to the
+        shadow index — right after a snapshot pass that's exactly the filtered
+        ones) that ARE tracked in `sha`'s tree. Used to refuse a handoff apply
+        or a restore that would silently destroy unversioned content."""
         untracked = self._run(
-            ["ls-files", "--others", "--exclude-standard", "-z"], check=False
+            ["ls-files", "--others", "--exclude-standard", "-z"], check=False,
+            extra_env=self._shadow_env(),
         ).stdout.split("\0")
         untracked = {p for p in untracked if p}
         if not untracked:
@@ -866,51 +1062,6 @@ class GitRepo:
             ["ls-tree", "-r", "--name-only", "-z", sha], check=False
         ).stdout.split("\0")
         return sorted(untracked.intersection(p for p in in_tree if p))
-
-    def modified_unstaged(self) -> list:
-        """Tracked files whose working-tree content differs from the index, AFTER a
-        snapshot pass: i.e. local edits stage_changes refused (the file grew past
-        the size limit, turned binary, or matches an exclude). These edits exist
-        NOWHERE in git — not even the reflog — so a hard reset would silently
-        destroy them. Used to refuse a handoff fast-forward and restores."""
-        out = self._run(["diff", "--name-only", "-z"], check=False).stdout
-        return sorted(p for p in out.split("\0") if p)
-
-    def fast_forward_wip(self, sha: str):
-        """Move the current branch (and working tree) to `sha`. Caller MUST have
-        verified this is loss-free — work_relationship(HEAD, sha) == 'theirs_contains',
-        so `sha` matches my content on every path I changed — and that there are no
-        untracked_collisions and no modified_unstaged edits (those live only in the
-        working tree, so the reflog can NOT recover them). Committed work stays
-        reversible via the reflog. Raises GitError."""
-        self._run(["reset", "--hard", sha])
-
-    def diff_name_status_vs(self, sha: str) -> list:
-        """[(status, path)] of how the WORKING TREE differs from `sha`'s tree
-        (`git diff --name-status <sha>`): 'A' = exists now but not in `sha`,
-        'D' = in `sha` but gone now, 'M'/'T' = content/type differs. This is the
-        raw material for a restore preview — the caller translates the letters
-        into what the restore would DO. Raises GitError on failure."""
-        res = self._run(["diff", "--name-status", sha])
-        out = []
-        for line in res.stdout.splitlines():
-            parts = line.split("\t")
-            if len(parts) < 2:
-                continue
-            # Renames/copies (R100 old new) list two paths; the LAST is current.
-            out.append((parts[0][:1], parts[-1]))
-        return out
-
-    def restore_tree(self, sha: str):
-        """Make the working tree (and index) match the tree at `sha`, INCLUDING
-        deleting tracked files that aren't present there. HEAD is NOT moved, so the
-        restore is captured by the next snapshot (and stays reversible via the
-        reflog). Untracked files are untouched ONLY if `sha`'s tree doesn't contain
-        them — `--reset` overwrites colliding ones without complaint, so the caller
-        must check untracked_collisions(sha) (and modified_unstaged()) first; the
-        engine's restore_repo does. Raises GitError on failure.
-        """
-        self._run(["read-tree", "-u", "--reset", f"{sha}^{{tree}}"])
 
     # ------------------------------------------------------- history / restore
     @staticmethod
@@ -940,20 +1091,24 @@ class GitRepo:
                 out[sha] = parts[0]
         return out
 
-    def file_history(self, relpath: str, limit: int = 50) -> list:
+    # Messages that mark a MACHINE state (a snapshot), old model or new. Used to
+    # label history entries; head_is_wip (migration) keeps using WIP_PREFIXES.
+    _SNAPSHOTISH = ("sincro: snapshot", "sincro: WIP autosnapshot", "WIP: autosnapshot")
+
+    def file_history(self, relpath: str, limit: int = 50, branch: str = "main") -> list:
         """Distinct versions of a file, newest first.
 
-        Combines three sources: the reachable history (sealed commits, permanent),
-        the reflog (intra-window snapshots, ~30 days) and any fetched autosnap refs
-        (other machines' live mirrors). Versions with identical content are
-        collapsed. Each item is a dict with:
+        Combines three sources: the reachable history (sealed commits,
+        permanent), the shadow chain + its reflog (intra-window snapshots,
+        ~30 days) and any fetched autosnap refs (other machines' live mirrors).
+        Versions with identical content are collapsed. Each item is a dict with:
         sha, blob, epoch, subject, source ('sealed' | 'snapshot' | 'autosnap').
         """
         relpath = relpath.replace("\\", "/")
         info = {}  # sha -> (epoch, commit subject)
         autosnap_label = {}  # sha -> host (these shas are shown as 'autosnap')
 
-        # 1) Reachable history that touched the file (sealed commits + current WIP).
+        # 1) Reachable history that touched the file (sealed + user commits).
         res = self._run(
             ["log", "--format=%H%x09%ct%x09%s", "--", relpath], check=False
         )
@@ -962,15 +1117,17 @@ class GitRepo:
             if sha and ct.isdigit():
                 info.setdefault(sha, (int(ct), subj))
 
-        # 2) Reflog entries (intra-window snapshots), bounded for performance.
+        # 2) The shadow chain (current window's snapshots) and its reflog
+        #    (pre-seal chains, ~30 days), bounded for performance.
         #    %s = the commit's own subject (not the reflog message).
-        res = self._run(
-            ["log", "-g", "-n", "500", "--format=%H%x09%ct%x09%s"], check=False
-        )
-        for line in res.stdout.splitlines():
-            sha, ct, subj = self._split3(line)
-            if sha and ct.isdigit() and sha not in info:
-                info[sha] = (int(ct), subj)
+        sref = self.shadow_ref(branch)
+        for source_args in (["log", "-n", "500", sref],
+                            ["log", "-g", "-n", "500", sref]):
+            res = self._run(source_args + ["--format=%H%x09%ct%x09%s"], check=False)
+            for line in res.stdout.splitlines():
+                sha, ct, subj = self._split3(line)
+                if sha and ct.isdigit() and sha not in info:
+                    info[sha] = (int(ct), subj)
 
         # 3) Autosnap refs (other machines' live mirrors), only present after a
         #    recovery fetch. Each ref's tip is one extra recoverable state.
@@ -991,7 +1148,7 @@ class GitRepo:
                 continue
             if sha in autosnap_label:
                 source, subject = "autosnap", f"(autosnap: {autosnap_label[sha]})"
-            elif subj.startswith(self.WIP_PREFIXES):
+            elif subj.startswith(self._SNAPSHOTISH):
                 source, subject = "snapshot", "(auto-snapshot)"
             else:
                 source, subject = "sealed", subj
@@ -1016,10 +1173,10 @@ class GitRepo:
                 break
         return out
 
-    def repo_history(self, limit: int = 200) -> list:
+    def repo_history(self, limit: int = 200, branch: str = "main") -> list:
         """Distinct WHOLE-REPO states, newest first — the version timeline of the
         Time Machine explorer. Same three sources as file_history (sealed
-        history, reflog snapshots, fetched autosnap refs) but repo-wide: states
+        history, shadow snapshots, fetched autosnap refs) but repo-wide: states
         with an identical tree are collapsed into one. Each item is a dict with:
         sha, tree, epoch, subject, source ('sealed' | 'snapshot' | 'autosnap').
         """
@@ -1030,21 +1187,23 @@ class GitRepo:
             parts = (line.split("\t", 3) + ["", "", "", ""])[:4]
             return parts[0], parts[1], parts[2], parts[3]
 
-        # 1) Reachable history (sealed commits + the current WIP), with tree oids.
+        # 1) Reachable history (sealed + user commits), with tree oids.
         res = self._run(["log", "--format=%H%x09%ct%x09%T%x09%s"], check=False)
         for line in res.stdout.splitlines():
             sha, ct, tree, subj = _parse4(line)
             if sha and ct.isdigit():
                 info.setdefault(sha, (int(ct), tree, subj))
 
-        # 2) Reflog entries (intra-window snapshots), bounded for performance.
-        res = self._run(
-            ["log", "-g", "-n", "500", "--format=%H%x09%ct%x09%T%x09%s"], check=False
-        )
-        for line in res.stdout.splitlines():
-            sha, ct, tree, subj = _parse4(line)
-            if sha and ct.isdigit() and sha not in info:
-                info[sha] = (int(ct), tree, subj)
+        # 2) The shadow chain and its reflog (intra-window snapshots), bounded.
+        sref = self.shadow_ref(branch)
+        for source_args in (["log", "-n", "500", sref],
+                            ["log", "-g", "-n", "500", sref]):
+            res = self._run(source_args + ["--format=%H%x09%ct%x09%T%x09%s"],
+                            check=False)
+            for line in res.stdout.splitlines():
+                sha, ct, tree, subj = _parse4(line)
+                if sha and ct.isdigit() and sha not in info:
+                    info[sha] = (int(ct), tree, subj)
 
         # 3) Autosnap refs (other machines' live mirrors; present after a fetch).
         #    Their trees aren't in the two logs above — one rev-parse per ref is
@@ -1063,7 +1222,7 @@ class GitRepo:
         for sha, (epoch, tree, subj) in info.items():
             if sha in autosnap_label:
                 source, subject = "autosnap", f"(autosnap: {autosnap_label[sha]})"
-            elif subj.startswith(self.WIP_PREFIXES):
+            elif subj.startswith(self._SNAPSHOTISH):
                 source, subject = "snapshot", "(auto-snapshot)"
             else:
                 source, subject = "sealed", subj
@@ -1182,30 +1341,29 @@ class GitRepo:
             except OSError:
                 pass
 
-    def restore_file(self, relpath: str, sha: str):
-        """Write the file's version at `sha` into the working tree (and index).
-
-        SincroGit's next snapshot will commit it, so the restore is itself
-        versioned. Raises GitError on failure.
-        """
-        relpath = relpath.replace("\\", "/")
-        self._run(["checkout", sha, "--", relpath])
-
-    # Batched path operations run in chunks: a selective restore can name many
-    # files, and Windows caps a command line at ~32k characters.
+    # Batched path operations (restore_paths_worktree, _differs_on) run in
+    # chunks: a selective restore can name many files, and Windows caps a
+    # command line at ~32k characters. Both limits matter: 100 paths is the
+    # comfortable count, but 100 DEEP paths can still blow past 32k, so the
+    # chunker also enforces a byte budget (with headroom for the git call
+    # itself and the repo path the harness prepends).
     _PATH_CHUNK = 100
+    _CHUNK_BYTES = 24_000
 
-    def checkout_paths(self, sha: str, paths: list) -> None:
-        """Write each path's version at `sha` into the working tree AND index
-        (so the caller can amend the WIP right away). Raises GitError."""
-        paths = [p.replace("\\", "/") for p in paths]
-        for i in range(0, len(paths), self._PATH_CHUNK):
-            self._run(["checkout", sha, "--", *paths[i:i + self._PATH_CHUNK]])
-
-    def remove_paths(self, paths: list) -> None:
-        """Delete tracked paths from the working tree AND index (`git rm -f`) —
-        the selective restore uses it for files that don't exist in the target
-        version. Raises GitError."""
-        paths = [p.replace("\\", "/") for p in paths]
-        for i in range(0, len(paths), self._PATH_CHUNK):
-            self._run(["rm", "-f", "-q", "--", *paths[i:i + self._PATH_CHUNK]])
+    @classmethod
+    def _path_chunks(cls, paths: list):
+        """Yield slices of `paths` capped at _PATH_CHUNK entries AND
+        _CHUNK_BYTES total characters (each path plus quoting/separator
+        overhead). A single oversized path still travels alone — git itself
+        is the one to reject it, with a real error."""
+        chunk, size = [], 0
+        for p in paths:
+            cost = len(p) + 3  # separator + the quotes Windows may need
+            if chunk and (len(chunk) >= cls._PATH_CHUNK
+                          or size + cost > cls._CHUNK_BYTES):
+                yield chunk
+                chunk, size = [], 0
+            chunk.append(p)
+            size += cost
+        if chunk:
+            yield chunk

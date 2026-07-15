@@ -32,30 +32,31 @@
 
 ---
 
-## 2. Conceptual model: two tiers
+## 2. Conceptual model: two tiers (the "shadow" design)
 
-The trick to reconcile *"almost instant snapshot"* with *"I don't want thousands of commits"* is to separate two tiers:
+The trick to reconcile *"almost instant snapshot"* with *"I don't want thousands of commits"* — AND with *"my `git log`/`git status` must stay mine"* — is to separate two tiers, keeping the fast one OFF the user's branch entirely:
 
-| Tier | What it is | Frequency | Visible in history |
-|------|-----------|-----------|--------------------|
-| **WIP (snapshot)** | A **single** commit at the tip (`HEAD`) that is **amend**ed with the current state | Every ~5 min (with debounce) | No (it's transient, it gets sealed or rewritten) |
-| **Sealed (history)** | The WIP is "frozen" with a descriptive AI message and a new WIP is created on top | Every ~6 h | Yes (permanent commit) |
+| Tier | What it is | Frequency | Visible in `git log` |
+|------|-----------|-----------|----------------------|
+| **Snapshot (shadow)** | A commit built through a **private index** (`.git/sincro-index`) and appended to a **side ref** `refs/sincro/wip/<branch>` — HEAD, the user's index and worktree are never touched | Every ~5 min (with debounce) | No (side ref; every git tool sees a normal repo) |
+| **Sealed (history)** | The accumulated snapshot tree is committed as **one real commit** on the branch (`commit-tree` + `update-ref`); the shadow chain **re-anchors** there | Every ~6 h | Yes (permanent commit) |
 
 ```
-... ── sealed_N ── WIP        ← HEAD (amended every ~5 min)
-                    │
-       every 6h ────┘ it gets sealed (reword with AI message) and a new WIP is born on top
-
-result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
+branch:  ... ── sealed_N ─────────────────────── sealed_N+1   ← HEAD (only real commits)
+                     │                                ▲
+shadow:              └── s1 ── s2 ── s3 ── … ── s42 ──┘  refs/sincro/wip/<branch>
+                        (a snapshot commit every ~5 min; at the seal, the chain
+                         re-anchors at sealed_N+1 and the old one stays in the
+                         side ref's reflog for ~30 days)
 ```
 
 **Why it works:**
 
-- The current saved state is committed every ~5 min → a **rollback point** at ~5 min resolution (`HEAD` = last snapshot, earlier ones in the reflog). NB: this is *not* power-cut protection — saved files survive a power cut on the disk anyway, and unsaved buffers are never captured; the value is the time machine.
-- Because we `amend`, hundreds of commits don't pile up: only **~4 commits/day** (one every 6 h).
-- The "clean" history (sealed) is the only thing that travels to the remote → **pull always clean, no force-push** (see §4).
+- The current saved state is committed every ~5 min → a **rollback point** at ~5 min resolution (the shadow tip = last snapshot; earlier ones are real commits on the chain, pre-seal chains in the side ref's reflog). NB: this is *not* power-cut protection — saved files survive a power cut on the disk anyway, and unsaved buffers are never captured; the value is the time machine.
+- The snapshots never appear on the branch: only **~4 commits/day** land there (one seal every 6 h) — and `git status` keeps showing the user's real uncommitted changes, their staging area untouched.
+- The "clean" history (sealed) is the only thing that travels to the remote's branch → **pull always clean, no force-push** (see §4).
 
-> **Fine-grained safety net:** each `amend` leaves the previous snapshot as an *unreachable* commit in the **reflog** (≈30 days by default). That is, even though the visible history only has 1 commit per window, internally you can recover intermediate states with `git reflog`. *(Optional, see §12: an `autosnap` branch with real commits every ~5 min if you want browsable intra-window history.)*
+> **History of this design:** v0.1 kept the snapshot as a single WIP commit *at the tip*, amended in place. It worked, but it occupied HEAD (confusing every git tool and hijacking `git status`/staging). v0.2 moved the snapshots to the shadow ref — same rhythms, same recovery windows, invisible. Old repos are migrated automatically at startup (the WIP tip moves to the shadow ref and the branch returns to its parent; unsealed edits reappear as ordinary uncommitted changes).
 
 ---
 
@@ -65,21 +66,26 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
 1. Validate it's a git repo (a missing or invalid folder skips that repo; the others keep
    running). The remote is checked lazily on each sync (`has_remote`); being on the
    configured branch is the branch guard's job (§11).
-2. Ensure a **WIP** exists at the tip (if not, create an empty one) and register the repo
-   with the watcher.
+2. **Migrate a legacy WIP tip** if present (v0.1 repos; see §2) and ensure the **shadow
+   ref** exists (anchored at HEAD; `core.logAllRefUpdates=always` is set locally so the
+   side ref gets a reflog), then register the repo with the watcher.
 3. **Initial snapshot**, before any networking: captures changes that predate this run
    (e.g. edits made while SincroGit wasn't running, or after a reboot).
 4. **Initial sync on a background thread** — a slow network never delays the local safety
-   net: `fetch` + (only if the remote is ahead) rebase of the WIP on top
+   net: `fetch` + (only if the remote is ahead) rebase of the local branch
    (`--autostash`), exactly like the periodic pull (§3.4).
    - **If there is a conflict** → `git rebase --abort`, the **autosync for that repo is paused**, the user is notified and it is logged. It is **never** resolved destructively, nor is force used. (This is rare in sequential use, but the policy is: when in doubt, don't lose data.)
 
 ### 3.2 Snapshot cycle (every ~5 min, with debounce)
 - The **watcher** (filesystem events) marks the repo as *dirty* and resets a debounce (e.g. 20-30 s without changes).
 - When the debounce settles **and** ≥5 min has passed since the last snapshot:
-  1. Compute candidate files and apply the **filter** (§5).
-  2. `git add <only the candidates>`.
-  3. If something is staged: `git commit --amend --no-edit` (static WIP message like `sincro: WIP autosnapshot`).
+  1. Sync the **private index** to the shadow tip (cheap in steady state), diff it
+     against the worktree — the precise "what changed since the last snapshot" — and
+     apply the **filter** (§5) to the candidates.
+  2. `git add <only the candidates>` INTO the private index (`GIT_INDEX_FILE`).
+  3. `write-tree`; if the tree differs from the shadow tip's (textconv-aware, so a
+     styling-only `.docx` resave doesn't count): `commit-tree` + `update-ref` the shadow
+     ref (`sincro: snapshot`). HEAD, the user's index and `git status` are untouched.
 - No changes → nothing happens.
 - **Anti-starvation:** a source that never settles (a long build, a log writer inside the
   repo) keeps resetting the debounce — so past **2× the snapshot interval** since the last
@@ -89,10 +95,22 @@ result: ... ── sealed_N ── sealed_N+1 ── WIP(new) ← HEAD
 ### 3.3 Sealing (every 6 h)
 **Only automatic trigger:** a timer of **6 h since the last seal**.
 
-1. If the WIP has no changes vs `sealed_N` → **don't seal** (don't pollute the history).
-2. Generate a message with AI from `git diff sealed_N..WIP` (§6).
-3. `git commit --amend -m "<AI message>"` → the WIP becomes `sealed_N+1`.
-4. Create a new empty WIP on top: `git commit --allow-empty -m "sincro: WIP autosnapshot"`.
+0. **The user's own commits count as seals.** When the timer fires, if a permanent
+   (non-WIP) commit is newer than the clock's baseline — a manual `git commit` made in
+   a terminal, or commits a pull integrated — the window **restarts from it** instead
+   of stacking a `sincro:` checkpoint on its heels. (v0.1's "external commit detected;
+   seal clock reset", ported to the shadow model; checked only when a seal is due, so
+   it costs nothing in steady state. The purist commit nudge refreshes off the same
+   source.)
+1. If the user has something **staged** (a manual commit in progress) → **yield** this
+   cycle; an auto-seal never absorbs a hand-crafted commit. (An explicit Smart Commit
+   proceeds — the user asked for it.)
+2. Final snapshot; if the snapshot tree matches HEAD's tree (textconv-aware) → **don't
+   seal** (don't pollute the history).
+3. Generate a message with AI from `git diff HEAD <snapshot-tree>` (§6).
+4. `commit-tree <snapshot-tree> -p HEAD -m "<AI message>"` + advance the branch, then
+   refresh the user's index (mixed reset; the worktree — which IS that tree — is
+   untouched) and **re-anchor the shadow chain** at the new seal.
 5. **Push** (§4).
 
 > There is no sealing on idle or on shutdown. To force a one-off seal+push (e.g. right before I head to the laptop): *Seal now* / per-repo *Seal+Push* in the tray, `--seal-once` from the CLI, or a Smart Commit.
@@ -104,8 +122,15 @@ Besides the startup pull (§3.1), the daemon checks the remote every **10 min** 
 2. Check whether the remote has new commits:
    `git rev-list --count HEAD..<remote>/<branch>`.
    - If it's **0** → nothing to bring → **do nothing** (the usual case while I work on this machine).
-   - If it's **> 0** → **`git pull --rebase --autostash`** (rebase my local WIP on top of the new stuff).
-3. **Rebase conflict** → `git rebase --abort`, **pause autosync for that repo + notify**; resolve by hand. Never force, never data loss.
+   - If it's **> 0** → take a **snapshot first** (the recovery guarantee for everything
+     below), then **`git rebase --autostash <remote>/<branch>`** — the user's edits live
+     uncommitted in the worktree, so the autostash carries them over the rebase.
+3. Two conflict shapes, both → **pause autosync for that repo + notify**, resolve by hand
+   (never force, never data loss):
+   - the **rebase itself conflicts** → `git rebase --abort`, tree intact;
+   - the rebase succeeds but **re-applying the dirty edits conflicts** → git leaves
+     conflict markers in the affected files (and a stash entry); the exact pre-pull
+     state is one Time-Machine restore away thanks to the snapshot in step 2.
 
 > Since usage is **sequential** (never both machines at once), while I work on one, the other isn't pushing → step 2 returns 0 and the pull doesn't fire. When I sit at the other machine, within ≤10 min it picks up on its own what I sealed on the first.
 
@@ -115,9 +140,10 @@ Besides the startup pull (§3.1), the daemon checks the remote every **10 min** 
 
 **Golden rule: only sealed commits are pushed; the WIP never leaves the machine.**
 
-- Push: push the **last sealed commit** — the newest non-WIP commit, resolved by message
-  rather than the positional `HEAD~1` (see §11) — never the live WIP:
-  `git push origin <sealed-sha>:refs/heads/<branch>` → this way the remote receives immutable history and the local WIP stays ahead of it.
+- Push: in the shadow model **HEAD only ever holds sealed and user commits** (the WIP lives
+  on the side ref `refs/sincro/wip/<branch>`, §2), so pushing HEAD is safe by construction
+  and never leaks the WIP: `git push origin HEAD:refs/heads/<branch>` → the remote receives
+  immutable history. (An unpushed backlog rides along implicitly and retries on the next sync.)
 - Because sealed commits are immutable and never rewritten, **the push is always fast-forward** and the **other machine's pull is always clean**. No force-push is needed in any normal-flow case.
 
 **Handoff between machines (sequential use):**
@@ -132,11 +158,11 @@ Desktop: starts → pull --rebase (clean) → continues...
 
 ### 4.1 Autosnap (live mirror) — disaster recovery
 
-Since sealing every 6 h would leave up to 6 h of work off the remote, **autosnap** decouples the *remote backup* from the *history*: every **30 min** (and only if something changed) it `push --force`es `HEAD` (sealed history **+ the live WIP**) to a **per-user, per-machine** side ref `refs/autosnap/<user>/<host>/<branch>` (the namespace is detailed in §4.2).
+Since sealing every 6 h would leave up to 6 h of work off the remote, **autosnap** decouples the *remote backup* from the *history*: every **30 min** (and only if something changed) it `push --force`es the **shadow tip** (`refs/sincro/wip/<branch>` — sealed history **+ the live WIP**) to a **per-user, per-machine** side ref `refs/autosnap/<user>/<host>/<branch>` (the namespace is detailed in §4.2).
 
 - **Keeps the branch clean:** nobody pulls that ref for work; `main` still receives only sealed commits → the pull is always clean. It's the deliberate exception to "the WIP never leaves the machine", scoped to a backup ref.
 - **Disk-failure RPO ≈ 30 min** (instead of 6 h). On the other machine: *Fetch autosnaps* → browse/restore the latest state (single file or whole repo).
-- **Cost:** up to ~48 pushes/day/repo during active work (cheap force-push; **nothing** on idle repos, since it only pushes when HEAD changed). Orphan objects on the remote until its GC.
+- **Cost:** up to ~48 pushes/day/repo during active work (cheap force-push; **nothing** on idle repos, since it only pushes when the shadow tip changed since the last mirror). Orphan objects on the remote until its GC.
 - **Power cut / OS crash** needs nothing special from autosnap: saved files survive on the local disk, and the 5-min snapshot/`reflog` give the rollback points. autosnap is for the *machine-is-gone* case (and the handoff, §4.2).
 
 > *("Live mirror" variant discarded for now: it did force-with-lease of the WIP every minute to keep the remote <1 min behind. More traffic and complexity; re-evaluable if real-time remote backup ever becomes critical.)*
@@ -152,28 +178,29 @@ design points:
   (sanitized `git config user.email`) lets a machine recognize its *own* other machines vs.
   a teammate's, so handoff fetches only `refs/autosnap/<user>/*` — cheap, and team-safe (it
   never touches `main`/feature branches, only personal side refs).
-- **Compare by WORK CONTENT, not ancestry.** Critical subtlety: the WIP is continuously
-  *amended*, so once a machine adopts a peer's WIP and edits, its new WIP is a *sibling* of
-  the peer's (same parent = the shared seal), never a descendant — ancestry checks would
-  report divergence constantly. Instead `GitRepo.work_relationship(mine, theirs)` compares,
-  relative to the merge base, the *paths each side changed*: if `theirs` matches `mine` on
+- **Compare by WORK CONTENT, not ancestry.** Critical subtlety: the two machines'
+  snapshot chains are *siblings* (both rooted at the shared seal), never descendants of
+  each other — ancestry checks would report divergence constantly. Instead
+  `GitRepo.work_relationship(mine, theirs)` compares the two shadow tips,
+  relative to the merge base, by the *paths each side changed*: if `theirs` matches `mine` on
   every path I changed (and has more) it's `theirs_contains` → safe to adopt; the mirror is
   classified `equal` / `mine_contains` / `diverged` otherwise.
 
 Behavior — `live_handoff` is a 3-state knob (`auto` default | `ask` | `off`):
-- **`theirs_contains` → safe fast-forward** (`git reset --hard` to the peer): provably
-  loss-free (the peer holds all my changed-path content; only an empty WIP is dropped),
-  reversible via the reflog, and **refused (with a notification)** if it would clobber an
-  untracked file (`untracked_collisions`) **or** if there are local edits the snapshot could
-  not capture (`modified_unstaged`: a tracked file that grew past the size limit, turned
-  binary, or matches an exclude — those edits exist nowhere in git, not even the reflog, so
-  the reset would destroy them). In `auto` it's applied immediately **and a tray notification is
+- **`theirs_contains` → safe apply, content-first**: the WORKTREE is made to match the
+  peer's snapshot tree (worktree-only writes + deletes of the differing paths — the
+  user's HEAD and branch never move; sealed history reconciles via the normal pull) and
+  a closing snapshot records it in MY chain. Provably loss-free (the peer holds all my
+  changed-path content), reversible via the shadow reflog, and **refused (with a
+  notification)** where it would touch content the snapshots don't hold
+  (`untracked_collisions`, or filter-refused local edits — those exist nowhere in git,
+  so overwriting would destroy them). In `auto` it's applied immediately **and a tray notification is
   fired** (level b is never *silent* — the working tree changing under you is a surprise even
   when nothing is lost). In `ask` it is NOT applied: the candidate is recorded
   (`pending_handoff`, surfaced in `status()` and the panel), the user is notified, and a
   one-click **Apply** (`Engine.apply_handoff` / `--apply-handoff`) re-validates from scratch
   (re-fetch + re-classify + re-check collisions, since the peer may have moved) before the
-  fast-forward (level a / consent).
+  apply (level a / consent).
 - **`diverged` → notify, never auto-merge.** Deliberately no 3-way auto-merge of two piles of
   unreviewed in-progress work (a quiet, subtly-broken tree is the worst outcome). SincroGit
   warns **once** per distinct peer state and leaves both intact; the user resolves by
@@ -234,7 +261,7 @@ They are generated when sealing (automatic) and on a **manual commit** (Smart Co
 - **Manual commit (Smart Commit) → Conventional Commits** (`feat:`/`fix:`/`docs:`/`refactor:`/…). The user triggers it from the GUI, the AI **proposes** an editable message, and on confirm the current WIP is sealed with it and the **6 h seal timer is reset**.
 
 **Model input:**
-- *Automatic seal:* `git diff sealed_N..WIP --stat` + truncated diff → a concise `sincro:` message.
+- *Automatic seal:* `git diff <HEAD-tree> <snapshot-tree> --stat` + truncated diff (the window being sealed: HEAD's tree → the latest snapshot tree) → a concise `sincro:` message.
 - *Manual commit:* diff **since the last manual commit** (skipping the `sincro:` seals) up to the WIP → the AI summarizes the whole unit of work. The commit only contains the WIP delta, so the body honestly notes it's a **cumulative summary** (some of the code is in earlier `sincro:` seals).
 
 ---
@@ -268,14 +295,14 @@ sincrogit/
 
 **Libraries:**
 - **`watchdog`** — filesystem events.
-- **git via `subprocess`** (not GitPython) — exact control of `amend`/`push HEAD~1`/`rebase`, transparent and predictable behavior.
+- **git via `subprocess`** (not GitPython) — exact control of the plumbing snapshots/`update-ref`/`rebase`, transparent and predictable behavior.
 - **standard `urllib`** — cloud AI calls; local **Ollama** client over HTTP (no extra dependency).
 - **`pyyaml`** — config.
-- **`PyQt5`** — tray icon + control panel.
-- **`logging`** (to a rotating file) + Qt notifications — alerts (e.g. "autosync paused due to conflict").
+- **`PyQt5`** — tray icon + control panel (only for `--tray`).
+- **`logging`** (to a rotating file) + **`winotify`** toasts (with Qt tray balloons as the in-app fallback) — alerts (e.g. "autosync paused due to conflict").
 - Scheduling: own loop with timers.
 
-**Decision:** wrap the `git` CLI with `subprocess` instead of GitPython, because the fine-grained operations (continuous amend, push of `HEAD~1`, rebase with a conflict policy) are clearer and more robust with the CLI.
+**Decision:** wrap the `git` CLI with `subprocess` instead of GitPython, because the fine-grained operations (plumbing snapshots, surgical ref updates, rebase with a conflict policy) are clearer and more robust with the CLI.
 
 ---
 
@@ -284,12 +311,12 @@ sincrogit/
 ```yaml
 # config.yaml
 defaults:
-  snapshot_interval_sec: 300     # how often the WIP is amended (5 min)
+  snapshot_interval_sec: 300     # how often a snapshot lands on the side ref (5 min)
   debounce_sec: 25               # wait after the last change before snapshotting
   seal_interval_min: 360         # "real" commit + push every 6h (permanent timeline)
-  autosnap: true                 # live mirror of HEAD to refs/autosnap/<user>/<host>/<branch>
-  autosnap_interval_min: 30      # force-push the mirror every 30 min (only if it changed)
   pull_interval_min: 10          # fetch every 10 min; pull only if there's something new
+  autosnap: true                 # live mirror of the latest snapshot to refs/autosnap/<user>/<host>/<branch>
+  autosnap_interval_min: 30      # force-push the mirror every 30 min (only if it changed)
   max_file_bytes: 1048576        # 1 MB
   extra_excludes:                # in addition to the text/size filter
     - "**/node_modules/**"
@@ -347,7 +374,7 @@ repos:
 
 | Scenario | What happens | How I recover |
 |----------|--------------|---------------|
-| **Power cut / OS crash (disk intact)** | Saved files are on the disk; the last snapshot (≤5 min) is in `HEAD` (WIP) | Nothing to recover for saved files (the disk has them). For *rolling back* a bad saved state: `git reflog` (≈5 min resolution). Unsaved buffers are your editor's job. |
+| **Power cut / OS crash (disk intact)** | Saved files are on the disk; the last snapshot (≤5 min) is on the shadow ref `refs/sincro/wip/<branch>` | Nothing to recover for saved files (the disk has them). For *rolling back* a bad saved state: File history, or the shadow ref's reflog (≈5 min resolution). Unsaved buffers are your editor's job. |
 | **"I want yesterday's version"** | It's in the sealed commits | `git checkout`/`git restore` from the matching sealed commit. |
 | **I deleted something 20 min ago (within the window)** | The previous snapshot became *unreachable* in the reflog | `git reflog` + `git checkout`. *(More convenient with the optional `autosnap` branch, §12.)* |
 | **Total disk failure** | Sealed state is on the remote; the latest state (≤30 min) is in the `autosnap` ref (§4.1) | On another machine: *Fetch autosnaps* → restore (file or whole repo). Max loss ≈ 30 min. Without autosnap: down to the last seal (6 h). |
@@ -362,23 +389,22 @@ repos:
 - **Code privacy in the cloud:** by default, hybrid mode prioritizes Ollama (local); if it falls back to the cloud, `cloud_send_content: false` sends only statistics. The API key lives in an environment variable.
 - **My manual git operations** while the daemon runs (rebase, branch checkout, etc.): the tool must detect a changed `HEAD`/`rebase in progress`/busy index and **yield** (skip that cycle) instead of fighting. It detects `.git/MERGE_HEAD`, `.git/rebase-*`, the index lock. While it yields, edits are NOT being snapshotted — invisible from the editor — so if the manual operation outlives `BUSY_WARN_SEC` (10 min) it warns ONCE (log + toast) that snapshots are postponed, and notes when they resume. The threshold is high enough that a normal merge — or the transient `index.lock` of any git command — never trips it.
 - **Branch guard / branch following.** By default, when HEAD isn't on the configured `branch`, the repo **yields** (no snapshot/seal/autosnap/push on the wrong branch) — `_ensure_on_branch`, rate-limited. With **`track_current_branch: true`** it instead **follows** the current branch: every branch-scoped op uses `st.active_branch` (the live HEAD branch) rather than `cfg.branch`, so snapshot/autosnap/handoff/push all happen on whatever branch you're on (each branch gets its own `refs/autosnap/<user>/<host>/<branch>`, and handoff only matches the same branch). Detached HEAD still yields. Pairs naturally with purist mode (no auto-seal → nothing auto-pushed to the wrong place). Opt-in; default keeps the safe guard.
-- **The push targets the last non-WIP commit** (resolved by message, not the
-  positional `HEAD~1`): if the user commits manually on top of the WIP, their
-  commit is what gets pushed — never the transient WIP. The seal clock is also
-  reset when an external commit is detected (it's respected as a manual seal).
+- **The push targets HEAD** — safe by construction in the shadow model: the branch only
+  ever holds sealed and user commits (snapshots live on the side ref). A user's manual
+  commit is just… a commit; it rides the next push like a seal would.
 - **Restores never destroy unsnapshotted work.** Before `restore_file`/`restore_repo`
-  overwrite anything, pending edits are captured into the WIP (the same stage+amend the
-  handoff does) — work saved since the last snapshot exists nowhere else, not even the
-  reflog. The WIP amend is `--allow-empty`: a hand-revert to the sealed content, or a
-  whole-repo restore to the last sealed state, legitimately empties the WIP and must
-  not fail. Content that capture pass *can't* take (a tracked edit the filter refuses —
-  excluded / over the size limit / binary, `modified_unstaged` — or an untracked file
-  that the target tree tracks, `untracked_collisions`) makes the restore **refuse**,
-  naming the files to copy somewhere safe first: the same policy as the handoff
-  fast-forward, because that content exists nowhere in git. Restores also honor the
-  branch guard and the busy check, like every other
-  manual operation — off-branch the capture would WIP-amend the wrong branch, and
-  mid-merge/rebase they would stomp a conflicted tree.
+  overwrite anything, pending edits are captured into a shadow snapshot — work saved
+  since the last snapshot exists nowhere else. Restores write to the WORKTREE only
+  (`git restore --worktree` / plain deletes): the user's index stays theirs and the
+  restore shows in their `git status` as ordinary edits, captured by a closing snapshot.
+  Content the capture pass *can't* take (the filter refused it — excluded / over the
+  size limit / binary — or it's untracked and the target tree holds a different version,
+  `untracked_collisions`) makes the restore **refuse** where it would TOUCH that
+  content, naming the files to copy somewhere safe first: the same policy as the
+  handoff apply, because that content exists nowhere in git. Restores also honor the
+  branch guard and the busy check, like every other manual operation — off-branch the
+  capture would snapshot the wrong branch's chain, and mid-merge/rebase they would
+  stomp a conflicted tree.
 - **Single instance (no two daemons racing git).** Authoritative guard is a Windows
   named mutex (`acquire_instance_mutex`; no stale-lock problem — the OS releases it on
   process death — and it can't be stolen by an app squatting on the lock port). The
@@ -446,6 +472,14 @@ repos:
   the WIP + `autosnap` keep providing the safety net. (YAML only parses `.inf` as a
   float; a bare `inf`/`off` arrives as a string/bool, which is why the normalization
   exists.)
+- **Purist commit nudge (`suggest_commit`, default on).** Purist mode's one footgun is a
+  branch that silently stagnates when the user forgets to Smart Commit (the work is safe
+  in the WIP/autosnap, just not ON the branch — easy to mistake for "pushed"). The engine
+  nudges (notification + log) when ALL hold: purist mode, un-sealed work exists, the repo
+  has been **quiet** ~20 min (the "you finished something" proxy — state-based, not a
+  clock alarm), the last permanent commit is >1 day old, and no nudge fired within a day.
+  Sealing resets the staleness gate, so committing silences it by itself. Constants:
+  `Engine.COMMIT_NUDGE_*`; no-op when auto-seal is on.
 
 ---
 
@@ -453,7 +487,7 @@ repos:
 
 **✅ Phase 1 — MVP (automatic local historian) — COMPLETE:**
 - Config + repo validation.
-- Watcher + debounce + snapshot (amend) every 5 min (+ initial snapshot on startup).
+- Watcher + debounce + snapshot (shadow side ref) every 5 min (+ initial snapshot on startup).
 - Text/size filter.
 - Sealing every 6 h with a **fallback message**.
 - Logging.
@@ -463,16 +497,16 @@ repos:
 - Hybrid AI message generator (Ollama → Gemini → fallback). Never blocks the seal.
 - Push of sealed commits (refspec with SHA → `refs/heads/<branch>`) + retry on every sync.
 - `fetch` + pull with WIP rebase, only if the remote is ahead; initial sync on startup.
-- Conflict policy: abort rebase + pause repo + notify *(still verified manually —
-  the automated suite doesn't cover this multi-remote path yet; see the technical
-  TODO below)*.
+- Conflict policy: abort rebase + pause repo + notify. *(Since superseded: both
+  conflict shapes are now covered by the automated suite over throwaway bare remotes
+  — see the technical-pending section below and `tests/test_multi_machine.py`.)*
 
 **✅ Phase 4 — Tray UI (PyQt5) — COMPLETE:**
 - System tray icon (a "G" with an hourglass, drawn vectorially) whose **color reflects
   the state** (active/paused/conflict/stopped).
 - Menu: open panel, pause/resume, sync now, seal now, quit.
 - Control panel with tabs Status / Log (filterable by repo, action, level, text) /
-  Configuration (YAML editor) / About.
+  Settings (a form over the defaults) / Advanced (the raw YAML editor).
 - Structured event log (`events.jsonl`) + desktop notifications.
 - Architecture: engine in a background thread, GUI on the main thread, communication via
   Qt signals; manual actions serialized with a lock in the engine.
@@ -499,18 +533,22 @@ repos:
 - ⏳ Pending: scheduled task at log on to auto-start `SincroGit.exe` — without it, the
   "zero discipline" promise depends on remembering to launch the tool.
 - ⏳ Pending: `status` command/tab (the "seal+push now" shortcut is already in the menu).
+- ✅ `sincrogit doctor` health check (git, config, each repo's branch/remote,
+  read reachability + push credentials, pandoc, AI backends, daemon) — `--doctor`,
+  with its own test suite (`tests/test_doctor.py`).
 - ⏳ Pending: guided "Add repo" onboarding (create/connect a private remote and verify it
-  with a test push, from the GUI), plus a `sincrogit doctor` health check (git, remote
-  reachability, credentials, pandoc, Ollama) — for the non-Git audience the
-  remote/credentials setup is the real entry barrier, not the daemon.
+  with a test push, from the GUI) — for the non-Git audience the remote/credentials
+  setup is the real entry barrier, not the daemon.
 
 **Pending — technical (no user-visible feature):**
-- ⏳ Automated test suite — the **first slice exists** (`tests/`, pytest, 50 tests over
-  throwaway local repos: restore refusals, selective restore, timeline, export, history
-  search, config surgery, `--doctor`, busy warning, state precedence, diff rendering,
-  offscreen GUI dialogs). Still pending: `work_relationship` classification, the handoff
-  fast-forward, rebase-conflict abort + pause, and seal/push idempotence (they need
-  throwaway *remotes*); then CI.
+- ⏳ Automated test suite — **exists** (`tests/`, pytest, 150+ tests): restore refusals
+  and rename-safe restore, selective restore, timeline, export, history search, config
+  surgery, `--doctor`, busy warning, state precedence, diff rendering, offscreen GUI
+  dialogs — plus the **multi-machine paths over throwaway bare remotes**:
+  `work_relationship` classification (all four verdicts), handoff fast-forward
+  (auto/ask/re-validation), the uncaptured-content refusal, handoff across a rename,
+  both rebase-conflict shapes, the rejected-push reconcile loop, seal/push idempotence,
+  autosnap-ref pruning. Still pending: CI on every push.
 
 **Optional / future:**
 - `autosnap` branch with real commits every 5 min (browsable intra-window history *on the remote*) instead of the force-push mirror of the latest state.
@@ -519,8 +557,10 @@ repos:
   default, stdlib-`urllib` only): a generic **OpenAI-compatible endpoint**
   (`ai.cloud_provider: compatible` + `ai.cloud_url`) covering
   OpenRouter/DeepSeek/LM Studio/Anthropic/… with a single client (keys stay in env
-  vars); **`ai.locale`** for messages in the user's language; **per-repo `ai:`
-  overrides** (e.g. a sensitive repo pinned to `mode: local`). See the README → TODO.
+  vars); **messages in the user's language — already done as `ai.language`** (`en`|`es`;
+  `ai.language: es` writes seal & Smart Commit messages in Spanish; only generalizing to
+  arbitrary locales is pending); **per-repo `ai:` overrides** (e.g. a sensitive repo
+  pinned to `mode: local`). See the README → TODO.
 - lazygit-inspired batch (lazygit is the complement, not a donor — no git client gets
   rebuilt in the panel): **partial Smart Commit** (file checkbox list — commit the
   selection, return the rest to the recreated WIP; optional `commit_prefix` from the
@@ -534,8 +574,19 @@ repos:
 ## 13. Decisions made
 
 - ✅ Model **WIP+amend → seal every 6h** + **autosnap** (live mirror) every 30 min.
+  *(Since superseded by the v0.2 SHADOW model, below — same rhythms, snapshots moved
+  off the user's tip.)*
+- ✅ **v0.2: shadow snapshots** (`refs/sincro/wip/<branch>` + a private index) instead
+  of a WIP commit at HEAD. Motivation: the WIP at the tip confused every git tool and
+  hijacked `git status`/staging. Consequences accepted: a local
+  `core.logAllRefUpdates=always` per repo (side refs get no reflog by default — it IS
+  the recovery window), and the pull now autostashes the dirty worktree (a conflicting
+  stash pop pauses the repo with markers; the pre-pull snapshot guarantees recovery).
+  Validated up front with three spikes: textconv gating works tree-vs-tree, the private
+  index costs ~120 ms warm on 2 000 files, and a conflicting autostash pop leaves the
+  repo *not* mid-rebase (so it's detected via unmerged entries, not is_busy).
 - ✅ **Intervals: snapshot every 5 min, seal every 6 h, autosnap every 30 min.**
-- ✅ Push **only of sealed commits** (WIP local; pull always clean; no force-push).
+- ✅ Push **only of sealed commits** (snapshots stay on the side ref; pull always clean; no force-push).
 - ✅ **Hybrid** AI (Ollama local → cloud fallback; option to send only stats).
 - ✅ **Prefixes:** automatic seal `sincro:`; **manual commit (Smart Commit)** with an AI-proposed Conventional Commits message (cumulative summary since the last manual commit) + timer reset.
 - ✅ **Cloud provider: Gemini** (`gemini-2.5-flash-lite`), API key in an environment variable.
@@ -546,7 +597,7 @@ repos:
 - ✅ Working branch: **`main`** (confirm per repo).
 - ✅ **Seal every 6 h** (coarse permanent timeline); a manual seal (*Seal now* / `--seal-once` / Smart Commit) for handoff via the clean path.
 - ✅ **Periodic pull every 10 min** (`fetch` + pull only if the remote has new commits), besides the startup pull.
-- ✅ **Autosnap** (live mirror of `HEAD` to `refs/autosnap/<user>/<host>/<branch>`, force-pushed every 30 min, only if it changed): disk-failure RPO ≈ 30 min, cross-machine recovery per file or whole repo (CLI `--autosnaps` + GUI). The "fine browsable history on the remote" variant (one commit per snapshot) is still deferred.
+- ✅ **Autosnap** (live mirror of the **shadow tip** — the latest snapshot, incl. the live WIP — to `refs/autosnap/<user>/<host>/<branch>`, force-pushed every 30 min, only if it changed): disk-failure RPO ≈ 30 min, cross-machine recovery per file or whole repo (CLI `--autosnaps` + GUI). The "fine browsable history on the remote" variant (one commit per snapshot) is still deferred.
 
 ## 14. How to configure the Gemini API key
 

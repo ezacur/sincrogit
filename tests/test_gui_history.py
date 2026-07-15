@@ -92,6 +92,7 @@ def test_search_annotates_transitions(dlg, qspin):
     _, d, _ = dlg
     d.ed_file.setText("code.py")
     d.show_history()
+    assert qspin(lambda: len(d._versions) == 3)  # history loads on a worker now
     d.ed_search.setText("def bar")
     d._find_in_versions()
     assert qspin(lambda: "changes in" in d.lbl_info.text())
@@ -99,11 +100,11 @@ def test_search_annotates_transitions(dlg, qspin):
     assert "1 occurrence" in d.tbl.item(1, 3).toolTip()
 
 
-def test_save_a_copy(dlg, monkeypatch, tmp_path):
+def test_save_a_copy(dlg, monkeypatch, tmp_path, qspin):
     ctl, d, boxes = dlg
     d.ed_file.setText("code.py")
     d.show_history()
-    assert d.btn_saveas.isEnabled()
+    assert qspin(lambda: d.btn_saveas.isEnabled())  # enabled once history loads
     dest = str(tmp_path / "code (old).py")
     monkeypatch.setattr(hd.QFileDialog, "getSaveFileName",
                         staticmethod(lambda *a, **k: (dest, "")))

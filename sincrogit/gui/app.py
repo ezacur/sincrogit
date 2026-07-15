@@ -13,6 +13,7 @@ interface; the engine serializes them per repo with each repo's op_lock.
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -21,7 +22,7 @@ import yaml
 from PyQt5.QtCore import QAbstractNativeEventFilter, QObject, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from ..config import append_repo, load_config
+from ..config import append_repo, atomic_write_text, load_config
 from ..engine import Engine
 from ..events import EventLog
 from ..log import setup_logging
@@ -117,6 +118,7 @@ class _Bridge(QObject):
     event_added = pyqtSignal(object)
     activate = pyqtSignal()  # a second launch asks us to show the panel
     quit_requested = pyqtSignal()  # flushquit command: exit cleanly on the GUI thread
+    refresh_tray = pyqtSignal()  # workers may not touch QSystemTrayIcon/QAction directly
 
 
 class TrayApp:
@@ -140,6 +142,7 @@ class TrayApp:
         self.bridge.event_added.connect(self._on_event_gui)
         self.bridge.activate.connect(self.show_panel)
         self.bridge.quit_requested.connect(self.quit)  # flushquit -> clean exit (GUI thread)
+        self.bridge.refresh_tray.connect(self._refresh_tray)
 
         # Mirror the Python logger into the GUI event log (DEBUG detail and
         # warnings that don't go through Engine._emit). The logger's configured
@@ -256,6 +259,12 @@ class TrayApp:
         ev = self.event_log.add(repo, action, message, level)
         self.bridge.event_added.emit(ev)
 
+    # Actions that can change the tray's visible state (icon/tooltip) right now;
+    # everything else (the flood of snapshot/pull/DEBUG records) is picked up by
+    # the 2.5 s timer instead — see below.
+    _TRAY_ACTIONS = {"conflict", "pause", "resume", "handoff", "repair",
+                     "startup", "error"}
+
     def _on_event_gui(self, ev):
         """On the GUI thread: refresh the panel and warn about conflicts."""
         try:
@@ -269,7 +278,13 @@ class TrayApp:
                 QSystemTrayIcon.Warning,
                 8000,
             )
-        self._refresh_tray()
+        # Refresh the tray IMMEDIATELY only when the event might have changed the
+        # visible state (warnings/errors or a state-changing action). Every event
+        # calling _refresh_tray meant one engine.status() per record — and with
+        # log.level=DEBUG that's every filtered-file line; the 2.5 s timer already
+        # keeps the icon fresh for the routine flood.
+        if ev.level in ("WARNING", "ERROR") or ev.action in self._TRAY_ACTIONS:
+            self._refresh_tray()
 
     # ------------------------------------------------------------- tray
     def _build_tray(self):
@@ -348,7 +363,11 @@ class TrayApp:
             args = [sys.executable, "--tray", "-c", self.config_path]
         else:
             args = [sys.executable, "-m", "sincrogit", "--tray", "-c", self.config_path]
-        os.execv(sys.executable, args)
+        # Popen, NOT os.execv: execv on Windows joins the argv with spaces and no
+        # quoting, so a path like "C:\Program Files\..." reaches the child split
+        # into pieces. Popen quotes each argument properly; then exit this process.
+        subprocess.Popen(args, close_fds=True)
+        self.qapp.quit()
 
     # ============================ 'controller' interface for the panel =======
     def status(self):
@@ -451,7 +470,7 @@ class TrayApp:
             ok, msg = self.engine.apply_handoff(name)
             if not ok:
                 self.event_log.add(name, "handoff", f"apply failed: {msg}", "WARNING")
-            self._refresh_tray()
+            self.bridge.refresh_tray.emit()  # queued to the GUI thread
         threading.Thread(target=worker, name=f"sincrogit-handoff-{name}", daemon=True).start()
 
     def add_repo(self, path, branch="main", push=True, pull=True, normalize_eol=True):
@@ -499,30 +518,38 @@ class TrayApp:
                     )
             except Exception:  # noqa: BLE001 — best-effort convenience
                 pass
-        self._refresh_tray()
+        # add_repo now runs on the dialog's worker thread (git on a slow/network
+        # drive mustn't freeze Qt), so the tray refresh must hop to the GUI thread.
+        self.bridge.refresh_tray.emit()
         return ok, msg
 
-    # ---- per-repo configuration (Properties dialog) ----
-    _REPO_CFG_FIELDS = (
-        "branch", "remote", "snapshot_interval_sec", "seal_interval_min",
-        "push", "pull", "pull_interval_min", "autosnap", "autosnap_interval_min",
-        "live_handoff", "track_current_branch", "extra_excludes", "extra_includes",
-    )
+    def detect_branch(self, path):
+        """The current branch of the git repo at `path`, or None (detached HEAD
+        reports 'HEAD'; not-a-repo / errors report None). Exposed so the Add-repo
+        dialog can prefill the branch WITHOUT importing gitrepo, and can run this
+        git call off the GUI thread (a network/AV-slow drive would freeze Qt)."""
+        from ..gitrepo import GitRepo
+        try:
+            return GitRepo(os.path.abspath(path)).current_branch()
+        except Exception:  # noqa: BLE001 — the dialog's hint covers a failure
+            return None
 
+    # ---- per-repo configuration (Properties dialog) ----
     def repo_config_view(self, name):
         """(entry, effective) for the Properties dialog: `entry` is the repo's RAW
         config entry (explicit keys only), `effective` the values the engine runs
-        with (entry merged over defaults). ({}, {}) if the repo isn't found."""
+        with (entry merged over defaults). ({}, {}) if the repo isn't found.
+
+        `effective` is whatever the engine reports — a plain dict of every
+        RepoConfig field (dataclasses.asdict), so a new field shows up here
+        automatically. No mirror list of field names to keep in sync."""
         from ..config import find_repo_entry
         try:
             entry = find_repo_entry(self.config_path, name) or {}
         except (OSError, yaml.YAMLError):
             entry = {}
-        st = self.engine.repo_state_by_name(name)
-        if not st:
-            return entry, {}
-        effective = {f: getattr(st.cfg, f) for f in self._REPO_CFG_FIELDS}
-        return entry, effective
+        effective = self.engine.repo_config_view(name)
+        return entry, (effective or {})
 
     def update_repo_config(self, name, changes):
         """Persist per-repo overrides to the config file. (ok, msg). Applies on
@@ -568,9 +595,9 @@ class TrayApp:
         return self.engine.list_autosnaps(name)
 
     def this_host(self):
-        """This machine's name as used in its autosnap refs."""
-        from ..gitrepo import autosnap_host
-        return autosnap_host()
+        """This machine's name as used in its autosnap refs. Via the engine so
+        the GUI never imports gitrepo internals."""
+        return self.engine.host_name()
 
     def restore_files(self, name, relpaths, sha):
         """Selectively restore several files to their state at `sha` (one atomic
@@ -616,12 +643,13 @@ class TrayApp:
 
     def save_config(self, text: str):
         try:
-            yaml.safe_load(text)  # validate it's valid YAML before writing
+            data = yaml.safe_load(text)  # validate it's valid YAML before writing
         except yaml.YAMLError as e:
             return False, f"Invalid YAML: {e}"
+        if data is not None and not isinstance(data, dict):
+            return False, "Invalid config: the top level must be a mapping (key: value)"
         try:
-            with open(self.config_path, "w", encoding="utf-8") as fh:
-                fh.write(text)
+            atomic_write_text(self.config_path, text)
         except OSError as e:
             return False, f"Could not write: {e}"
         return True, "saved"

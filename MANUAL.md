@@ -42,7 +42,7 @@ There are four ways to start it; the binary and `python -m sincrogit` behave ide
 
 Single-instance is enforced by a named mutex on Windows (plus a localhost-port handshake
 elsewhere), and applies to the tray **and** `--headless` alike — two daemons amending the
-same repos' WIPs would race each other's git work. A second tray launch just brings the
+same repos' snapshots would race each other's git work. A second tray launch just brings the
 running panel to the front and exits 0; a second `--headless` refuses to start (exit
 code 2).
 
@@ -102,7 +102,7 @@ python -m sincrogit -c config.yaml --history src\app.py            # interactive
 python -m sincrogit -c config.yaml --history src\app.py --pick 3   # restore version 3 directly
 ```
 
-Pending edits are snapshotted into the WIP *before* the restore touches anything, and
+Pending edits are snapshotted (into the shadow chain) *before* the restore touches anything, and
 the restore is itself captured — so a restore is always reversible, back to the moment
 right before it.
 
@@ -110,7 +110,7 @@ right before it.
 
 ```powershell
 python -m sincrogit -c config.yaml --autosnaps            # fetch + list each machine's latest mirror
-python -m sincrogit -c config.yaml --apply-handoff myrepo # pull your other machine's live WIP into myrepo
+python -m sincrogit -c config.yaml --apply-handoff myrepo # pull your other machine's live work into myrepo
 ```
 
 `--autosnaps` is the disaster-recovery list (use it on another machine after a dead disk; the
@@ -132,7 +132,7 @@ Open it from the tray icon (double-click) or *Open control panel*.
     the rest keep inheriting the defaults. Also has **Remove repo…** (config only — the
     git repo on disk is untouched). Applies on restart.
   - **Commit…** — Smart Commit (AI-proposed message dialog).
-  - **Seal+Push** — seal the current WIP now and push.
+  - **Seal+Push** — seal the pending snapshots into a real commit now and push.
   - **Fetch+Pull** — fetch and rebase from the remote now.
   - While one of these (or an engine sync) is running, the bar says *working…* and the
     buttons disable — the outcome (including "nothing to seal" or a refusal) lands in the Log.
@@ -150,7 +150,9 @@ Open it from the tray icon (double-click) or *Open control panel*.
     push / pull counts (the Log has the detail; this is the glance).
 - **Log** — events, newest first and updating live (no refresh needed); filterable by
   repo / action / level / text, including the DEBUG detail the file log gets.
-- **Settings** — the friendly form: rhythms (snapshot/seal with a *Purist mode* checkbox),
+- **Settings** — the friendly form: rhythms (snapshot cadence, plus a **Permanent history**
+  selector: *Automatic checkpoints* — the recommended auto-seal — or *Only my own commits*,
+  i.e. purist mode, with an optional once-a-day **commit reminder** when work piles up),
   backup & sync (autosnap, handoff mode, follow-branch), AI messages, theme (light/dark/auto),
   pandoc path, log level. Edits the global defaults; *Save and restart* to apply.
 - **Advanced (YAML)** — the raw `config.yaml` editor, for per-repo overrides and comments.
@@ -187,16 +189,16 @@ The **tray icon colour** reflects state: green = active, amber = paused, red = c
 | **Add a repo** | Panel → Status → *Add repo…* (or edit `repos:` in the config and *Save and restart*). |
 | **Change ONE repo's settings** | Select it → *Properties…* (branch, rhythms, sync, filters as a form). Or edit its entry in Advanced (YAML). |
 | **Remove a repo from SincroGit** | *Properties…* → *Remove repo…* (config only; the git repo on disk is untouched). |
-| **Get back an earlier version of a file** | Panel → *File history…* → pick the file → pick a version → *Restore*. Or `--history FILE`. |
+| **Get back an earlier version of a file** | Panel → *File history…* → pick the file → pick a version → *Restore this file*. Or `--history FILE`. |
 | **Recover an old version WITHOUT overwriting** | *File history…* (or *Time machine…*) → pick the version → *Save a copy…* → give it another name. |
 | **Find when a text appeared/vanished** | *File history…* → pick the file → type the text → *Find* (transitions highlighted in blue). |
 | **Get back SEVERAL files at once** | Panel → *Time machine…* → pick a version → check the files → *Restore selected*. |
 | **Check the whole setup is healthy** | `python -m sincrogit --doctor` (git, remotes, credentials, pandoc, AI, daemon). |
 | **See if my other machines are backing up** | Panel → *Machines…* (stale mirrors show in red; *Fetch latest* refreshes). |
-| **Roll the whole repo back** | Panel → *File history…* → *Restore whole repo* to a chosen point (with a preview of what changes). |
+| **Roll the whole repo back** | Panel → *File history…* → *Restore ENTIRE repo…* to a chosen point (with a preview of what changes). |
 | **Make a clean, documented commit now** | Per-repo **Commit…** button, or `--commit REPO`. |
 | **Move my work to another machine** | Just **lock the screen / close the lid** — SincroGit flushes; on the other machine, unlock and it syncs. Or **Smart Commit** before leaving for an instant handoff. |
-| **Recover after a dead disk** | On another machine: `--autosnaps` (or panel → *Fetch autosnaps*), then *File history* / *Restore*. Loses at most ~30 min. |
+| **Recover after a dead disk** | On another machine: `--autosnaps` (or panel → *File history…* → *Fetch autosnaps (other machines)…*), then restore. Loses at most ~30 min. |
 | **Power cut left git saying "branch broken"** | Nothing — just start SincroGit. It detects the zeroed ref and restores it from the reflog at startup (a "repair" warning shows in the Log). |
 | **Stop writing automatic commits (purist)** | Set `seal_interval_min: inf`; commit by hand with Smart Commit. |
 | **Work on a feature branch (team)** | Set `track_current_branch: true`, work on your own branch, Smart Commit → Pull Request. See [README → Using it in a team](README.md#using-it-in-a-team-shared-repos). |
@@ -216,15 +218,16 @@ be overridden per repo**. The most-used keys:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `snapshot_interval_sec` | 300 | How often the WIP is amended (the time-machine granularity). |
+| `snapshot_interval_sec` | 300 | How often a snapshot lands on the side ref (the time-machine granularity). |
 | `seal_interval_min` | 360 | How often a permanent commit is sealed (`inf` = purist: never auto-seal). |
 | `autosnap` / `autosnap_interval_min` | true / 30 | Live mirror to the remote (disk-failure recovery + handoff). |
-| `live_handoff` | auto | Pick up your other machine's WIP: `auto` / `ask` / `off`. |
+| `live_handoff` | auto | Pick up your other machine's live work: `auto` / `ask` / `off`. |
 | `track_current_branch` | false | Follow the current branch instead of pausing off `branch`. |
 | `push` / `pull` | true / true | Push sealed commits / periodic pull. |
 | `extra_excludes` / `extra_includes` | — | Paths to skip / binaries to version anyway (e.g. `**/*.docx`, `**/*.pptx`). |
 | `max_file_bytes` | 1048576 | Largest file auto-versioned (1 MB). |
 | `suggest_excludes` | true | Suggest excluding a high-churn folder (Smart Ignore). |
+| `suggest_commit` | true | Purist mode only: remind (once/day, at a quiet moment) to Smart Commit when un-sealed work piles up. |
 | `pandoc_path` | `pandoc` | (top-level) pandoc for readable `.docx` diffs. |
 | `ai.*` | — | AI backend for commit messages (Ollama / Gemini / none). |
 
@@ -272,16 +275,20 @@ SincroGit is designed to coexist with your other git tooling — it yields while
 operate (a merge/rebase in progress, a locked index, another branch checked out) and
 resumes afterwards. While it yields, your edits are not being snapshotted; if the
 manual operation runs long (10+ min) the Log and a toast warn you once that snapshots
-are postponed, and the panel shows the repo as *Busy (merge/rebase)*. The rules of
-the road:
+are postponed, and the panel shows the repo as *Busy (merge/rebase)*. If *Busy* never
+clears and no git command is actually running, a crash probably left a stale
+`.git/index.lock` behind: the warning says so, and `--doctor` names the exact file —
+delete it and syncing resumes. The rules of the road:
 
-- **The `sincro: WIP autosnapshot` commit at the tip is SincroGit's; everything below it is
-  yours.** Commit, branch, tag or rebase *under* it freely — the daemon detects external
-  commits and respects them as manual seals. But don't amend or reword the WIP itself
-  from another tool: rewording strips the `WIP:` prefix, so the daemon treats it as a
-  manual commit — and pushes it.
-- **Git clients (lazygit, Fork, GitKraken, VS Code, …):** fine alongside. They'll show
-  the WIP at the tip — leave that one commit alone and work as usual.
+- **SincroGit never occupies your tip.** Snapshots live on a private side ref
+  (`refs/sincro/wip/<branch>`) built through a private index: your `git log` shows only
+  your commits and the seals, your staging area is yours, and `git status` tells the
+  truth. Commit, branch, tag or rebase freely — a manual commit isn't even a special
+  case anymore. (Repos coming from older SincroGit versions are migrated automatically
+  on startup: the legacy WIP tip moves to the side ref and your unsealed edits reappear
+  as ordinary uncommitted changes.)
+- **Git clients (lazygit, Fork, GitKraken, VS Code, …):** fine alongside — they see a
+  completely normal repository.
 - **GitButler (`but`):** it *takes over* a repo (checks out its own
   `gitbutler/workspace` branch and blocks direct commits with a hook). With SincroGit's
   default branch guard this is handled: SincroGit **yields** while GitButler is active

@@ -14,6 +14,15 @@ import time
 # Must be set BEFORE PyQt5 is imported anywhere (the GUI tests are headless).
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Insulate every git subprocess (fixtures AND the engine under test) from the
+# developer's global/system git config: a machine with commit.gpgsign=true,
+# core.hooksPath or autocrlf would otherwise fail or contaminate the ~200
+# commits the suite makes. The fixtures set user.email/name per repo, so
+# nothing legitimate is lost. (GIT_CONFIG_GLOBAL=null device is git's
+# documented "skip the global scope"; NOSYSTEM covers the system scope.)
+os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+
 # The package lives at the repo root, one level up from tests/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

@@ -16,8 +16,9 @@ defaults:
   push: true                      # push sealed commits to the remote
   pull: true                      # periodic pull from the remote (WIP rebase)
   git_timeout_sec: 60             # limit for network operations (fetch/push)
-  autosnap: true                  # live mirror of HEAD (incl. WIP) to a side ref on the
-                                  # remote -> disk-failure recovery within autosnap_interval
+  autosnap: true                  # live mirror of the shadow tip (latest snapshot: sealed
+                                  # history + live WIP) to a side ref on the remote ->
+                                  # disk-failure recovery within autosnap_interval
   autosnap_interval_min: 30       # force-push the mirror every 30 min (only if it changed)
   live_handoff: auto              # pick up your OTHER machine's live WIP. auto = fast-forward
                                   # automatically + notify; ask = notify + one-click Apply
@@ -29,6 +30,9 @@ defaults:
                                   # purist mode for a feature-branch workflow).
   suggest_excludes: true          # suggest once (a notification) adding a high-churn folder
                                   # to extra_excludes; never auto-edits the config.
+  suggest_commit: true            # PURIST MODE ONLY (seal_interval_min: inf): remind once/day,
+                                  # at a quiet moment, to Smart Commit when un-sealed work
+                                  # piles up on the branch. Ignored when auto-seal is on.
   extra_excludes:                 # in addition to the text/size filter (.gitignore style)
     - "**/node_modules/**"
     - "**/.venv/**"
@@ -58,6 +62,8 @@ ai:
   ollama_model: llama3.2          # local Ollama model (if installed)
   timeout_sec: 30
   max_diff_chars: 6000            # max amount of diff to send to the model
+  language: en                    # language of the AI commit messages: en | es
+                                  # (es => seal & Smart Commit messages in Spanish)
 
 log:
   file: sincrogit.log

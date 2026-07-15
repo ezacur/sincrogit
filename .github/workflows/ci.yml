@@ -1,0 +1,37 @@
+name: CI
+
+# SincroGit targets Windows (the shadow-model git plumbing, the named-mutex
+# single-instance guard and the winotify toasts are all Windows-specific), so
+# the suite runs on windows-latest — the only platform the product supports.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install (runtime + dev deps)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run the test suite
+        # QT_QPA_PLATFORM=offscreen lets the PyQt5 GUI tests run headless; conftest
+        # also sets it, but exporting here keeps a bare `pytest` honest too.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -q
+
+      - name: Check bilingual docs are structurally in sync
+        run: python tools/check_docs_parity.py

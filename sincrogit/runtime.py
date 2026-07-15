@@ -49,13 +49,14 @@ defaults:
   push: true
   pull: true
   git_timeout_sec: 60
-  autosnap: true                  # mirror HEAD (incl. WIP) to refs/autosnap/<user>/<host>/<branch>
+  autosnap: true                  # mirror the shadow tip (latest snapshot, incl. live WIP) to refs/autosnap/<user>/<host>/<branch>
   autosnap_interval_min: 30       # force-push the live mirror every 30 min (only if changed)
   live_handoff: auto              # pick up your other machine's live WIP: auto (fast-forward
                                   # + notify) | ask (one-click apply) | off. Needs autosnap on.
   track_current_branch: false     # false = pause off `branch`; true = follow the current
                                   # branch (feature-branch workflow; pairs with purist mode).
   suggest_excludes: true          # suggest once adding a high-churn folder to extra_excludes
+  suggest_commit: true            # purist mode only: remind (once/day) to Smart Commit when work piles up
   extra_excludes:
     - "**/node_modules/**"
     - "**/.venv/**"
@@ -73,6 +74,9 @@ defaults:
 # "pandoc" if it's on PATH; otherwise a full path, e.g. C:/tools/pandoc.exe
 pandoc_path: pandoc
 
+# GUI theme: auto (follow Windows' app theme), light, or dark.
+theme: auto
+
 ai:
   mode: hybrid                    # hybrid | local | cloud | none
   cloud_provider: gemini
@@ -83,6 +87,7 @@ ai:
   ollama_model: llama3.2
   timeout_sec: 30
   max_diff_chars: 6000
+  language: en                    # language of the AI commit messages: en | es
 
 log:
   file: sincrogit.log             # relative paths are resolved next to this file
@@ -267,6 +272,11 @@ def serve_activation(conn):
     is ACKed but demands no action. Always closes the connection.
     """
     try:
+        # A client that connects but never sends (a localhost port scanner, a
+        # health probe, a stalled second launch) must not wedge the accept loop
+        # forever: the listen socket is blocking, so without this recv() would
+        # never return and every later "show panel" / "flushquit" would hang.
+        conn.settimeout(3)
         data = conn.recv(64)
         # NOTE: "flushquit" must be tested BEFORE bare prefixes ever overlap; the
         # current commands share no prefix, but keep the most specific first.

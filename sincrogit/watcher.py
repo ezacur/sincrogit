@@ -42,7 +42,12 @@ def _make_handler_class():
             return self._ignore(rel)
 
         def on_any_event(self, event):
-            if event.is_directory:
+            # A plain directory *modification* is pure mtime churn — it fires on
+            # the parent of every file write and adds nothing over that file's own
+            # event, so drop it. But a directory MOVE / CREATE / DELETE (e.g.
+            # renaming a folder full of tracked files) is a real change watchdog
+            # may not emit per-child events for, so let those through the filter.
+            if event.is_directory and getattr(event, "event_type", "") == "modified":
                 return
             src = getattr(event, "src_path", "") or ""
             dst = getattr(event, "dest_path", "") or ""

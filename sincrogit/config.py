@@ -4,12 +4,15 @@ Each repo inherits the values from `defaults` and may override them.
 See the example in config.example.yaml and §8 of DESIGN.md.
 """
 
+import logging
 import math
 import os
 import re
 from dataclasses import dataclass, field
 
 import yaml
+
+log = logging.getLogger("sincrogit.config")
 
 # Words (any case) that disable an interval/threshold, i.e. "never fire" / "no
 # limit". They normalize to math.inf, which flows through the engine's deadline
@@ -54,9 +57,47 @@ def _to_number(name: str, value):
             raise ValueError(f"config: '{name}' must be a number, got {value!r}") from None
     if not isinstance(value, (int, float)):
         raise ValueError(f"config: '{name}' must be a number, got {value!r}")
+    # Reject NaN and overflow-to-inf: a real disable sentinel ('inf'/'off'/...) is
+    # already mapped to math.inf BEFORE _to_number runs, so a non-finite value
+    # here means garbage or a numeric string that overflowed (e.g. "1e999") —
+    # which would silently DISABLE the field instead of setting a big number.
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"config: '{name}' must be a finite number, got {value!r} "
+                         f"(use 'off'/'inf' to disable it explicitly)")
     if value < 0:
         raise ValueError(f"config: '{name}' must be >= 0, got {value!r}")
     return value
+
+
+def _require_map(name: str, value) -> dict:
+    """A config section that must be a mapping (or absent). Anything else fails
+    AT LOAD with a ValueError — the error type every caller already surfaces as
+    a clean "configuration error" — instead of an AttributeError deeper down
+    (which a windowed exe would show as PyInstaller's crash box)."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"config: '{name}:' must be a mapping (key: value), got {value!r}")
+    return value
+
+
+def _require_pattern_list(name: str, value) -> list:
+    """extra_excludes/extra_includes must be a LIST of string patterns. A bare
+    string is the classic slip (`extra_excludes: "**/build/**"`): it would load
+    fine and then blow up inside pathspec at setup, skipping the whole repo
+    with a cryptic 'setup failed' — so refuse it here, with the fix spelled out."""
+    if value is None:
+        return []
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"config: '{name}' must be a list of patterns, got {value!r} — "
+            f"write it as:  {name}: [\"{value}\"]  or as a '- ' list")
+    bad = [v for v in value if not isinstance(v, str)]
+    if bad:
+        raise ValueError(
+            f"config: '{name}' entries must be strings, got {bad[0]!r}")
+    return list(value)
 
 
 def _norm_handoff(value) -> str:
@@ -89,6 +130,7 @@ _INHERITABLE = [
     "live_handoff",
     "track_current_branch",
     "suggest_excludes",
+    "suggest_commit",
     "extra_includes",
     "max_include_bytes",
 ]
@@ -114,7 +156,8 @@ class RepoConfig:
     push: bool = True                     # push sealed commits to the remote
     pull: bool = True                     # periodic pull from the remote
     git_timeout_sec: int = 60             # limit for network operations (fetch/push)
-    autosnap: bool = True                 # mirror HEAD (incl. WIP) to a side ref on the
+    autosnap: bool = True                 # mirror the shadow tip (latest snapshot: sealed
+                                          # history + the live WIP) to a side ref on the
                                           # remote -> disk-failure RPO ~= autosnap_interval
     autosnap_interval_min: int = 30       # how often the live mirror is force-pushed
     live_handoff: object = "auto"         # pick up your OTHER machine's live WIP. 'auto'
@@ -128,6 +171,10 @@ class RepoConfig:
     suggest_excludes: bool = True         # suggest adding a high-churn folder (many
                                           # filtered-out files) to extra_excludes — a
                                           # one-time notification per folder, never auto-edits.
+    suggest_commit: bool = True           # PURIST MODE ONLY: nudge (once/day, at a quiet
+                                          # moment) to Smart Commit when un-sealed work piles
+                                          # up on a stagnant branch. No-op unless auto-seal
+                                          # is disabled (seal_interval_min: inf).
 
     def __post_init__(self):
         # Normalize disable sentinels (inf/off/none/never, None, False) to
@@ -147,6 +194,10 @@ class RepoConfig:
         if self.git_timeout_sec is not None:
             self.git_timeout_sec = _to_number("git_timeout_sec", self.git_timeout_sec)
         self.live_handoff = _norm_handoff(self.live_handoff)
+        # Pattern lists: a bare string here would only explode inside pathspec
+        # at engine setup, silently skipping the repo. See _require_pattern_list.
+        self.extra_excludes = _require_pattern_list("extra_excludes", self.extra_excludes)
+        self.extra_includes = _require_pattern_list("extra_includes", self.extra_includes)
 
     @property
     def seal_interval_sec(self) -> float:
@@ -167,6 +218,9 @@ class LogConfig:
     level: str = "INFO"
 
 
+_AI_MODES = ("hybrid", "local", "cloud", "none")
+
+
 @dataclass
 class AiConfig:
     mode: str = "hybrid"                  # hybrid | local | cloud | none
@@ -179,6 +233,18 @@ class AiConfig:
     timeout_sec: int = 30
     max_diff_chars: int = 6000
     language: str = "en"
+
+    def __post_init__(self):
+        # A mistyped mode ('hibrid', 'Hybrid ') would otherwise register NO
+        # providers in ai.py — the AI silently off, and --doctor printing no AI
+        # line at all for an unknown mode. Fail at load instead, like every
+        # other field.
+        mode = str(self.mode).strip().lower()
+        if mode not in _AI_MODES:
+            raise ValueError(
+                f"config: 'ai.mode' must be one of "
+                f"{', '.join(_AI_MODES)}; got {self.mode!r}")
+        self.mode = mode
 
 
 @dataclass
@@ -215,16 +281,36 @@ def load_config(path: str) -> Config:
                 hint = "\nHint: YAML forbids TAB indentation — use spaces."
             raise ValueError(f"Invalid YAML in the configuration:\n{e}{hint}") from e
 
-    defaults = raw.get("defaults") or {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"config: the top level must be a mapping (key: value), got {raw!r}")
+    defaults = _require_map("defaults", raw.get("defaults"))
     repos_raw = raw.get("repos") or []
     # An empty repos list is valid: repos can be added later from the GUI.
+    if not isinstance(repos_raw, list):
+        raise ValueError(f"config: 'repos:' must be a list, got {repos_raw!r}")
+
+    unknown = set(defaults) - set(_INHERITABLE)
+    if unknown:
+        # A typo here silently configures nothing — worth a warning, but not an
+        # error (forward/backward compatibility across versions).
+        log.warning("config: unknown key(s) under 'defaults:' ignored (typo?): %s",
+                    ", ".join(sorted(unknown)))
 
     repos = []
     for entry in repos_raw:
-        if "path" not in entry:
-            raise ValueError(f"Repo without 'path' in the configuration: {entry!r}")
+        # A `repos:` item must be a mapping. A bare string (a common hand-editing
+        # slip: `- ~/code/proj` instead of `- path: ~/code/proj`) would make
+        # `"path" not in entry` a SUBSTRING test and then `entry["path"]` raise a
+        # TypeError — not the ValueError callers normalize into a clean message.
+        if not isinstance(entry, dict) or "path" not in entry:
+            raise ValueError(f"Each repo needs a 'path:' mapping; got: {entry!r}")
         abspath = os.path.abspath(os.path.expanduser(str(entry["path"])))
         name = entry.get("name") or os.path.basename(abspath.rstrip("/\\")) or abspath
+        unknown = set(entry) - set(_INHERITABLE) - {"path", "name", "remote", "branch"}
+        if unknown:
+            log.warning("config: unknown key(s) in repo '%s' ignored (typo?): %s",
+                        name, ", ".join(sorted(unknown)))
 
         merged = {}
         for key in _INHERITABLE:
@@ -243,7 +329,7 @@ def load_config(path: str) -> Config:
             )
         )
 
-    log_raw = raw.get("log") or {}
+    log_raw = _require_map("log", raw.get("log"))
     log_file = log_raw.get("file", "sincrogit.log")
     # A relative log path is resolved next to the config file (predictable for the
     # standalone exe), not against the current working directory.
@@ -251,7 +337,11 @@ def load_config(path: str) -> Config:
         log_file = os.path.join(os.path.dirname(os.path.abspath(path)), log_file)
     log_cfg = LogConfig(file=log_file, level=log_raw.get("level", "INFO"))
 
-    ai_raw = raw.get("ai") or {}
+    ai_raw = _require_map("ai", raw.get("ai"))
+    unknown = set(ai_raw) - set(AiConfig.__dataclass_fields__)
+    if unknown:
+        log.warning("config: unknown key(s) under 'ai:' ignored (typo?): %s",
+                    ", ".join(sorted(unknown)))
     ai_cfg = AiConfig(
         **{k: v for k, v in ai_raw.items() if k in AiConfig.__dataclass_fields__}
     )
@@ -262,6 +352,16 @@ def load_config(path: str) -> Config:
         theme = "auto"
 
     return Config(repos=repos, log=log_cfg, ai=ai_cfg, pandoc_path=pandoc_path, theme=theme)
+
+
+def atomic_write_text(path: str, text: str) -> None:
+    """Write via a temp file + os.replace so a crash mid-write can never leave
+    a truncated config.yaml (the same power-cut scenario gitrepo already heals
+    for git's ref files — the config deserves no less)."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
 
 
 def _entry_name(entry: dict) -> str:
@@ -275,8 +375,8 @@ def _validate_entry(entry: dict, defaults: dict) -> None:
     """Build the RepoConfig that load_config would build from `entry` (+ inherited
     defaults) — raising ValueError on anything invalid. Called BEFORE writing an
     edited entry, so a bad value can't brick the config file."""
-    if "path" not in entry:
-        raise ValueError(f"Repo without 'path' in the configuration: {entry!r}")
+    if not isinstance(entry, dict) or "path" not in entry:
+        raise ValueError(f"Each repo needs a 'path:' mapping; got: {entry!r}")
     abspath = os.path.abspath(os.path.expanduser(str(entry["path"])))
     merged = {}
     for key in _INHERITABLE:
@@ -337,8 +437,7 @@ def _write_repos_section(config_path: str, text: str, data: dict, repos: list) -
         data["repos"] = repos
         out = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 
-    with open(config_path, "w", encoding="utf-8") as fh:
-        fh.write(out)
+    atomic_write_text(config_path, out)
 
 
 def append_repo(config_path: str, repo_entry: dict) -> None:

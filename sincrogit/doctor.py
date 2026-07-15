@@ -70,8 +70,15 @@ def _check_repo(rep: _Report, rc) -> None:
     else:
         rep.add(OK, name, f"on '{rc.branch}'")
     if repo.is_busy():
-        rep.add(WARN, name, "a manual merge/rebase is in progress — the daemon "
-                            "yields until it finishes")
+        stale = repo.stale_lock()
+        if stale:
+            rep.add(WARN, name,
+                    f"stale git lock (untouched for over an hour): {stale} — "
+                    f"if no git command is running, delete that file to let "
+                    f"syncing resume")
+        else:
+            rep.add(WARN, name, "a manual merge/rebase is in progress — the "
+                                "daemon yields until it finishes")
 
     # Remote: configured -> reachable (read) -> push auth (--dry-run, no data).
     if not repo.has_remote(rc.remote):
@@ -79,22 +86,22 @@ def _check_repo(rep: _Report, rc) -> None:
         rep.add(state, name, f"no remote '{rc.remote}' — push/pull/autosnap wait "
                              f"until you add one")
         return
-    res = repo._run(["ls-remote", "--heads", rc.remote], check=False,
-                    timeout=rc.git_timeout_sec)
-    if res.returncode != 0:
-        rep.add(FAIL, name, f"remote '{rc.remote}' unreachable: "
-                            f"{(res.stderr or res.stdout).strip().splitlines()[:1]}")
+    reachable, detail = repo.ls_remote_heads(rc.remote, timeout=rc.git_timeout_sec)
+    if not reachable:
+        rep.add(FAIL, name, f"remote '{rc.remote}' unreachable: {detail}")
         return
     rep.add(OK, name, f"remote '{rc.remote}' reachable")
-    if rc.push:
-        res = repo._run(["push", "--dry-run", rc.remote,
-                         f"{rc.branch}:{rc.branch}"], check=False,
-                        timeout=rc.git_timeout_sec)
-        if res.returncode == 0:
-            rep.add(OK, name, "push credentials verified (dry-run)")
+    # Write auth is needed by push AND by autosnap (which force-pushes the mirror
+    # to refs/autosnap/... regardless of `push`). Verify it whenever either is on,
+    # so a `push: false, autosnap: true` repo isn't reported healthy while every
+    # mirror push silently fails. The dry-run transfers nothing.
+    if rc.push or rc.autosnap:
+        what = "push" if rc.push else "autosnap"
+        ok, detail = repo.push_dry_run(rc.remote, rc.branch, timeout=rc.git_timeout_sec)
+        if ok:
+            rep.add(OK, name, f"{what} credentials verified (dry-run)")
         else:
-            detail = (res.stderr or res.stdout).strip().splitlines()
-            rep.add(FAIL, name, f"push --dry-run failed: {detail[-1] if detail else '?'}")
+            rep.add(FAIL, name, f"{what} --dry-run failed: {detail}")
 
 
 def _check_ai(rep: _Report, ai) -> None:

@@ -100,7 +100,10 @@ def _history_command(engine, file_arg: str, pick) -> int:
     print(f"History of '{rel}' (repo {repo_name}):")
     for i, v in enumerate(versions, 1):
         ts = datetime.fromtimestamp(v["epoch"]).strftime("%Y-%m-%d %H:%M:%S")
-        kind = "sealed  " if v["source"] == "sealed" else "snapshot"
+        # Distinguish all three sources the history returns (a fetched autosnap
+        # state used to be mislabeled 'snapshot'). Padded to align the column.
+        kind = {"sealed": "sealed  ", "snapshot": "snapshot",
+                "autosnap": "autosnap"}.get(v["source"], "snapshot")
         print(f"  [{i}] {ts}  {kind}  {v['subject']}")
 
     if pick is None:
@@ -334,6 +337,49 @@ def _run_headless(config, logger, engine_ref=None) -> int:
     return 1 if engine.crashed else 0
 
 
+def _cli_conflict(args) -> str | None:
+    """Reject nonsensical flag combinations up front — argparse can't express
+    "these three compose but are exclusive with those seven". Returns an error
+    string (caller prints usage + exits 2) or None when the flags are coherent.
+
+    Without this, a slip like `--history F --commit R` runs whichever branch
+    main() checks first and silently ignores the rest; an orphan `--pick`/
+    `--message`/`--yes` (its parent action missing) also passes unnoticed.
+    """
+    actions = []
+    if args.tray:
+        actions.append("--tray")
+    if args.headless:
+        actions.append("--headless")
+    if args.history is not None:
+        actions.append("--history")
+    if args.autosnaps:
+        actions.append("--autosnaps")
+    if args.commit is not None:
+        actions.append("--commit")
+    if args.apply_handoff is not None:
+        actions.append("--apply-handoff")
+    if args.doctor:
+        actions.append("--doctor")
+    # --snapshot-once/--seal-once/--sync-once DELIBERATELY combine (one batch pass),
+    # so they count as a single action category here.
+    once = [n for n, v in (("--snapshot-once", args.snapshot_once),
+                            ("--seal-once", args.seal_once),
+                            ("--sync-once", args.sync_once)) if v]
+    if once:
+        actions.append("+".join(once))
+    if len(actions) > 1:
+        return f"these actions can't be combined: {', '.join(actions)}"
+    # Modifiers that only mean something with their parent action.
+    if args.pick is not None and args.history is None:
+        return "--pick only applies with --history"
+    if (args.message is not None or args.yes) and args.commit is None:
+        return "--message/--yes only apply with --commit"
+    if args.message is not None and args.yes:
+        return "--message and --yes are mutually exclusive (one gives the message, the other accepts the AI's)"
+    return None
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
 
@@ -381,6 +427,12 @@ def main(argv=None) -> int:
                         help="Health check: git, config, each repo's branch/remote/"
                              "credentials, pandoc, AI backends, daemon. Exit 0 = healthy.")
     args = parser.parse_args(argv)
+
+    conflict = _cli_conflict(args)
+    if conflict:
+        parser.print_usage(sys.stderr)
+        print(f"sincrogit: error: {conflict}", file=sys.stderr)
+        return 2
 
     if args.tray:
         return _run_tray(args.config)

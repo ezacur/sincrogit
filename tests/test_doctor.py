@@ -1,6 +1,7 @@
 """--doctor: right verdicts and exit codes on healthy and broken setups."""
 
 import os
+import time
 
 from sincrogit.config import AiConfig, Config, LogConfig, RepoConfig
 from sincrogit.doctor import run_doctor
@@ -46,6 +47,35 @@ def test_doctor_no_repos_is_a_warning(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "no repos configured" in out
+
+
+def test_doctor_flags_a_stale_git_lock(make_repo, tmp_path, capsys):
+    """An hour-old index.lock is a crash leftover, not a running git command:
+    doctor must name the file and say deleting it unblocks syncing."""
+    repo = make_repo()
+    lock = os.path.join(repo, ".git", "index.lock")
+    open(lock, "w").close()
+    old = time.time() - 7200
+    os.utime(lock, (old, old))
+    cfg = _config(tmp_path, [RepoConfig(path=repo, name="t", push=False,
+                                        pull=False, autosnap=False)])
+    rc = run_doctor(cfg)
+    out = capsys.readouterr().out
+    assert rc == 0                       # a warning: doctor never deletes it
+    assert "stale git lock" in out and "index.lock" in out
+
+
+def test_doctor_fresh_lock_reads_as_a_manual_operation(make_repo, tmp_path,
+                                                       capsys):
+    repo = make_repo()
+    open(os.path.join(repo, ".git", "index.lock"), "w").close()  # just created
+    cfg = _config(tmp_path, [RepoConfig(path=repo, name="t", push=False,
+                                        pull=False, autosnap=False)])
+    rc = run_doctor(cfg)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "merge/rebase is in progress" in out
+    assert "stale git lock" not in out
 
 
 def test_doctor_cloud_mode_without_key_fails(make_repo, tmp_path, capsys,

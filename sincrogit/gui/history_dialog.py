@@ -17,8 +17,6 @@ Talks to the app through the `controller`:
       the repo's git timeout, and even wait on the engine's per-repo lock)
 """
 
-import difflib
-import html
 import os
 import threading
 import time
@@ -47,14 +45,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-# Diff colors per theme flavor (keyed off the panel palette's background).
-# *_hl are the stronger intra-line backgrounds: WHAT changed inside the line.
-_DIFF_LIGHT = {"meta": "#8a929c", "hunk": "#2b6cb0", "add": "#1a7f37", "add_bg": "#e6f4eb",
-               "del": "#cf222e", "del_bg": "#fbebed", "ctx": "#444444",
-               "add_hl": "#9fdcb4", "del_hl": "#f4b6bd"}
-_DIFF_DARK = {"meta": "#9aa3af", "hunk": "#6cb0f0", "add": "#4cc07a", "add_bg": "#203428",
-              "del": "#ec7272", "del_bg": "#3a2628", "ctx": "#c8cdd4",
-              "add_hl": "#2f5c3f", "del_hl": "#6e3a3f"}
+from .diff import diff_html
 
 # Version-type accents (foreground of the "Type" cell).
 _TYPE_COLOR = {"sealed": "#2e9e5b", "snapshot": "#6b7280", "autosnap": "#8a63d2"}
@@ -94,82 +85,6 @@ def _ago(epoch) -> str:
     return _fmt(epoch)
 
 
-def _mark_intraline(old_line: str, new_line: str, c: dict) -> tuple:
-    """(old_html, new_html) of a modified line pair, with the spans that actually
-    changed wrapped in a stronger background — you see WHAT changed inside the
-    line, not just that the line changed."""
-    o, n = [], []
-    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
-            None, old_line, new_line).get_opcodes():
-        oseg, nseg = html.escape(old_line[i1:i2]), html.escape(new_line[j1:j2])
-        if tag == "equal":
-            o.append(oseg)
-            n.append(nseg)
-        else:
-            if oseg:
-                o.append(f'<span style="background:{c["del_hl"]};">{oseg}</span>')
-            if nseg:
-                n.append(f'<span style="background:{c["add_hl"]};">{nseg}</span>')
-    return "".join(o), "".join(n)
-
-
-def _diff_html(old_text: str, current_text: str, dark: bool = False) -> str:
-    """Unified diff (old version -> current file) as colored HTML, theme-aware,
-    with intra-line highlighting on paired -/+ lines."""
-    c = _DIFF_DARK if dark else _DIFF_LIGHT
-    diff = list(difflib.unified_diff(
-        old_text.splitlines(), current_text.splitlines(),
-        fromfile="selected version", tofile="current file", lineterm="",
-    ))
-    rows = []
-
-    def emit(kind: str, body_html: str):
-        rows.append(f'<span style="color:{c[kind]};background:{c[kind + "_bg"]};'
-                    f'display:block;">{body_html or "&nbsp;"}</span>')
-
-    in_hunk = False  # the ---/+++ headers only appear before the first @@
-    i = 0
-    while i < len(diff):
-        ln = diff[i]
-        if not in_hunk and ln.startswith(("+++", "---")):
-            rows.append(f'<span style="color:{c["meta"]};">{html.escape(ln)}</span>')
-            i += 1
-        elif ln.startswith("@@"):
-            in_hunk = True
-            rows.append(f'<span style="color:{c["hunk"]};font-weight:bold;">'
-                        f'{html.escape(ln)}</span>')
-            i += 1
-        elif ln.startswith("-"):
-            # A run of removals followed by a run of additions is a MODIFICATION:
-            # pair them index-wise and highlight what changed inside each line.
-            dels = []
-            while i < len(diff) and diff[i].startswith("-"):
-                dels.append(diff[i][1:])
-                i += 1
-            adds = []
-            while i < len(diff) and diff[i].startswith("+"):
-                adds.append(diff[i][1:])
-                i += 1
-            paired = min(len(dels), len(adds))
-            marked = [_mark_intraline(dels[k], adds[k], c) for k in range(paired)]
-            for k, d in enumerate(dels):
-                emit("del", "-" + (marked[k][0] if k < paired else html.escape(d)))
-            for k, a in enumerate(adds):
-                emit("add", "+" + (marked[k][1] if k < paired else html.escape(a)))
-        elif ln.startswith("+"):
-            emit("add", html.escape(ln))
-            i += 1
-        else:
-            rows.append(f'<span style="color:{c["ctx"]};">{html.escape(ln) or "&nbsp;"}</span>')
-            i += 1
-    if not rows:
-        return (f'<pre style="color:{c["meta"]};font-family:Consolas,monospace;'
-                f'padding:8px;">(no differences vs the current file)</pre>')
-    body = "\n".join(rows)
-    return (f'<pre style="font-family:Consolas,monospace;font-size:10pt;'
-            f'margin:0;padding:6px;line-height:1.35;">{body}</pre>')
-
-
 class _NoGitProxy(QSortFilterProxyModel):
     """Hides .git (and git's lock litter) from the repo file tree."""
 
@@ -184,6 +99,9 @@ class HistoryDialog(QDialog):
     _autosnaps_fetched = pyqtSignal(bool, int, str, str)   # ok, count, repo, error
     _preview_ready = pyqtSignal(bool, object, str, str)    # ok, payload|msg, sha, when
     _search_ready = pyqtSignal(str, str, list)             # relpath, term, [(sha, count)]
+    _history_ready = pyqtSignal(int, str, list)            # gen, relpath, versions
+    _file_preview_ready = pyqtSignal(int, object, object)  # gen, content|None, current
+    _restore_done = pyqtSignal(bool, str)                  # ok, message
 
     def __init__(self, controller, parent=None, preselect_repo=None):
         super().__init__(parent)
@@ -191,6 +109,10 @@ class HistoryDialog(QDialog):
         self.setWindowTitle("⏳g SincroGit — File history")
         self.resize(860, 600)
         self._versions = []
+        # Monotonic tokens so a slow git call whose result arrives after the user
+        # moved on (picked another file / version) is discarded, not shown stale.
+        self._history_gen = 0
+        self._preview_gen = 0
 
         v = QVBoxLayout(self)
 
@@ -231,6 +153,9 @@ class HistoryDialog(QDialog):
         self._autosnaps_fetched.connect(self._on_autosnaps_fetched)
         self._preview_ready.connect(self._on_preview_ready)
         self._search_ready.connect(self._on_search_ready)
+        self._history_ready.connect(self._on_history_ready)
+        self._file_preview_ready.connect(self._on_file_preview_ready)
+        self._restore_done.connect(self._on_restore_done)
         row2.addWidget(self.btn_fetch)
         self.ed_search = QLineEdit()
         self.ed_search.setPlaceholderText("find text across versions (e.g. a function name)…")
@@ -367,14 +292,6 @@ class HistoryDialog(QDialog):
     def _relpath(self) -> str:
         return self.ed_file.text().strip().replace("\\", "/")
 
-    def _current_content(self) -> str:
-        """The file's current content as readable text (markdown for .docx), or ''
-        if missing. Routed through the controller so .docx is converted via pandoc."""
-        rel = self._relpath()
-        if not rel:
-            return ""
-        return self.c.current_text(self._repo_name(), rel)
-
     def _browse(self):
         base = self._repo_path()
         chosen, _ = QFileDialog.getOpenFileName(self, "Choose a file", base)
@@ -395,16 +312,40 @@ class HistoryDialog(QDialog):
 
     # ----------------------------------------------------------- actions
     def show_history(self):
+        """Load the file's versions on a background thread: file_history runs
+        git log + a cat-file batch (and pandoc/python-pptx for documents), which
+        would freeze the window inline on a big file or a slow converter."""
         rel = self._relpath()
         if not rel:
             return
-        self._versions = self.c.file_history(self._repo_name(), rel)
+        self._history_gen += 1
+        gen = self._history_gen
         self.preview.clear()
         self.btn_restore.setEnabled(False)
         self.btn_restore_repo.setEnabled(False)
         self.btn_saveas.setEnabled(False)
-        self.tbl.setRowCount(len(self._versions))
-        for i, ver in enumerate(self._versions):
+        self.lbl_info.setText(f"Loading history of '{rel}'…")
+        threading.Thread(
+            target=self._do_load_history, args=(gen, self._repo_name(), rel),
+            name="sincrogit-history", daemon=True,
+        ).start()
+
+    def _do_load_history(self, gen, name, rel):
+        try:
+            versions = self.c.file_history(name, rel)
+        except Exception:  # noqa: BLE001 — surfaced as "no history" below
+            versions = []
+        try:
+            self._history_ready.emit(gen, rel, versions)
+        except RuntimeError:
+            pass  # dialog closed while loading
+
+    def _on_history_ready(self, gen, rel, versions):
+        if gen != self._history_gen:
+            return  # a newer file/history request superseded this one
+        self._versions = versions
+        self.tbl.setRowCount(len(versions))
+        for i, ver in enumerate(versions):
             source = ver.get("source", "")
             cells = [str(i + 1), _ago(ver["epoch"]), source, ver["subject"]]
             for j, val in enumerate(cells):
@@ -416,9 +357,9 @@ class HistoryDialog(QDialog):
                     if source in _TYPE_COLOR:
                         item.setForeground(QColor(_TYPE_COLOR[source]))
                 self.tbl.setItem(i, j, item)
-        if self._versions:
-            self.lbl_info.setText(f"{len(self._versions)} version(s) of '{rel}'")
-            self.tbl.selectRow(0)
+        if versions:
+            self.lbl_info.setText(f"{len(versions)} version(s) of '{rel}'")
+            self.tbl.selectRow(0)  # triggers _load_preview
         else:
             self.lbl_info.setText(f"No history for '{rel}'")
 
@@ -429,6 +370,9 @@ class HistoryDialog(QDialog):
         return None
 
     def _load_preview(self):
+        """Fetch the selected version's text (and the current file, for the diff)
+        on a background thread: file_text_at / current_text run `git show` plus,
+        for .docx/.pptx, pandoc/python-pptx — up to tens of seconds inline."""
         ver = self._selected_version()
         self.btn_restore.setEnabled(ver is not None)
         self.btn_restore_repo.setEnabled(ver is not None)
@@ -436,15 +380,38 @@ class HistoryDialog(QDialog):
         if not ver:
             self.preview.clear()
             return
-        content = self.c.file_text_at(self._repo_name(), self._relpath(), ver["sha"])
+        self._preview_gen += 1
+        gen = self._preview_gen
+        want_diff = self.cb_diff.isChecked()
+        self.preview.setPlainText("Loading…")
+        threading.Thread(
+            target=self._do_load_preview,
+            args=(gen, self._repo_name(), self._relpath(), ver["sha"], want_diff),
+            name="sincrogit-preview", daemon=True,
+        ).start()
+
+    def _do_load_preview(self, gen, name, rel, sha, want_diff):
+        try:
+            content = self.c.file_text_at(name, rel, sha)
+            current = (self.c.current_text(name, rel)
+                       if want_diff and content is not None else "")
+        except Exception:  # noqa: BLE001 — shown as "unavailable" below
+            content, current = None, ""
+        try:
+            self._file_preview_ready.emit(gen, content, current)
+        except RuntimeError:
+            pass  # dialog closed while loading
+
+    def _on_file_preview_ready(self, gen, content, current):
+        if gen != self._preview_gen:
+            return  # a newer selection superseded this preview
         if content is None:
             self.preview.setPlainText("(binary or unavailable)")
             return
         if self.cb_diff.isChecked():
             # Dark diff colors when the app palette is dark (TrayApp.theme).
             pal = getattr(self.c, "theme", None) or {}
-            self.preview.setHtml(_diff_html(
-                content, self._current_content(), dark=bool(pal.get("is_dark"))))
+            self.preview.setHtml(diff_html(content, current, dark=bool(pal.get("is_dark"))))
         else:
             self.preview.setPlainText(content)
 
@@ -529,17 +496,54 @@ class HistoryDialog(QDialog):
             return
         rel = self._relpath()
         when = _fmt(ver["epoch"])
+        # Default to Cancel: an accidental Enter on this destructive confirmation
+        # shouldn't overwrite the working tree.
         if QMessageBox.question(
             self, "Restore file",
             f"Restore '{rel}' to its version from {when} ({ver.get('source','')})?\n\n"
             f"The current content will be overwritten in the working tree "
             f"(and saved as a new snapshot).",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
         ) != QMessageBox.Yes:
             return
-        ok, msg = self.c.restore_file(self._repo_name(), rel, ver["sha"])
+        # Background thread: restore_file takes the repo's op_lock and does several
+        # git ops — inline it would freeze the GUI whenever the engine holds that
+        # lock (e.g. a push/pull up to the git network timeout).
+        self._begin_restore(f"Restoring '{rel}'…")
+        threading.Thread(
+            target=self._do_restore,
+            args=("file", self._repo_name(), rel, ver["sha"], f"Restored '{rel}' to {when}."),
+            name="sincrogit-restore", daemon=True,
+        ).start()
+
+    def _begin_restore(self, note: str):
+        """Disable the restore/save buttons and show a note while a restore runs
+        on a worker (re-enabled by _on_restore_done)."""
+        self.btn_restore.setEnabled(False)
+        self.btn_restore_repo.setEnabled(False)
+        self.btn_saveas.setEnabled(False)
+        self.lbl_info.setText(note)
+
+    def _do_restore(self, kind, name, rel, sha, success_text):
+        try:
+            ok, msg = (self.c.restore_file(name, rel, sha) if kind == "file"
+                       else self.c.restore_repo(name, sha))
+        except Exception as e:  # noqa: BLE001 — reported in the dialog
+            ok, msg = False, str(e)
+        try:
+            self._restore_done.emit(ok, success_text if ok else msg)
+        except RuntimeError:
+            pass  # dialog closed while restoring
+
+    def _on_restore_done(self, ok, msg):
+        ver = self._selected_version()
+        self.btn_restore.setEnabled(ver is not None)
+        self.btn_restore_repo.setEnabled(ver is not None)
+        self.btn_saveas.setEnabled(ver is not None)
+        self.lbl_info.setText("")
         if ok:
-            QMessageBox.information(self, "Restore", f"Restored '{rel}' to {when}.")
-            self.show_history()
+            QMessageBox.information(self, "Restore", msg)
+            self.show_history()  # reload (threaded); the restore is a new version
         else:
             QMessageBox.critical(self, "Restore failed", msg)
 
@@ -613,12 +617,14 @@ class HistoryDialog(QDialog):
         box.setDefaultButton(QMessageBox.Cancel)
         if box.exec_() != QMessageBox.Yes:
             return
-        ok2, msg = self.c.restore_repo(self._repo_name(), sha)
-        if ok2:
-            QMessageBox.information(self, "Restore", f"Repository restored to {when}.")
-            self.show_history()
-        else:
-            QMessageBox.critical(self, "Restore failed", msg)
+        # Background thread (same reason as _restore): restore_repo holds the
+        # repo's op_lock and rewrites the whole worktree.
+        self._begin_restore("Restoring the whole repository…")
+        threading.Thread(
+            target=self._do_restore,
+            args=("repo", self._repo_name(), None, sha, f"Repository restored to {when}."),
+            name="sincrogit-restore-repo", daemon=True,
+        ).start()
 
     def _fetch_autosnaps(self):
         """Kick off the fetch on a background thread: it's a network operation

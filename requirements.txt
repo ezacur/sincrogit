@@ -1,6 +1,9 @@
 watchdog>=3.0
 PyYAML>=6.0
 pathspec>=0.10
+# Desktop toasts (conflicts, handoff, nudges). notify.py degrades to log-only
+# without it — but then the alerts the product promises never show:
+winotify>=1.1; sys_platform == 'win32'
 # GUI (tray icon + control panel). Only needed for `--tray`:
 PyQt5>=5.15
 # Readable .pptx previews/diffs (optional, like pandoc for .docx):

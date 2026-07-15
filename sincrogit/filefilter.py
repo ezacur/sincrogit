@@ -52,7 +52,9 @@ class FileFilter:
         self.max_bytes = max_bytes
         self.excludes = excludes or []
         self.includes = includes or []
-        self.max_include_bytes = max_include_bytes or max_bytes
+        # `is None` (not truthiness): a legitimate 0 ("include no oversized file")
+        # must be kept, not silently replaced by max_bytes.
+        self.max_include_bytes = max_include_bytes if max_include_bytes is not None else max_bytes
         self._spec = self._compile(self.excludes, "extra_excludes")
         self._include_spec = self._compile(self.includes, "extra_includes")
 

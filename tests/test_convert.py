@@ -36,6 +36,16 @@ def _make_pptx(title="Resultados Q2", bullet="Ventas +12%", note="revisar cifra"
     return buf.getvalue()
 
 
+def test_corrupt_pptx_returns_none_and_says_why(caplog):
+    """Corrupt bytes and 'library missing' both yield None for callers, but a
+    corrupt file must leave a log trace — '(binary or unavailable)' in a diff
+    should be explainable."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="sincrogit.convert"):
+        assert pptx_bytes_to_md(b"these bytes are not a zip archive") is None
+    assert any("cannot read .pptx" in r.message for r in caplog.records)
+
+
 def test_extracts_title_bullets_table_and_notes():
     md = pptx_bytes_to_md(_make_pptx())
     assert "## Slide 1 — Resultados Q2" in md

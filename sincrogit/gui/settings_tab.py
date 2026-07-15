@@ -9,8 +9,6 @@ Saving rewrites the file structurally (comments are not preserved — that's the
 Advanced tab's trade); changes take effect on restart, same as the YAML editor.
 """
 
-import math
-
 import yaml
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -28,11 +26,17 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+# Widget idioms shared with the per-repo Properties dialog (kept re-exported here
+# so the tests that reach in via settings_tab._select still work).
+from .formwidgets import _HANDOFF, _combo, _is_disabled, _load_spin, _select, _spin
+
 # Combo entries: (stored value, human label)
-_HANDOFF = [
-    ("auto", "Automatic (fast-forward + notify)"),
-    ("ask", "Ask me (notify + one-click Apply)"),
-    ("off", "Off (manual only)"),
+# Permanent-history mode, framed by RESULT — not the "purist/pragmatic" jargon,
+# which means nothing to a GUI-first user. "auto" = auto-seal on an interval;
+# "manual" = seal_interval_min: inf (only the user's own Smart Commits land).
+_HISTORY_MODES = [
+    ("auto", "Automatic checkpoints (recommended)"),
+    ("manual", "Only my own commits (I seal by hand)"),
 ]
 _AI_MODES = [
     ("hybrid", "Hybrid (local Ollama, cloud fallback)"),
@@ -43,34 +47,6 @@ _AI_MODES = [
 _LANGS = [("en", "English"), ("es", "Español")]
 _THEMES = [("auto", "Auto (follow Windows)"), ("light", "Light"), ("dark", "Dark")]
 _LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
-
-
-def _combo(pairs) -> QComboBox:
-    cb = QComboBox()
-    for value, label in pairs:
-        cb.addItem(label, value)
-    cb.setMaximumWidth(360)  # form fields shouldn't stretch across the window
-    return cb
-
-
-def _spin(spin: QSpinBox) -> QSpinBox:
-    spin.setMaximumWidth(160)  # a number never needs the full row
-    return spin
-
-
-def _select(cb: QComboBox, value):
-    i = cb.findData(value)
-    cb.setCurrentIndex(i if i >= 0 else 0)
-
-
-def _is_disabled(value) -> bool:
-    """Is an interval stored as a disable sentinel (inf/off/none/never/...)?"""
-    if value is None or value is False:
-        return True
-    if isinstance(value, float) and math.isinf(value):
-        return True
-    return isinstance(value, str) and value.strip().lower() in (
-        "inf", "infinity", "none", "never", "off", "false", "disabled")
 
 
 class SettingsTab(QWidget):
@@ -101,15 +77,33 @@ class SettingsTab(QWidget):
         self.sp_snapshot.setToolTip("Time-machine granularity: how often the WIP is amended.")
         f1.addRow("Snapshot every", self.sp_snapshot)
 
-        self.ck_purist = QCheckBox("Purist mode — never auto-seal; I commit by hand (Smart Commit)")
-        self.ck_purist.toggled.connect(lambda on: self.sp_seal.setEnabled(not on))
-        f1.addRow(self.ck_purist)
+        self.cb_history = _combo(_HISTORY_MODES)
+        self.cb_history.setToolTip("Who writes the permanent commits on your branch.")
+        self.cb_history.currentIndexChanged.connect(self._history_mode_changed)
+        f1.addRow("Permanent history", self.cb_history)
+
         self.sp_seal = _spin(QSpinBox())
         self.sp_seal.setRange(5, 2880)
         self.sp_seal.setSingleStep(30)
         self.sp_seal.setSuffix(" min")
-        self.sp_seal.setToolTip("How often the WIP becomes a permanent commit (and is pushed).")
-        f1.addRow("Auto-seal every", self.sp_seal)
+        self.sp_seal.setToolTip("How often SincroGit adds an automatic checkpoint commit (and pushes).")
+        f1.addRow("Automatic checkpoint every", self.sp_seal)
+
+        self.ck_nudge = QCheckBox("Remind me to commit when work piles up (a quiet moment, once a day at most)")
+        self.ck_nudge.setToolTip(
+            "Only for 'Only my own commits': if un-sealed work sits on a stagnant "
+            "branch, SincroGit nudges you once to Smart Commit. Your work is backed up "
+            "regardless — this only keeps your branch history current.")
+        f1.addRow(self.ck_nudge)
+
+        self.lbl_history = QLabel(
+            "Automatic: a permanent commit lands on your branch periodically — a real "
+            "history with zero effort (recommended). Only my own: the branch stays exactly "
+            "as you commit it (Smart Commit); the automatic saves keep running underneath "
+            "(time machine, backup, cross-machine handoff), just not on the branch.")
+        self.lbl_history.setWordWrap(True)
+        self.lbl_history.setProperty("cssClass", "muted")
+        f1.addRow(self.lbl_history)
         v.addWidget(g1)
 
         # --------------------------------------------------------------- sync
@@ -197,39 +191,49 @@ class SettingsTab(QWidget):
 
         self.load_values()
 
+    def _history_mode_changed(self):
+        """The checkpoint interval only applies to automatic mode; the commit
+        reminder only applies to 'only my own commits'."""
+        auto = self.cb_history.currentData() == "auto"
+        self.sp_seal.setEnabled(auto)
+        self.ck_nudge.setEnabled(not auto)
+
     # ------------------------------------------------------------------ load
-    def _raw(self) -> dict:
+    def _raw(self):
+        """config.yaml parsed as a dict, or None when it can't be trusted
+        (unreadable file, invalid YAML, or a non-mapping root). _save refuses
+        on None: rebuilding from an empty dict would silently write a config
+        WITHOUT the `repos:` section."""
         try:
-            return yaml.safe_load(self.c.config_text()) or {}
+            raw = yaml.safe_load(self.c.config_text())
         except yaml.YAMLError:
-            return {}
+            return None
+        return raw if isinstance(raw, dict) else None
 
     def load_values(self):
-        raw = self._raw()
+        raw = self._raw() or {}
         d = raw.get("defaults") or {}
         ai = raw.get("ai") or {}
         logc = raw.get("log") or {}
 
-        snap = d.get("snapshot_interval_sec", 300)
-        self.sp_snapshot.setValue(int(snap) if not _is_disabled(snap) else 300)
+        _load_spin(self.sp_snapshot, d.get("snapshot_interval_sec", 300), 300)
 
         seal = d.get("seal_interval_min", 360)
         purist = _is_disabled(seal)
-        self.ck_purist.setChecked(purist)
+        _select(self.cb_history, "manual" if purist else "auto")
         self.sp_seal.setValue(360 if purist else int(seal))
-        self.sp_seal.setEnabled(not purist)
+        self.ck_nudge.setChecked(bool(d.get("suggest_commit", True)))
+        self._history_mode_changed()  # sync enable/disable to the selected mode
 
         auto = d.get("autosnap", True)
         self.ck_autosnap.setChecked(bool(auto))
-        a_int = d.get("autosnap_interval_min", 30)
-        self.sp_autosnap.setValue(int(a_int) if not _is_disabled(a_int) else 30)
+        _load_spin(self.sp_autosnap, d.get("autosnap_interval_min", 30), 30)
         self.sp_autosnap.setEnabled(bool(auto))
 
         self.ck_push.setChecked(bool(d.get("push", True)))
         pull = bool(d.get("pull", True))
         self.ck_pull.setChecked(pull)
-        p_int = d.get("pull_interval_min", 10)
-        self.sp_pull.setValue(int(p_int) if not _is_disabled(p_int) else 10)
+        _load_spin(self.sp_pull, d.get("pull_interval_min", 10), 10)
         self.sp_pull.setEnabled(pull)
 
         handoff = d.get("live_handoff", "auto")
@@ -250,9 +254,18 @@ class SettingsTab(QWidget):
     # ------------------------------------------------------------------ save
     def _save(self, restart: bool):
         raw = self._raw()
+        if raw is None:
+            QMessageBox.critical(
+                self, "Settings",
+                "config.yaml could not be read or parsed, so saving this form "
+                "would rewrite it without your repos. Fix the file in the "
+                "Advanced (YAML) tab first, then save here.")
+            return
         d = raw.setdefault("defaults", {})
         d["snapshot_interval_sec"] = self.sp_snapshot.value()
-        d["seal_interval_min"] = "inf" if self.ck_purist.isChecked() else self.sp_seal.value()
+        manual = self.cb_history.currentData() == "manual"
+        d["seal_interval_min"] = "inf" if manual else self.sp_seal.value()
+        d["suggest_commit"] = self.ck_nudge.isChecked()
         d["autosnap"] = self.ck_autosnap.isChecked()
         d["autosnap_interval_min"] = self.sp_autosnap.value()
         d["push"] = self.ck_push.isChecked()

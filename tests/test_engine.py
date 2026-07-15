@@ -28,12 +28,124 @@ def test_restore_file_refuses_uncapturable_edit(guarded):
     assert read(repo, "secret.bin").startswith("EDITED")  # nothing was destroyed
 
 
-def test_restore_repo_refuses_uncapturable_edit(guarded):
-    repo, eng, _, sha = guarded
-    write(repo, "secret.bin", "EDITED\n")
-    ok, msg = eng.restore_repo("t", sha)
+def _force_nudge_gates(st):
+    """Open the cheap non-git gates of the purist commit nudge (quiet, past the
+    startup grace, throttle clear). Staleness is NOT faked here: the nudge
+    re-reads the last permanent commit's real timestamp from git, so tests make
+    that commit genuinely old (see _backdated_commit)."""
+    st._started_mono = 0.0                         # long uptime
+    st.last_event_mono = 0.0                       # quiet (no recent edits)
+    st._commit_nudge_mono = 0.0                    # not throttled
+
+
+def test_commit_nudge_fires_in_purist_mode(make_repo, make_engine):
+    repo = make_repo({"a.txt": "a1\n"})
+    write(repo, "a.txt", "a2\n")
+    _backdated_commit(repo, "feat: old manual work", hours_ago=48)  # genuinely stale
+    eng, events = make_engine(repo, seal_interval_min="inf")  # purist
+    st = eng.states[0]
+    write(repo, "a.txt", "a3\n")                    # un-sealed work on top
+    eng.snapshot_all_now()                          # capture it into the WIP
+    _force_nudge_gates(st)
+    events.clear()
+    eng._maybe_nudge_commit(st, time.monotonic(), time.time())
+    assert any(a == "info" and "Smart Commit" in m for _r, a, _l, m in events)
+    # Throttled: a second immediate call must NOT nudge again.
+    events.clear()
+    eng._maybe_nudge_commit(st, time.monotonic(), time.time())
+    assert not any("Smart Commit" in m for _r, _a, _l, m in events)
+
+
+def test_commit_nudge_silent_when_auto_seal_on(make_repo, make_engine):
+    repo = make_repo({"a.txt": "a1\n"})
+    write(repo, "a.txt", "a2\n")
+    eng, events = make_engine(repo)                 # default: auto-seal on (pragmatic)
+    eng.snapshot_all_now()
+    st = eng.states[0]
+    _force_nudge_gates(st)
+    events.clear()
+    eng._maybe_nudge_commit(st, time.monotonic(), time.time())
+    assert not any("Smart Commit" in m for _r, _a, _l, m in events)
+
+
+def test_commit_nudge_silent_when_nothing_unsealed(make_repo, make_engine):
+    repo = make_repo({"a.txt": "a1\n"})
+    write(repo, "a.txt", "a2\n")
+    _backdated_commit(repo, "feat: old manual work", hours_ago=48)  # stale for real
+    eng, events = make_engine(repo, seal_interval_min="inf")
+    eng.snapshot_all_now()                          # no edits since: branch is current
+    st = eng.states[0]
+    _force_nudge_gates(st)
+    events.clear()
+    eng._maybe_nudge_commit(st, time.monotonic(), time.time())
+    assert not any("Smart Commit" in m for _r, _a, _l, m in events)
+
+
+def _backdated_commit(repo, message, hours_ago):
+    """A commit whose COMMITTER date (what %ct / last_sealed_time reads) lies
+    `hours_ago` in the past — for tests that need an old permanent commit."""
+    import subprocess
+    stamp = f"{int(time.time()) - hours_ago * 3600} +0000"
+    subprocess.run(
+        ["git", "-C", repo, "commit", "-am", message], check=True, capture_output=True,
+        env={**os.environ, "GIT_COMMITTER_DATE": stamp, "GIT_AUTHOR_DATE": stamp},
+    )
+
+
+def test_external_commit_resets_seal_clock(make_repo, make_engine):
+    """Ported from v0.1: a manual `git commit` made in a terminal restarts the
+    auto-seal window, so no `sincro:` checkpoint lands right on its heels."""
+    repo = make_repo({"a.txt": "a1\n"})
+    eng, events = make_engine(repo)
+    st = eng.states[0]
+    write(repo, "a.txt", "a2\n")
+    git(repo, "commit", "-am", "feat: my own manual commit")  # external, just now
+    st.last_seal_epoch = time.time() - 7 * 3600               # clock says a seal is due
+    events.clear()
+    eng._maybe_seal(st, time.time())
+    assert git(repo, "log", "-1", "--format=%s") == "feat: my own manual commit"
+    assert any("restarts from it" in m for _r, _a, _l, m in events)
+    assert time.time() - st.last_seal_epoch < 60  # clock now counts from the commit
+
+
+def test_old_external_commit_does_not_block_a_due_seal(make_repo, make_engine):
+    repo = make_repo({"a.txt": "a1\n"})
+    write(repo, "a.txt", "a2\n")
+    _backdated_commit(repo, "feat: old manual work", hours_ago=8)  # permanent, 8h old
+    eng, _ = make_engine(repo)
+    st = eng.states[0]
+    write(repo, "a.txt", "a3\n")                              # fresh un-sealed work
+    eng.snapshot_all_now()
+    st.last_seal_epoch = time.time() - 7 * 3600               # due; external is OLDER
+    eng._maybe_seal(st, time.time())
+    assert git(repo, "log", "-1", "--format=%s").startswith("sincro:")  # sealed
+
+
+def test_restore_repo_refuses_touched_uncapturable_edit(make_repo, make_engine):
+    """The restore target has a DIFFERENT version of the excluded file, so the
+    apply would touch (and destroy) the uncaptured edit -> refuse."""
+    repo = make_repo({"a.txt": "v1\n", "secret.bin": "s1\n"})
+    sha = git(repo, "rev-parse", "HEAD")
+    write(repo, "secret.bin", "s2\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "feat: secret v2")
+    eng, _ = make_engine(repo, extra_excludes=["secret.bin"])
+    write(repo, "secret.bin", "EDITED uncapturable\n")
+    ok, msg = eng.restore_repo("t", sha)  # target holds s1 != snapshot's s2
     assert not ok and "can't capture" in msg and "secret.bin" in msg
-    assert read(repo, "secret.bin") == "EDITED\n"
+    assert read(repo, "secret.bin") == "EDITED uncapturable\n"
+
+
+def test_restore_repo_ignores_untouched_uncapturable_edit(guarded):
+    """Finer than the old model: an uncaptured edit on a path the restore does
+    NOT touch is not at risk — the restore proceeds and the edit survives."""
+    repo, eng, _, sha = guarded
+    write(repo, "a.txt", "v2\n")           # capturable change to roll back
+    write(repo, "secret.bin", "EDITED\n")  # uncaptured, but target agrees on it
+    ok, msg = eng.restore_repo("t", sha)
+    assert ok, msg
+    assert read(repo, "a.txt") == "v1\n"
+    assert read(repo, "secret.bin") == "EDITED\n"  # survived, untouched
 
 
 def test_restore_file_still_works_for_capturable(guarded):
@@ -63,6 +175,24 @@ def test_long_busy_warns_once_then_resumes(guarded):
     eng._track_busy(st, now + Engine.BUSY_WARN_SEC + 200)
     assert st.busy_since_mono is None and not st.busy_warned
     assert any(e[1] == "info" and "snapshots resume" in e[3] for e in events)
+
+
+def test_long_busy_warning_points_at_a_stale_lock(guarded):
+    """When the only 'busy' marker is an old index.lock, no merge is coming to
+    free it: the warning must say 'leftover lock, delete it', not 'merge in
+    progress' — the difference between self-service and a repo stuck forever."""
+    repo, eng, events, _sha = guarded
+    st = eng.states[0]
+    lock = os.path.join(repo, ".git", "index.lock")
+    open(lock, "w").close()
+    old = time.time() - 2 * Engine.BUSY_WARN_SEC
+    os.utime(lock, (old, old))
+    now = time.monotonic()
+    eng._track_busy(st, now)
+    eng._track_busy(st, now + Engine.BUSY_WARN_SEC + 1)
+    warnings = [e for e in events if e[1] == "busy" and e[2] == "WARNING"]
+    assert len(warnings) == 1
+    assert "index.lock" in warnings[0][3] and "crash" in warnings[0][3]
 
 
 def test_busy_warning_fires_mid_rebase(guarded, monkeypatch):
@@ -129,10 +259,12 @@ def test_restore_repo_preview(make_repo, make_engine):
     assert verbs["gone.txt"] == "recreate"
     assert verbs["created.txt"] == "delete"
     assert payload["risky"] == []
+    # An uncaptured edit is only at risk where the restore would TOUCH it —
+    # here the target and the snapshots agree on secret.bin, so it's safe.
     write(repo, "secret.bin", "EDITED uncapturable\n")
     ok, payload = eng.restore_repo_preview("t", sha)
-    assert ok and payload["risky"] == ["secret.bin"]
-    assert read(repo, "secret.bin").startswith("EDITED")  # preview is read-only
+    assert ok and payload["risky"] == []
+    assert read(repo, "secret.bin").startswith("EDITED")  # preview didn't touch it
 
 
 def test_giterror_falls_back_to_stdout(guarded):

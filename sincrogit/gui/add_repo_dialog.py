@@ -2,10 +2,21 @@
 
 Pick an existing git repository folder; SincroGit adds it live and persists it to
 the config file. Remotes are configured later by editing the config / with git.
+
+Both git-touching steps run OFF the GUI thread and come back via queued Qt
+signals: adding a repo (git validation + .gitattributes) and detecting the
+branch (git). On a network drive or with an aggressive antivirus those calls
+can take seconds — running them inline would freeze the whole interface.
+
+Talks to the app through the `controller`:
+  add_repo(path, branch, push, pull, normalize_eol) -> (ok, msg)
+  detect_branch(path) -> str | None   ('HEAD' on a detached HEAD)
 """
 
 import os
+import threading
 
+from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -20,11 +31,18 @@ from PyQt5.QtWidgets import (
 
 
 class AddRepoDialog(QDialog):
+    # Emitted from background threads; delivered on the GUI thread (queued).
+    _added = pyqtSignal(bool, str)          # ok, message
+    _branch_ready = pyqtSignal(int, object)  # gen, branch|None
+
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.c = controller
         self.setWindowTitle("⏳g SincroGit — Add repo")
         self.resize(560, 0)
+        # Monotonic token so a slow branch detection whose result arrives after
+        # the user changed the path is discarded, not written into the field.
+        self._branch_gen = 0
 
         v = QVBoxLayout(self)
 
@@ -76,14 +94,17 @@ class AddRepoDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        btn_add = QPushButton("Add")
-        btn_add.setDefault(True)
-        btn_add.clicked.connect(self._add)
+        self.btn_add = QPushButton("Add")
+        self.btn_add.setDefault(True)
+        self.btn_add.clicked.connect(self._add)
         btn_cancel = QPushButton("Cancel")
         btn_cancel.clicked.connect(self.reject)
-        buttons.addWidget(btn_add)
+        buttons.addWidget(self.btn_add)
         buttons.addWidget(btn_cancel)
         v.addLayout(buttons)
+
+        self._added.connect(self._on_added)
+        self._branch_ready.connect(self._on_branch_ready)
 
     def _browse(self):
         chosen = QFileDialog.getExistingDirectory(self, "Choose a git repository")
@@ -91,19 +112,36 @@ class AddRepoDialog(QDialog):
             self.ed_path.setText(os.path.normpath(chosen))
             self._fill_branch_from_repo()
 
+    # ------------------------------------------------- branch autodetect (async)
     def _fill_branch_from_repo(self):
         """Prefill the branch field with the repo's CURRENT branch instead of
         assuming 'main' — otherwise adding a 'master' repo silently starts
-        off-branch (autosync waiting). When detection fails, SAY so instead of
-        keeping the default quietly."""
+        off-branch (autosync waiting). The git call runs on a worker (a slow
+        network/AV drive would freeze Qt); a generation token discards a stale
+        result if the user changed the path meanwhile."""
         path = self.ed_path.text().strip()
         if not path or not os.path.isdir(path):
             return
+        self._branch_gen += 1
+        gen = self._branch_gen
+        threading.Thread(
+            target=self._do_detect_branch, args=(gen, path),
+            name="sincrogit-detect-branch", daemon=True,
+        ).start()
+
+    def _do_detect_branch(self, gen, path):
         try:
-            from ..gitrepo import GitRepo
-            branch = GitRepo(path).current_branch()
+            branch = self.c.detect_branch(path)
         except Exception:  # noqa: BLE001 — the hint below covers it
             branch = None
+        try:
+            self._branch_ready.emit(gen, branch)
+        except RuntimeError:
+            pass  # dialog closed while detecting
+
+    def _on_branch_ready(self, gen, branch):
+        if gen != self._branch_gen:
+            return  # the path changed after this detection was kicked off
         if branch and branch != "HEAD":
             self.ed_branch.setText(branch)
             self._hint("")
@@ -118,18 +156,37 @@ class AddRepoDialog(QDialog):
         self.lbl_hint.setText(text)
         self.lbl_hint.setVisible(bool(text))
 
+    # -------------------------------------------------------- add repo (async)
     def _add(self):
         path = self.ed_path.text().strip()
         if not path:
             QMessageBox.warning(self, "Add repo", "Please choose a folder.")
             return
-        ok, msg = self.c.add_repo(
-            path,
-            branch=self.ed_branch.text().strip() or "main",
-            push=self.cb_push.isChecked(),
-            pull=self.cb_pull.isChecked(),
-            normalize_eol=self.cb_norm.isChecked(),
-        )
+        # Disable Add while the worker runs: add_repo does git (validate, add
+        # live, .gitattributes) which on a slow drive would otherwise let the
+        # user click Add twice.
+        self.btn_add.setEnabled(False)
+        threading.Thread(
+            target=self._do_add,
+            args=(path, self.ed_branch.text().strip() or "main",
+                  self.cb_push.isChecked(), self.cb_pull.isChecked(),
+                  self.cb_norm.isChecked()),
+            name="sincrogit-add-repo", daemon=True,
+        ).start()
+
+    def _do_add(self, path, branch, push, pull, normalize_eol):
+        try:
+            ok, msg = self.c.add_repo(path, branch=branch, push=push, pull=pull,
+                                      normalize_eol=normalize_eol)
+        except Exception as e:  # noqa: BLE001 — surfaced in the dialog
+            ok, msg = False, str(e)
+        try:
+            self._added.emit(ok, msg)
+        except RuntimeError:
+            pass  # dialog closed while adding
+
+    def _on_added(self, ok, msg):
+        self.btn_add.setEnabled(True)
         if ok:
             QMessageBox.information(self, "Add repo", "Repo added.")
             self.accept()

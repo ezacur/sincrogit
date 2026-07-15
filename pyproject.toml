@@ -1,12 +1,16 @@
 [project]
 name = "sincrogit"
-version = "0.1.0"
+dynamic = ["version"]  # single source of truth: sincrogit.__version__
 description = "Automatic, instant synchronization with robust Git versioning"
 requires-python = ">=3.10"
 dependencies = [
     "watchdog>=3.0",
     "PyYAML>=6.0",
     "pathspec>=0.10",
+    # Desktop toasts (conflict/handoff/nudge alerts). Optional at runtime
+    # (notify.py degrades to log-only) but without it the feature never fires,
+    # so it ships by default on the target platform.
+    "winotify>=1.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +27,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["sincrogit", "sincrogit.gui"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sincrogit.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

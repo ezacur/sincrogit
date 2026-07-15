@@ -6,12 +6,15 @@ Tabbed window:
   - Settings: friendly form over the global defaults.
   - Advanced (YAML): raw config.yaml editor (save / save and restart).
 
-It talks to the app through a `controller` (duck-typed) that exposes:
-  status(), events_all(), pause_all(), resume_all(), sync_now(), seal_now(),
-  resume_repo(name), apply_handoff(name), save_config(text)->(ok,msg), restart(),
-  config_path, config_text(), app_state(), make_icon(state).
+It talks to the app through a `controller` (duck-typed). What THIS window uses
+directly (per-repo dialogs it opens declare their own controller contracts):
+  status(), events_all(), app_state(), make_icon(state),
+  pause_all(), resume_all(), pause_repo(name), resume_repo(name),
+  seal_repo_now(name), pull_repo_now(name), apply_handoff(name),
+  config_path, config_text(), save_config(text)->(ok,msg), restart().
 """
 
+import logging
 import os
 import time
 from datetime import datetime
@@ -248,6 +251,13 @@ class ControlPanel(QMainWindow):
             return False
         if time.monotonic() - t > self._INFLIGHT_TIMEOUT:
             self._inflight.pop(name, None)
+            # Re-enabling silently would look like the action just vanished:
+            # leave a trace (the Log tab shows it) so a hung push/pull is
+            # explicable instead of a mystery.
+            logging.getLogger("sincrogit.gui").warning(
+                "[%s] a manual action reported no completion within %d s; "
+                "buttons re-enabled (it may still be running — check the Log)",
+                name, self._INFLIGHT_TIMEOUT)
             return False
         return True
 
@@ -400,12 +410,15 @@ class ControlPanel(QMainWindow):
         host = r["pending_handoff"]
         epoch = r.get("pending_handoff_epoch")
         age = f"from {_humanize_since(epoch)} ago " if epoch else ""
+        # Default to Cancel: applying a handoff rewrites the working tree, so a
+        # stray Enter shouldn't trigger it (loss-free, but still surprising).
         if QMessageBox.question(
             self, "Apply handoff",
             f"Apply the newer work {age}on '{host}' to '{name}'?\n\n"
             f"Your working tree fast-forwards to that machine's state. It's "
             f"loss-free: the move is re-validated on apply, and your current "
             f"state stays recoverable via File history.",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
         ) != QMessageBox.Yes:
             return
         self.c.apply_handoff(name)
@@ -453,7 +466,16 @@ class ControlPanel(QMainWindow):
         dlg.exec_()
         self.refresh_status()
 
+    # Max rows the live Log table holds; the full history lives in _events_cache.
+    MAX_LOG_ROWS = 5000
+
     def _repo_context_menu(self, pos):
+        # A right-click doesn't move the selection on its own, so select the row
+        # under the cursor first — otherwise the menu acts on the previously
+        # selected repo, not the one clicked.
+        row = self.tbl_repos.rowAt(pos.y())
+        if row >= 0:
+            self.tbl_repos.selectRow(row)
         name = self._selected_repo()
         r = {x["name"]: x for x in self.c.status()["repos"]}.get(name)
         if not r:
@@ -583,10 +605,13 @@ class ControlPanel(QMainWindow):
         self.cb_repo.setCurrentIndex(idx if idx >= 0 else 0)
         self.cb_repo.blockSignals(False)
 
-        # Newest first: the latest event is what you came to see.
+        # Newest first: the latest event is what you came to see. Cap the rendered
+        # rows (same bound append_event keeps) so a huge history never builds a
+        # multi-ten-thousand-row widget; the label stays honest about the cap.
         filtered = [e for e in reversed(events) if self._passes_filter(e)]
-        self.tbl_log.setRowCount(len(filtered))
-        for i, ev in enumerate(filtered):
+        shown = filtered[:self.MAX_LOG_ROWS]
+        self.tbl_log.setRowCount(len(shown))
+        for i, ev in enumerate(shown):
             cells = [_fmt_time(ev.ts), ev.repo or "—", ev.action, ev.level, ev.message]
             for j, val in enumerate(cells):
                 item = QTableWidgetItem(str(val))
@@ -594,7 +619,9 @@ class ControlPanel(QMainWindow):
                 if color:
                     item.setForeground(color)
                 self.tbl_log.setItem(i, j, item)
-        self.lbl_log_count.setText(f"{len(filtered)} event(s) shown of {len(events)} total")
+        capped = f" (newest {len(shown)} shown)" if len(filtered) > len(shown) else ""
+        self.lbl_log_count.setText(
+            f"{len(filtered)} event(s) match of {len(events)} total{capped}")
 
     def append_event(self, ev):
         """Append a new event live if it passes the current filter (Qt signal)."""
@@ -619,6 +646,11 @@ class ControlPanel(QMainWindow):
             if color:
                 item.setForeground(color)
             self.tbl_log.setItem(0, j, item)
+        # Bound the WIDGET: without this the table grows one row per event for
+        # the whole session (the _events_cache is capped, but the table only
+        # rebuilds from it on open/filter change). Drop the oldest (bottom) rows.
+        while self.tbl_log.rowCount() > self.MAX_LOG_ROWS:
+            self.tbl_log.removeRow(self.tbl_log.rowCount() - 1)
 
     # =========================================================== CONFIGURATION
     def _build_config_tab(self) -> QWidget:

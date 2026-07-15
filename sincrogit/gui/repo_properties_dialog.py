@@ -34,7 +34,7 @@ from PyQt5.QtWidgets import (
 )
 
 # Same widget idioms as the global Settings form, so the two look alike.
-from .settings_tab import _HANDOFF, _combo, _is_disabled, _select, _spin
+from .formwidgets import _HANDOFF, _combo, _is_disabled, _load_spin, _select, _spin
 
 
 def _patterns_edit(placeholder: str) -> QPlainTextEdit:
@@ -187,8 +187,7 @@ class RepoPropertiesDialog(QDialog):
         self.ed_remote.setText(str(eff.get("remote", "origin")))
         self.ck_track.setChecked(bool(eff.get("track_current_branch", False)))
 
-        snap = eff.get("snapshot_interval_sec", 300)
-        self.sp_snapshot.setValue(int(snap) if not _is_disabled(snap) else 300)
+        _load_spin(self.sp_snapshot, eff.get("snapshot_interval_sec", 300), 300)
         seal = eff.get("seal_interval_min", 360)
         purist = _is_disabled(seal)
         self.ck_purist.setChecked(purist)
@@ -198,13 +197,11 @@ class RepoPropertiesDialog(QDialog):
         self.ck_push.setChecked(bool(eff.get("push", True)))
         pull = bool(eff.get("pull", True))
         self.ck_pull.setChecked(pull)
-        p_int = eff.get("pull_interval_min", 10)
-        self.sp_pull.setValue(int(p_int) if not _is_disabled(p_int) else 10)
+        _load_spin(self.sp_pull, eff.get("pull_interval_min", 10), 10)
         self.sp_pull.setEnabled(pull)
         auto = bool(eff.get("autosnap", True))
         self.ck_autosnap.setChecked(auto)
-        a_int = eff.get("autosnap_interval_min", 30)
-        self.sp_autosnap.setValue(int(a_int) if not _is_disabled(a_int) else 30)
+        _load_spin(self.sp_autosnap, eff.get("autosnap_interval_min", 30), 30)
         self.sp_autosnap.setEnabled(auto)
         _select(self.cb_handoff, str(eff.get("live_handoff", "auto")))
 

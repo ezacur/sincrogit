@@ -60,7 +60,6 @@ class EventLog:
         self._lock = threading.Lock()
         self._jsonl_path = jsonl_path
         self._jsonl_bytes = 0  # tracked in-process to avoid a stat per event
-        self._listeners = []  # callables(Event) -> None
 
         if jsonl_path:
             d = os.path.dirname(os.path.abspath(jsonl_path))
@@ -86,11 +85,6 @@ class EventLog:
                         self._rotate_jsonl()
                 except OSError:
                     pass  # don't break the engine over a log write failure
-        for cb in list(self._listeners):
-            try:
-                cb(ev)
-            except Exception:  # noqa: BLE001 — a listener must not take down the engine
-                pass
         return ev
 
     def _rotate_jsonl(self):
@@ -102,11 +96,6 @@ class EventLog:
             return  # e.g. another handle holds the file; retried on a later add
         self._jsonl_bytes = 0
 
-    def add_listener(self, callback) -> None:
-        """Register a callback invoked with each new Event (on the thread that
-        calls add(), normally the engine's)."""
-        self._listeners.append(callback)
-
     # -------------------------------------------------------------- reading
     def recent(self, limit: int | None = None) -> list:
         with self._lock:
@@ -114,23 +103,34 @@ class EventLog:
         return items[-limit:] if limit else items
 
     def load_all(self) -> list:
-        """Full history from the JSONL file (or whatever is in memory)."""
-        if not self._jsonl_path or not os.path.exists(self._jsonl_path):
+        """Full history from the JSONL file (or whatever is in memory).
+
+        Includes the rotated `.1` backup first (when present): after a rotation
+        the current file starts empty, and without the backup the GUI's "full
+        history" would silently lose everything older than the rotation point.
+        """
+        # Read whichever of the two files exist: right after a rotation the
+        # current file is gone (os.replace moved it to .1) and ALL history lives
+        # in the backup, so guarding on the current file alone would drop it.
+        paths = [p for p in (self._jsonl_path + ".1", self._jsonl_path)
+                 if self._jsonl_path and os.path.exists(p)]
+        if not paths:
             return self.recent()
         out = []
-        try:
-            with open(self._jsonl_path, "r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        out.append(Event(**json.loads(line)))
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-        except OSError:
-            return self.recent()
-        return out
+        for path in paths:
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            out.append(Event(**json.loads(line)))
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+            except OSError:
+                continue  # no backup yet / current file unreadable: keep what we have
+        return out or self.recent()
 
     def repos_seen(self) -> list:
         with self._lock:

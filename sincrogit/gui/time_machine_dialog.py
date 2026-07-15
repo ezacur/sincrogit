@@ -18,8 +18,6 @@ Talks to the app through the `controller`:
   restore_files(name, relpaths, sha) -> (ok, message)
 """
 
-import difflib
-import html
 import os
 import threading
 from datetime import datetime
@@ -44,16 +42,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from .history_dialog import (
-    _DIFF_DARK,
-    _DIFF_LIGHT,
-    _TYPE_COLOR,
-    _TYPE_TIP,
-    _ago,
-    _diff_html,
-    _fmt,
-    _mark_intraline,
-)
+from .diff import diff_html, diff_html_sbs
+from .history_dialog import _TYPE_COLOR, _TYPE_TIP, _ago, _fmt
 
 # What the restore would DO to each differing file (colors match the intent).
 _VERB_COLOR = {"revert": "#8a6d00", "delete": "#cf222e", "recreate": "#1a7f37"}
@@ -62,61 +52,6 @@ _VERB_TIP = {
     "delete": "Created after that version — restoring REMOVES it.",
     "recreate": "Deleted after that version — restoring brings it back.",
 }
-_MAX_SBS_ROWS = 5000  # side-by-side rows cap: keeps QTextEdit responsive on huge files
-
-
-def _diff_html_sbs(old_text: str, new_text: str, dark: bool = False) -> str:
-    """Side-by-side diff (old version | current file) as a two-column HTML table,
-    theme-aware. Same palette as the unified view."""
-    c = _DIFF_DARK if dark else _DIFF_LIGHT
-    if old_text == new_text:  # same message the unified view shows
-        return (f'<pre style="color:{c["meta"]};font-family:Consolas,monospace;'
-                f'padding:8px;">(no differences vs the current file)</pre>')
-    a, b = old_text.splitlines(), new_text.splitlines()
-
-    def cell(body_html, bg=None, color=None):
-        style = f"color:{color or c['ctx']};"
-        if bg:
-            style += f"background:{bg};"
-        return (f'<td style="{style}padding:0 6px;white-space:pre;">'
-                f'{body_html or "&nbsp;"}</td>')
-
-    rows = []
-    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
-        if tag == "equal":
-            for k in range(i2 - i1):
-                rows.append("<tr>" + cell(html.escape(a[i1 + k]))
-                            + cell(html.escape(b[j1 + k])) + "</tr>")
-        else:
-            # Paired modified lines also get intra-line highlighting: the spans
-            # that actually changed use the stronger *_hl background.
-            paired = min(i2 - i1, j2 - j1)
-            for k in range(max(i2 - i1, j2 - j1)):
-                has_l, has_r = i1 + k < i2, j1 + k < j2
-                if k < paired:
-                    left, right = _mark_intraline(a[i1 + k], b[j1 + k], c)
-                else:
-                    left = html.escape(a[i1 + k]) if has_l else ""
-                    right = html.escape(b[j1 + k]) if has_r else ""
-                rows.append(
-                    "<tr>"
-                    + cell(left, bg=c["del_bg"] if has_l else None,
-                           color=c["del"] if has_l else None)
-                    + cell(right, bg=c["add_bg"] if has_r else None,
-                           color=c["add"] if has_r else None)
-                    + "</tr>")
-        if len(rows) > _MAX_SBS_ROWS:
-            rows.append("<tr>" + cell(f"… truncated at {_MAX_SBS_ROWS} lines …")
-                        + cell("") + "</tr>")
-            break
-    if not rows:
-        return (f'<pre style="color:{c["meta"]};font-family:Consolas,monospace;'
-                f'padding:8px;">(no differences vs the current file)</pre>')
-    head = (f'<tr><td style="color:{c["meta"]};padding:0 6px;">selected version</td>'
-            f'<td style="color:{c["meta"]};padding:0 6px;">current file</td></tr>')
-    return (f'<table style="font-family:Consolas,monospace;font-size:10pt;'
-            f'border-collapse:collapse;width:100%;line-height:1.35;">'
-            f'{head}{"".join(rows)}</table>')
 
 
 class TimeMachineDialog(QDialog):
@@ -124,6 +59,7 @@ class TimeMachineDialog(QDialog):
     _history_ready = pyqtSignal(str, list)          # repo, versions
     _files_ready = pyqtSignal(bool, object, str)    # ok, payload|msg, sha
     _restore_done = pyqtSignal(bool, str)           # ok, message
+    _diff_ready = pyqtSignal(int, object, object, bool)  # gen, old|None, new, sbs
 
     def __init__(self, controller, parent=None, preselect_repo=None):
         super().__init__(parent)
@@ -134,6 +70,8 @@ class TimeMachineDialog(QDialog):
         self._files = []      # [(verb, path)] of the selected version
         self._risky = set()
         self._sha = None      # the version the files table currently shows
+        self._diff_gen = 0    # discards a diff whose result arrives after the
+                              # user clicked another file/version
 
         v = QVBoxLayout(self)
 
@@ -240,6 +178,7 @@ class TimeMachineDialog(QDialog):
         self._history_ready.connect(self._on_history_ready)
         self._files_ready.connect(self._on_files_ready)
         self._restore_done.connect(self._on_restore_done)
+        self._diff_ready.connect(self._on_diff_ready)
         self._load_history()
 
     # ------------------------------------------------------------- timeline
@@ -332,7 +271,6 @@ class TimeMachineDialog(QDialog):
             return
         self._files = payload["changes"]
         self._risky = set(payload["risky"])
-        when = _fmt(next((v["epoch"] for v in self._versions if v["sha"] == sha), 0))
         n = len(self._files)
         extra = f"  (⚠ {len(self._risky)} at risk)" if self._risky else ""
         self.lbl_files.setText(
@@ -360,27 +298,49 @@ class TimeMachineDialog(QDialog):
             self.tbl_files.setItem(i, 2, QTableWidgetItem(path))
         self.tbl_files.blockSignals(False)
         self._sync_restore_button()
-        # The version stamp doubles as context for the restore confirmation.
-        self._when = when
 
     # ------------------------------------------------------------------ diff
     def _load_diff(self):
+        """Load the clicked file's old/new text on a worker: file_text_at /
+        current_text run `git show` + pandoc/python-pptx for documents, which
+        would freeze the window inline."""
         row = self.tbl_files.currentRow()
         if not (0 <= row < len(self._files)) or not self._sha:
             return
         verb, path = self._files[row]
-        name = self._repo_name()
-        old = self.c.file_text_at(name, path, self._sha) if verb != "delete" else ""
+        self._diff_gen += 1
+        gen = self._diff_gen
+        self.preview.setPlainText("Loading…")
+        threading.Thread(
+            target=self._do_load_diff,
+            args=(gen, self._repo_name(), path, self._sha, verb, self.cb_sbs.isChecked()),
+            name="sincrogit-tm-diff", daemon=True,
+        ).start()
+
+    def _do_load_diff(self, gen, name, path, sha, verb, sbs):
+        try:
+            old = self.c.file_text_at(name, path, sha) if verb != "delete" else ""
+            new = (self.c.current_text(name, path)
+                   if old is not None and verb != "recreate" else "")
+        except Exception:  # noqa: BLE001 — shown as "unavailable" below
+            old, new = None, ""
+        try:
+            self._diff_ready.emit(gen, old, new, sbs)
+        except RuntimeError:
+            pass  # dialog closed while loading
+
+    def _on_diff_ready(self, gen, old, new, sbs):
+        if gen != self._diff_gen:
+            return  # a newer selection superseded this diff
         if old is None:
             self.preview.setPlainText("(binary or unavailable)")
             return
-        new = self.c.current_text(name, path) if verb != "recreate" else ""
         pal = getattr(self.c, "theme", None) or {}
         dark = bool(pal.get("is_dark"))
-        if self.cb_sbs.isChecked():
-            self.preview.setHtml(_diff_html_sbs(old, new, dark=dark))
+        if sbs:
+            self.preview.setHtml(diff_html_sbs(old, new, dark=dark))
         else:
-            self.preview.setHtml(_diff_html(old, new, dark=dark))
+            self.preview.setHtml(diff_html(old, new, dark=dark))
 
     def _save_copy(self):
         """Recover the clicked file's version WITHOUT overwriting anything."""
@@ -444,11 +404,13 @@ class TimeMachineDialog(QDialog):
         sample = "\n".join("  • " + p for p in paths[:8])
         if len(paths) > 8:
             sample += f"\n  … and {len(paths) - 8} more"
+        # Default to Cancel: a destructive restore shouldn't fire on a stray Enter.
         if QMessageBox.question(
             self, "Restore selected files",
             f"Restore {len(paths)} file(s) of '{self._repo_name()}' to their state "
             f"at {when}?\n\n{sample}\n\nReversible: the restore is captured as a "
             f"new snapshot.",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
         ) != QMessageBox.Yes:
             return
         self.btn_restore.setEnabled(False)

@@ -43,7 +43,7 @@ Hay cuatro formas; el binario y `python -m sincrogit` se comportan igual.
 
 La instancia única se garantiza con un mutex con nombre en Windows (más un handshake por
 puerto local en otros sistemas), y aplica tanto a la bandeja **como** a `--headless` — dos
-demonios amendando los WIPs de los mismos repos competirían por git. Un segundo lanzamiento
+demonios fotografiando los mismos repos competirían por git. Un segundo lanzamiento
 de la bandeja simplemente trae el panel en marcha al frente y sale con 0; un segundo
 `--headless` rehúsa arrancar (código de salida 2).
 
@@ -103,7 +103,7 @@ python -m sincrogit -c config.yaml --history src\app.py            # interactivo
 python -m sincrogit -c config.yaml --history src\app.py --pick 3   # restaura la versión 3 directa
 ```
 
-Las ediciones pendientes se fotografían en el WIP *antes* de que la restauración toque
+Las ediciones pendientes se fotografían (en la cadena shadow) *antes* de que la restauración toque
 nada, y la restauración a su vez queda capturada — así que restaurar es siempre
 reversible, hasta el momento justo anterior.
 
@@ -111,7 +111,7 @@ reversible, hasta el momento justo anterior.
 
 ```powershell
 python -m sincrogit -c config.yaml --autosnaps            # baja + lista el último espejo de cada máquina
-python -m sincrogit -c config.yaml --apply-handoff mirepo # trae a mirepo el WIP vivo de tu otra máquina
+python -m sincrogit -c config.yaml --apply-handoff mirepo # trae a mirepo el trabajo vivo de tu otra máquina
 ```
 
 `--autosnaps` es la lista de recuperación ante desastre (úsala en otra máquina tras un disco
@@ -134,7 +134,7 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
     que cambies; el resto sigue heredando los defaults. Incluye **Remove repo…** (solo de la
     config — el repo git del disco no se toca). Se aplica al reiniciar.
   - **Commit…** — Smart Commit (diálogo con mensaje propuesto por IA).
-  - **Seal+Push** — sellar el WIP actual ya y pushear.
+  - **Seal+Push** — sellar ya los snapshots pendientes en un commit real y pushear.
   - **Fetch+Pull** — traer y rebasar del remoto ahora.
   - Mientras uno de estos (o un sync del motor) está en marcha, la barra dice *working…* y
     los botones se desactivan — el resultado (incluidos "nothing to seal" o un rechazo)
@@ -155,10 +155,12 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
     seals / pushes / pulls de hoy (el detalle está en el Log; esto es el vistazo).
 - **Log** — eventos, lo más nuevo arriba y actualizándose en vivo (sin refresco manual);
   filtrables por repo / acción / nivel / texto, incluido el detalle DEBUG del log de fichero.
-- **Settings** — el formulario amable: ritmos (snapshot/sellado con checkbox de *modo
-  purista*), backup y sync (autosnap, modo de relevo, seguir-rama), mensajes de IA, tema
-  (claro/oscuro/auto), ruta de pandoc, nivel de log. Edita los defaults globales; *Save
-  and restart* para aplicar.
+- **Settings** — el formulario amable: ritmos (cadencia de snapshot, más un selector de
+  **Historia permanente**: *Checkpoints automáticos* — el auto-sellado recomendado — o
+  *Solo mis propios commits*, es decir modo purista, con un **recordatorio de commit**
+  opcional, como mucho una vez al día, cuando se acumula trabajo), backup y sync (autosnap,
+  modo de relevo, seguir-rama), mensajes de IA, tema (claro/oscuro/auto), ruta de pandoc,
+  nivel de log. Edita los defaults globales; *Save and restart* para aplicar.
 - **Advanced (YAML)** — el editor del `config.yaml` crudo, para overrides por repo y comentarios.
 
 El diálogo de **File history** muestra a la izquierda el **árbol de ficheros** del repo
@@ -195,16 +197,16 @@ Seal now, Quit.
 | **Añadir un repo** | Panel → Status → *Add repo…* (o edita `repos:` en la config y *Save and restart*). |
 | **Cambiar la config de UN repo** | Selecciónalo → *Properties…* (rama, ritmos, sync, filtros como formulario). O edita su entrada en Advanced (YAML). |
 | **Quitar un repo de SincroGit** | *Properties…* → *Remove repo…* (solo la config; el repo git del disco no se toca). |
-| **Recuperar una versión anterior de un fichero** | Panel → *File history…* → elige el fichero → elige versión → *Restore*. O `--history FILE`. |
+| **Recuperar una versión anterior de un fichero** | Panel → *File history…* → elige el fichero → elige versión → *Restore this file*. O `--history FILE`. |
 | **Recuperar una versión vieja SIN sobrescribir** | *File history…* (o *Time machine…*) → elige la versión → *Save a copy…* → dale otro nombre. |
 | **Saber cuándo apareció/desapareció un texto** | *File history…* → elige el fichero → escribe el texto → *Find* (las transiciones se resaltan en azul). |
 | **Recuperar VARIOS ficheros a la vez** | Panel → *Time machine…* → elige una versión → marca los ficheros → *Restore selected*. |
 | **Comprobar que todo el montaje está sano** | `python -m sincrogit --doctor` (git, remotos, credenciales, pandoc, IA, demonio). |
 | **Ver si mis otras máquinas se respaldan** | Panel → *Machines…* (los espejos rancios salen en rojo; *Fetch latest* refresca). |
-| **Revertir el repo entero** | Panel → *File history…* → *Restore whole repo* a un punto elegido (con vista previa de qué cambia). |
+| **Revertir el repo entero** | Panel → *File history…* → *Restore ENTIRE repo…* a un punto elegido (con vista previa de qué cambia). |
 | **Hacer un commit limpio y documentado ya** | Botón **Commit…** del repo, o `--commit REPO`. |
 | **Llevar mi trabajo a otra máquina** | Solo **bloquea la pantalla / cierra la tapa** — SincroGit vuelca; en la otra, desbloquea y sincroniza. O **Smart Commit** antes de irte para un relevo instantáneo. |
-| **Recuperar tras un disco muerto** | En otra máquina: `--autosnaps` (o panel → *Fetch autosnaps*), luego *File history* / *Restore*. Pierdes ≤30 min. |
+| **Recuperar tras un disco muerto** | En otra máquina: `--autosnaps` (o panel → *File history…* → *Fetch autosnaps (other machines)…*), luego restaura. Pierdes ≤30 min. |
 | **Un corte de luz dejó git diciendo "branch broken"** | Nada — arranca SincroGit. Detecta la ref zeroed y la restaura desde el reflog al arrancar (verás un aviso "repair" en el Log). |
 | **Dejar de escribir commits automáticos (purista)** | Pon `seal_interval_min: inf`; commitea a mano con Smart Commit. |
 | **Trabajar en una feature branch (equipo)** | Pon `track_current_branch: true`, trabaja en tu rama, Smart Commit → Pull Request. Ver [LEAME → Usar en equipo](LEAME.md#usar-sincrogit-en-equipo-repos-compartidos). |
@@ -225,15 +227,16 @@ default se puede sobreescribir por repo**. Las claves más usadas:
 
 | Clave | Por defecto | Significado |
 |-------|-------------|-------------|
-| `snapshot_interval_sec` | 300 | Cada cuánto se amendea el WIP (la granularidad de la máquina del tiempo). |
+| `snapshot_interval_sec` | 300 | Cada cuánto aterriza un snapshot en el ref lateral (la granularidad de la máquina del tiempo). |
 | `seal_interval_min` | 360 | Cada cuánto se sella un commit permanente (`inf` = purista: nunca auto-sella). |
 | `autosnap` / `autosnap_interval_min` | true / 30 | Espejo en vivo al remoto (recuperación de disco + relevo). |
-| `live_handoff` | auto | Recoger el WIP de tu otra máquina: `auto` / `ask` / `off`. |
+| `live_handoff` | auto | Recoger el trabajo vivo de tu otra máquina: `auto` / `ask` / `off`. |
 | `track_current_branch` | false | Seguir la rama actual en vez de pausar fuera de `branch`. |
 | `push` / `pull` | true / true | Pushear sellados / pull periódico. |
 | `extra_excludes` / `extra_includes` | — | Rutas a saltar / binarios a versionar igualmente (p. ej. `**/*.docx`, `**/*.pptx`). |
 | `max_file_bytes` | 1048576 | Mayor fichero auto-versionado (1 MB). |
 | `suggest_excludes` | true | Sugerir excluir una carpeta ruidosa (Smart Ignore). |
+| `suggest_commit` | true | Solo modo purista: recordar (una vez/día, en un momento de calma) hacer Smart Commit cuando se acumula trabajo sin sellar. |
 | `pandoc_path` | `pandoc` | (top-level) pandoc para diffs legibles de `.docx`. |
 | `ai.*` | — | Backend de IA para mensajes de commit (Ollama / Gemini / none). |
 
@@ -282,15 +285,20 @@ mientras *tú* operas (un merge/rebase en curso, el índice bloqueado, otra rama
 checkouteada) y se reanuda después. Mientras se inhibe, tus ediciones no se están
 fotografiando; si la operación manual se alarga (10+ min) el Log y un toast te avisan
 una vez de que los snapshots quedan pospuestos, y el panel muestra el repo como
-*Busy (merge/rebase)*. Las reglas de tráfico:
+*Busy (merge/rebase)*. Si el *Busy* no se despeja nunca y no hay ningún comando git
+corriendo de verdad, lo probable es que un crash dejara atrás un `.git/index.lock`
+huérfano: el aviso lo dice, y `--doctor` señala el fichero exacto — bórralo y la
+sincronización se reanuda. Las reglas de tráfico:
 
-- **El commit `sincro: WIP autosnapshot` de la punta es de SincroGit; todo lo de abajo es
-  tuyo.** Commitea, crea ramas, etiqueta o rebasa *por debajo* con libertad — el demonio
-  detecta los commits externos y los respeta como sellados manuales. Pero no amendees ni
-  rewordees el WIP desde otra herramienta: un reword le quita el prefijo `WIP:`, así que
-  el demonio lo trataría como un commit manual — y lo pushearía.
-- **Clientes git (lazygit, Fork, GitKraken, VS Code, …):** sin problema en paralelo.
-  Mostrarán el WIP en la punta — deja ese único commit en paz y trabaja como siempre.
+- **SincroGit nunca ocupa tu punta.** Los snapshots viven en un ref lateral privado
+  (`refs/sincro/wip/<rama>`) construido con un índice privado: tu `git log` muestra solo
+  tus commits y los sellados, tu staging es tuyo, y `git status` dice la verdad.
+  Commitea, crea ramas, etiqueta o rebasa con libertad — un commit manual ya ni siquiera
+  es un caso especial. (Los repos que vienen de versiones antiguas de SincroGit se
+  migran solos al arrancar: el WIP legado de la punta se mueve al ref lateral y tus
+  ediciones sin sellar reaparecen como cambios sin commitear normales.)
+- **Clientes git (lazygit, Fork, GitKraken, VS Code, …):** sin problema en paralelo —
+  ven un repositorio completamente normal.
 - **GitButler (`but`):** *toma el control* del repo (hace checkout de su propia rama
   `gitbutler/workspace` y bloquea commits directos con un hook). Con la guarda de rama
   por defecto de SincroGit esto está cubierto: SincroGit **se inhibe** mientras GitButler

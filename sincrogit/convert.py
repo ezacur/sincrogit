@@ -72,7 +72,12 @@ def pptx_bytes_to_md(data: bytes) -> str | None:
     from pptx import Presentation
     try:
         prs = Presentation(io.BytesIO(data))
-    except Exception:  # noqa: BLE001 — corrupt/foreign bytes: not convertible
+    except Exception as e:  # noqa: BLE001 — corrupt/foreign bytes: not convertible
+        # Same None as "library missing" for callers, but a distinguishable
+        # trace for the user: "(binary or unavailable)" in a diff should be
+        # explainable — a truncated/corrupt .pptx is worth knowing about.
+        log.warning("cannot read .pptx (%d bytes): %s: %s",
+                    len(data), type(e).__name__, e)
         return None
     out = []
     for num, slide in enumerate(prs.slides, 1):
