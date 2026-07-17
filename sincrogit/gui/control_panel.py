@@ -43,6 +43,7 @@ from .. import __version__
 from ..events import ACTIONS
 from .add_repo_dialog import AddRepoDialog
 from .history_dialog import HistoryDialog
+from .timeline_tab import TimelineTab
 from .machines_dialog import MachinesDialog
 from .repo_properties_dialog import RepoPropertiesDialog
 from .settings_tab import SettingsTab
@@ -124,6 +125,8 @@ class ControlPanel(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
         self.tabs.addTab(self._build_status_tab(), "Status")
+        self.timeline = TimelineTab(self.c)
+        self.tabs.addTab(self.timeline, "Timeline")
         self.tabs.addTab(self._build_log_tab(), "Log")
         self.tabs.addTab(SettingsTab(self.c), "Settings")
         self.tabs.addTab(self._build_config_tab(), "Advanced (YAML)")
@@ -639,6 +642,9 @@ class ControlPanel(QMainWindow):
 
     def append_event(self, ev):
         """Append a new event live if it passes the current filter (Qt signal)."""
+        # The Timeline tab refreshes itself off the same event stream (a new
+        # snapshot/seal for the repo it shows), debounced; never raises.
+        self.timeline.notice_event(ev)
         # A seal/pull/push/sync event for a repo marks its manual action as done:
         # clear the in-flight marker so the action bar re-enables its buttons.
         if ev.repo in self._inflight and ev.action in ("seal", "push", "pull", "sync"):

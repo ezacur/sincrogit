@@ -616,6 +616,11 @@ class TrayApp:
         log/reflog): the dialog runs it off the GUI thread."""
         return self.engine.repo_history(name, limit)
 
+    def snapshot_timeline(self, name, limit=200):
+        """Per-snapshot change lists for the Timeline tab. Blocking (git log
+        walks): the tab runs it off the GUI thread."""
+        return self.engine.snapshot_timeline(name, limit)
+
     def export_file_version(self, name, relpath, sha, dest_path):
         """Save a copy of a version to `dest_path` (nothing in the repo changes)."""
         return self.engine.export_file_version(name, relpath, sha, dest_path)

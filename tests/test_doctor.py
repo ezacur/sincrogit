@@ -3,8 +3,18 @@
 import os
 import time
 
+import pytest
+
 from sincrogit.config import AiConfig, Config, LogConfig, RepoConfig
 from sincrogit.doctor import run_doctor
+
+
+@pytest.fixture(autouse=True)
+def _no_live_daemon(monkeypatch):
+    """The daemon probe is a LIVE localhost ping: when a real SincroGit runs on
+    the developer's machine, 'daemon — running' replaces the [WARN] these
+    outputs assert on. Pin it to 'not running' so the suite is deterministic."""
+    monkeypatch.setattr("sincrogit.doctor.ping_existing_instance", lambda: False)
 
 
 def _config(tmp_path, repos):

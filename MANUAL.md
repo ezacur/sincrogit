@@ -150,6 +150,11 @@ Open it from the tray icon (double-click) or *Open control panel*.
   - Right-click a repo row for **Open folder / File history / Time machine / Properties**.
   - A one-line **activity digest** under the action bar: today's snapshot / seal /
     push / pull counts (the Log has the detail; this is the glance).
+- **Timeline** — the snapshots the Log deliberately doesn't list, one card each: per
+  repo, a day-grouped timeline of every ~5-min snapshot and every seal, with the files
+  each one captured (status and +/− line counts) and, per file, the **colored diff** of
+  exactly what that snapshot saved. It refreshes itself as new snapshots land; *Seals
+  only* filters the cards down to the permanent commits.
 - **Log** — events, newest first and updating live (no refresh needed); filterable by
   repo / action / level / text, including the DEBUG detail the file log gets.
 - **Settings** — the friendly form: rhythms (snapshot cadence, plus a **Permanent history**

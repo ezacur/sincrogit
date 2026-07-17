@@ -155,6 +155,11 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
   - Clic derecho en una fila: **Open folder / File history / Time machine / Properties**.
   - Una línea de **resumen de actividad** bajo la barra de acciones: los snapshots /
     seals / pushes / pulls de hoy (el detalle está en el Log; esto es el vistazo).
+- **Timeline** — los snapshots que el Log deliberadamente no lista, una tarjeta cada uno:
+  por repo, una línea temporal agrupada por día con cada snapshot (~5 min) y cada sellado,
+  los ficheros que capturó cada uno (estado y contadores de líneas +/−) y, por fichero, el
+  **diff coloreado** de exactamente lo que guardó ese snapshot. Se refresca sola según
+  llegan snapshots nuevos; *Seals only* filtra las tarjetas a los commits permanentes.
 - **Log** — eventos, lo más nuevo arriba y actualizándose en vivo (sin refresco manual);
   filtrables por repo / acción / nivel / texto, incluido el detalle DEBUG del log de fichero.
 - **Settings** — el formulario amable: ritmos (cadencia de snapshot, más un selector de

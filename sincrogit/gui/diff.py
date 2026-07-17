@@ -42,13 +42,17 @@ def mark_intraline(old_line: str, new_line: str, c: dict) -> tuple:
     return "".join(o), "".join(n)
 
 
-def diff_html(old_text: str, current_text: str, dark: bool = False) -> str:
+def diff_html(old_text: str, current_text: str, dark: bool = False,
+              from_label: str = "selected version",
+              to_label: str = "current file") -> str:
     """Unified diff (old version -> current file) as colored HTML, theme-aware,
-    with intra-line highlighting on paired -/+ lines."""
+    with intra-line highlighting on paired -/+ lines. The labels name the two
+    sides in the ---/+++ header (the Timeline diffs a snapshot vs its parent,
+    not a version vs the current file)."""
     c = DIFF_DARK if dark else DIFF_LIGHT
     diff = list(difflib.unified_diff(
         old_text.splitlines(), current_text.splitlines(),
-        fromfile="selected version", tofile="current file", lineterm="",
+        fromfile=from_label, tofile=to_label, lineterm="",
     ))
     rows = []
 

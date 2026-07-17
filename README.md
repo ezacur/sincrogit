@@ -134,6 +134,9 @@ SincroGit relates to jj, GitButler, dura and friends, see
     across machines). Repos can be added live, without restarting; **Properties…** edits
     one repo's settings as a form (only the changed fields are written — the rest keep
     inheriting the defaults) and can remove the repo from the config.
+  - *Timeline*: per repo, a day-grouped timeline of **every snapshot and seal** — the
+    files each one captured (with +/− line counts) and each file's **colored diff** —
+    without flooding the Log tab with one row per snapshot.
   - *Log*: events **filterable by repo, action, level and text** (newest first, live).
   - *Settings*: friendly form over the global defaults (purist mode, handoff, AI, theme…).
   - *Advanced (YAML)*: raw `config.yaml` editor (save / save and restart).

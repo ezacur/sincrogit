@@ -1932,6 +1932,19 @@ class Engine:
             log.error("[%s] repo history failed: %s", repo_name, e)
             return []
 
+    def snapshot_timeline(self, repo_name: str, limit: int = 200) -> list:
+        """Per-snapshot/per-seal change lists (files + line counts), newest
+        first — the Timeline tab's data. Read-only git work; callers on the
+        GUI thread run it off-thread like the other history reads."""
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return []
+        try:
+            return st.repo.snapshot_timeline(st.active_branch, limit)
+        except GitError as e:
+            log.error("[%s] timeline failed: %s", repo_name, e)
+            return []
+
     def export_file_version(self, repo_name: str, relpath: str, sha: str,
                             dest_path: str):
         """Write a file's version at `sha` to `dest_path` — recover an old

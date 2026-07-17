@@ -89,16 +89,16 @@ def test_select_all_counts_only_safe_rows(dlg):
     assert d.btn_restore.isEnabled() and "(2)" in d.btn_restore.text()
 
 
-def test_diff_views(dlg, qapp):
+def test_diff_views(dlg, qspin):
     _, d, _ = dlg
     d.tbl_files.selectRow(0)
-    qapp.processEvents()
-    unified = d.preview.toPlainText()  # intra-line spans split the raw HTML
-    assert "old2" in unified and "new2" in unified
+    # The diff loads on a worker ("Loading…" in between): spin until it lands —
+    # a single processEvents() pass is a race the suite's load can lose.
+    assert qspin(lambda: "old2" in d.preview.toPlainText())
+    assert "new2" in d.preview.toPlainText()
     d.cb_sbs.setChecked(True)
-    qapp.processEvents()
-    sbs = d.preview.toHtml()
-    assert "selected version" in sbs and "current file" in sbs
+    assert qspin(lambda: "selected version" in d.preview.toHtml())
+    assert "current file" in d.preview.toHtml()
 
 
 def test_selective_restore_roundtrip(dlg, qspin):

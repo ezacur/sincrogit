@@ -1257,6 +1257,75 @@ class GitRepo:
                 break
         return out
 
+    def snapshot_timeline(self, branch: str = "main", limit: int = 200) -> list:
+        """Per-state change lists for the Timeline tab, newest first. Each item:
+        {sha, parent, epoch, subject, kind ('snapshot' | 'seal'), files:
+        [(status, path, adds, dels)]} — adds/dels are ints, or None for binary.
+
+        Same two walks as file_history (the live shadow chain + its reflog,
+        both bounded), each run twice: --name-status for the A/M/D letter and
+        --numstat for the +/− line counts (git has no single porcelain output
+        carrying both). A commit's file list is its diff vs its FIRST parent:
+        for a snapshot that's the previous snapshot — exactly "what this
+        snapshot captured" — and for a seal, the previous branch tip (the
+        whole sealed window). --no-renames matches the rest of the tooling
+        (a move reads as D old + A new).
+        """
+        sref = self.shadow_ref(branch)
+        fmt = "--format=%x01%H%x09%P%x09%ct%x09%s"
+        walks = (["log", "-n", "500"], ["log", "-g", "-n", "500"])
+
+        def records(extra: str):
+            """Yield (sha, parent, epoch, subject, [file lines]) per commit,
+            deduped by sha across the two walks (first wins)."""
+            seen = set()
+            for walk in walks:
+                res = self._run([*walk, fmt, "--no-renames", extra, sref],
+                                check=False)
+                for rec in res.stdout.split("\x01"):
+                    lines = [ln for ln in rec.splitlines() if ln.strip()]
+                    if not lines:
+                        continue
+                    head = (lines[0].split("\t", 3) + ["", "", "", ""])[:4]
+                    sha, parents, ct, subj = head
+                    if not sha or not ct.isdigit() or sha in seen:
+                        continue
+                    seen.add(sha)
+                    yield sha, parents.split(" ")[0], int(ct), subj, lines[1:]
+
+        entries = {}
+        for sha, parent, epoch, subj, lines in records("--name-status"):
+            files = []
+            for ln in lines:
+                parts = ln.split("\t")
+                if len(parts) >= 2:
+                    files.append([parts[0][:1], parts[-1], None, None])
+            entries[sha] = {
+                "sha": sha, "parent": parent, "epoch": epoch, "subject": subj,
+                # EXACT match: snapshot commits carry the literal message; a
+                # seal whose AI title merely STARTS with it must stay a seal.
+                "kind": "snapshot" if subj in self._SNAPSHOTISH else "seal",
+                "files": files,
+            }
+        for sha, _parent, _epoch, _subj, lines in records("--numstat"):
+            e = entries.get(sha)
+            if not e:
+                continue
+            counts = {}
+            for ln in lines:
+                parts = ln.split("\t")
+                if len(parts) >= 3:
+                    a, d = parts[0], parts[1]
+                    counts[parts[-1]] = (int(a) if a.isdigit() else None,
+                                         int(d) if d.isdigit() else None)
+            for f in e["files"]:
+                f[2], f[3] = counts.get(f[1], (None, None))
+
+        out = sorted(entries.values(), key=lambda e: e["epoch"], reverse=True)
+        for e in out:
+            e["files"] = [tuple(f) for f in e["files"]]
+        return out[:limit]
+
     def file_content_at(self, relpath: str, sha: str, max_bytes: int = 400_000) -> str | None:
         relpath = relpath.replace("\\", "/")
         res = self._run(["show", f"{sha}:{relpath}"], check=False)
