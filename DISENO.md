@@ -219,6 +219,14 @@ los momentos que enmarcan un cambio de máquina:
   push de autosnap *ya* (ignorando el intervalo) en un hilo de fondo, así el espejo remoto
   queda fresco en segundos. Best-effort al suspender (~2 s antes de que muera la red; el
   intervalo normal de autosnap es el backstop); fiable al bloquear.
+- **Irse del todo** (**apagar / reiniciar / cerrar sesión**): `WM_QUERYENDSESSION` /
+  `WM_ENDSESSION` (ambos, deduplicados — un apagado crítico puede saltarse el primero)
+  disparan un `flush_now(wait=True, wait_timeout=20)` SÍNCRONO: el proceso muere cuando el
+  handler retorna, así que en asíncrono el push se perdería en silencio.
+  `ShutdownBlockReasonCreate` muestra "backing up your latest work" en la pantalla de
+  apagado mientras corre (sin él Windows mata un proceso GUI a los ~5 s); la cota de 20 s
+  garantiza que el apagado nunca queda secuestrado. Un `ENDSESSION(FALSE)` (alguna app lo
+  vetó) re-arma el hook.
 - **Llegar** (**unlock** / **resume**): `Engine.sync_soon()` deja un fetch/pull/relevo debido
   en el próximo tick y despierta el loop, así el trabajo del peer se recoge al instante.
 

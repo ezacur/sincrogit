@@ -738,7 +738,7 @@ class Engine:
                 st.last_pull_mono = now - st.cfg.pull_interval_sec
         self._wake.set()
 
-    def flush_now(self, wait: bool = False):
+    def flush_now(self, wait: bool = False, wait_timeout: float = 180.0):
         """Force a snapshot + autosnap push of every (on-branch) repo NOW, ignoring
         the intervals, so the remote mirror is fresh — the 'leaving this machine' OS
         event (lock/suspend). Runs on a background thread (never blocks the caller)
@@ -783,8 +783,10 @@ class Engine:
         t.start()
         if wait:
             # Bounded: a hung remote must not wedge the quit path forever (each
-            # repo's push already has its own git_timeout_sec).
-            t.join(timeout=180)
+            # repo's push already has its own git_timeout_sec). Callers with a
+            # tighter budget — the Windows shutdown handler gets seconds, not
+            # minutes — pass their own wait_timeout.
+            t.join(timeout=wait_timeout)
 
     def _wait_seconds(self) -> float:
         """How long to sleep before the next tick: the time until the soonest

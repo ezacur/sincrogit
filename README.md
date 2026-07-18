@@ -111,7 +111,9 @@ SincroGit relates to jj, GitButler, dura and friends, see
 - ✅ **OS-event handoff** (Windows): locking/suspending **flushes** your latest state to the
   remote, unlocking/resuming **syncs** it — so "lock here → unlock there" hands off in
   seconds instead of waiting out the ~30 min mirror interval (+ a wall-clock-gap resume
-  detector that also works headless).
+  detector that also works headless). A **shutdown / restart / logoff** also flushes
+  first — synchronously, holding the shutdown with a visible "backing up your work"
+  reason while it runs. Every one of these leaves a `flush`/`resume` line in the Log.
 - ✅ **Branch guard**: if you `git checkout` another branch, SincroGit yields that repo
   (no snapshot/seal/push on the wrong branch) until you switch back. Or set
   `track_current_branch: true` to **follow** the current branch instead (feature-branch
@@ -505,7 +507,11 @@ the session: **locking the screen or suspending** (you're leaving) **flushes** y
 state to the remote immediately, and **unlocking or resuming** (you've arrived) **syncs** it
 immediately. So "lock here → unlock there" hands off in seconds. (A long suspend that cuts
 the network mid-flush falls back to the next autosnap; a wall-clock-gap detector also forces
-a sync after any resume, so it works headless too for the wake side.)
+a sync after any resume, so it works headless too for the wake side.) **Shutting down,
+restarting or logging off** flushes too: the tray app catches the session-end message and
+pushes your latest state synchronously before letting Windows proceed — with a visible
+"SincroGit: backing up your latest work" reason on the shutdown screen while it runs
+(bounded to ~20 s, so it can never hold your shutdown hostage).
 
 ### Using it in a team (shared repos)
 

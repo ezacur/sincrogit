@@ -40,6 +40,10 @@ _PBT_APMSUSPEND = 0x0004
 _PBT_APMRESUMESUSPEND = 0x0007
 _PBT_APMRESUMEAUTOMATIC = 0x0012
 _NOTIFY_FOR_THIS_SESSION = 0
+# Session end (shutdown / restart / logoff): the last chance to flush.
+_WM_QUERYENDSESSION = 0x0011
+_WM_ENDSESSION = 0x0016
+_ENDSESSION_LOGOFF = 0x80000000
 
 
 class _WinSessionEventFilter(QAbstractNativeEventFilter):
@@ -48,10 +52,15 @@ class _WinSessionEventFilter(QAbstractNativeEventFilter):
     machine-to-machine handoff latency from minutes to seconds. Windows-only; built
     only when installed, so the module still imports on other platforms."""
 
-    def __init__(self, on_leave, on_arrive):
+    def __init__(self, on_leave, on_arrive, on_ending=None, on_end_canceled=None):
         super().__init__()
         self._on_leave = on_leave
         self._on_arrive = on_arrive
+        # Session-END callbacks (shutdown/restart/logoff). on_ending(kind) fires
+        # on BOTH WM_QUERYENDSESSION and WM_ENDSESSION(TRUE) — a critical
+        # shutdown may skip the former — so the receiver must dedupe.
+        self._on_ending = on_ending or (lambda kind: None)
+        self._on_end_canceled = on_end_canceled or (lambda: None)
         import ctypes
         from ctypes import wintypes
 
@@ -79,6 +88,17 @@ class _WinSessionEventFilter(QAbstractNativeEventFilter):
                         self._on_leave("suspend")
                     elif msg.wParam in (_PBT_APMRESUMEAUTOMATIC, _PBT_APMRESUMESUSPEND):
                         self._on_arrive("resume")
+                elif msg.message == _WM_QUERYENDSESSION:
+                    # The session MAY end: flush now — the earliest (and
+                    # longest) time budget we will get before Windows kills us.
+                    self._on_ending("logoff" if msg.lParam & _ENDSESSION_LOGOFF
+                                    else "shutdown")
+                elif msg.message == _WM_ENDSESSION:
+                    if msg.wParam:  # the end is now CERTAIN
+                        self._on_ending("logoff" if msg.lParam & _ENDSESSION_LOGOFF
+                                        else "shutdown")
+                    else:          # some app vetoed it: we're staying alive
+                        self._on_end_canceled()
         except Exception:  # noqa: BLE001 — a native event filter must never raise into Qt
             pass
         return False, 0
@@ -185,12 +205,14 @@ class TrayApp:
         self._session_hwnd = None
         self._last_leave_mono = 0.0
         self._last_arrive_mono = 0.0
+        self._endsession_flushed = False  # dedupe QUERYENDSESSION + ENDSESSION
         if sys.platform != "win32":
             return
         try:
             import ctypes
             self._session_filter = _WinSessionEventFilter(
-                self._on_machine_leave, self._on_machine_arrive
+                self._on_machine_leave, self._on_machine_arrive,
+                self._on_session_ending, self._on_session_end_canceled,
             )
             self.qapp.installNativeEventFilter(self._session_filter)
             hwnd = int(self.panel.winId())  # forces native window creation (stable HWND)
@@ -224,6 +246,52 @@ class TrayApp:
         self._last_arrive_mono = time.monotonic()
         self._on_engine_event("", "resume", f"machine {reason}: syncing to catch up", "INFO")
         self.engine.sync_soon()
+
+    def _on_session_ending(self, kind):
+        """The Windows session is ending (shutdown / restart / logoff): flush
+        every repo to the remote SYNCHRONOUSLY — the process dies when this
+        handler returns, so async would silently lose the push. A shutdown
+        block reason makes Windows show WHAT we're doing (and wait) instead of
+        killing us at its default patience. Deduped across the two messages."""
+        if self._endsession_flushed:
+            return
+        self._endsession_flushed = True
+        self._shutdown_block("SincroGit: backing up your latest work to the remote…")
+        try:
+            # The event is written to events.jsonl synchronously, so the line
+            # survives even if the flush itself gets cut short.
+            self._on_engine_event(
+                "", "flush",
+                f"machine {kind}: flushing latest state before the session ends",
+                "WARNING")
+            self.engine.flush_now(wait=True, wait_timeout=20)
+        finally:
+            self._shutdown_unblock()
+
+    def _on_session_end_canceled(self):
+        """Some app vetoed the shutdown — we're staying alive. Re-arm the hook
+        so the NEXT real session end flushes again."""
+        if self._endsession_flushed:
+            self._endsession_flushed = False
+            self._on_engine_event("", "info", "session end canceled; still running", "INFO")
+
+    def _shutdown_block(self, reason: str):
+        """Register `reason` on Windows' shutdown screen while we flush (best
+        effort; without it the OS kills a GUI process ~5 s after ENDSESSION)."""
+        try:
+            import ctypes
+            hwnd = self._session_hwnd or int(self.panel.winId())
+            ctypes.windll.user32.ShutdownBlockReasonCreate(hwnd, reason)
+        except Exception:  # noqa: BLE001 — the flush still runs, just unshielded
+            pass
+
+    def _shutdown_unblock(self):
+        try:
+            import ctypes
+            hwnd = self._session_hwnd or int(self.panel.winId())
+            ctypes.windll.user32.ShutdownBlockReasonDestroy(hwnd)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _start_activation_listener(self):
         if not self._lock_socket:
@@ -349,6 +417,10 @@ class TrayApp:
 
     def restart(self):
         """Relaunches the process to apply the new config."""
+        # Leave a trace in the event log: without it a restart reads as an
+        # unexplained gap followed by fresh startup lines.
+        self._on_engine_event("", "restart",
+                              "restarting to apply the new configuration", "INFO")
         self._remove_session_hooks()
         self.engine.stop()
         if self._engine_thread:

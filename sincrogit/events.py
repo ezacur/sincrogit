@@ -33,6 +33,7 @@ ACTIONS = [
     "busy",       # a manual merge/rebase is holding a repo (long-busy warning)
     "pause",
     "resume",
+    "restart",    # SincroGit relaunching itself (Save and restart)
     "info",
     "error",
 ]

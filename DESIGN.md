@@ -217,6 +217,13 @@ keyed off the moments that bracket a machine switch:
   snapshot + autosnap push *now* (ignoring the interval) on a background thread, so the remote
   mirror is fresh in seconds. Best-effort on suspend (~2 s before the network dies; the normal
   autosnap interval is the backstop); reliable on lock.
+- **Leaving for good** (**shutdown / restart / logoff**): `WM_QUERYENDSESSION` /
+  `WM_ENDSESSION` (both, deduped — a critical shutdown may skip the first) trigger a
+  SYNCHRONOUS `flush_now(wait=True, wait_timeout=20)`: the process dies when the handler
+  returns, so async would silently lose the push. `ShutdownBlockReasonCreate` shows
+  "backing up your latest work" on the shutdown screen while it runs (without it Windows
+  kills a GUI process ~5 s in); the 20 s bound guarantees the shutdown is never hostage.
+  An `ENDSESSION(FALSE)` (some app vetoed) re-arms the hook.
 - **Arriving** (**unlock** / **resume**): `Engine.sync_soon()` makes a fetch/pull/handoff due
   on the next tick and wakes the loop, so the peer's work is picked up at once.
 
