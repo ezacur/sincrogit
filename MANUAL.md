@@ -179,7 +179,10 @@ Open it from the tray icon (double-click) or *Open control panel*.
   restore is captured as a snapshot too.
 - **Log** — events, newest first and updating live (no refresh needed); filterable by
   repo / action / level / text, including the DEBUG detail the file log gets.
-- **Settings** — the friendly form: rhythms (snapshot cadence, plus a **Permanent history**
+- **Settings** — the friendly form: rhythms (snapshot cadence, a **leave seal** toggle —
+  lock the machine and stay away `seal_on_leave_min` minutes (20 by default) and the
+  pending work is sealed as `sincro: [leave]` and pushed, so your other machine pulls a
+  fresh branch; coming back earlier cancels it — plus a **Permanent history**
   selector: *Automatic checkpoints* — the recommended auto-seal — or *Only my own commits*,
   i.e. purist mode, with an optional once-a-day **commit reminder** when work piles up),
   backup & sync (autosnap, handoff mode, follow-branch), AI messages, theme (light/dark/auto),
@@ -207,6 +210,7 @@ The **tray icon colour** reflects state: green = active, amber = paused, red = c
 | **Roll the whole repo back** | Panel → *Time machine* → pick a state → *Restore ENTIRE repo…* (with a preview of what changes). |
 | **Make a clean, documented commit now** | Per-repo **Commit…** button, or `--commit REPO`. |
 | **Move my work to another machine** | Just **lock the screen / close the lid** — SincroGit flushes; on the other machine, unlock and it syncs. Or **Smart Commit** before leaving for an instant handoff. |
+| **Leave knowing home will be fresh** | Nothing: lock (Win+L) and go. After ~20 min away the pending work is sealed (`sincro: [leave]`) and pushed; back sooner = no commit. Tune/disable with `seal_on_leave_min` (off in purist mode). |
 | **Recover after a dead disk** | On another machine: `--autosnaps` (or panel → *Time machine* → *Fetch autosnaps*), then restore. Loses at most ~30 min. |
 | **Power cut left git saying "branch broken"** | Nothing — just start SincroGit. It detects the zeroed ref and restores it from the reflog at startup (a "repair" warning shows in the Log). |
 | **Stop writing automatic commits (purist)** | Set `seal_interval_min: inf`; commit by hand with Smart Commit. |

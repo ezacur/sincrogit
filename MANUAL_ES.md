@@ -184,7 +184,10 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
   actuales — la restauración parcial también queda capturada como snapshot.
 - **Log** — eventos, lo más nuevo arriba y actualizándose en vivo (sin refresco manual);
   filtrables por repo / acción / nivel / texto, incluido el detalle DEBUG del log de fichero.
-- **Settings** — el formulario amable: ritmos (cadencia de snapshot, más un selector de
+- **Settings** — el formulario amable: ritmos (cadencia de snapshot, un interruptor de
+  **leave seal** — bloquea la máquina y quédate fuera `seal_on_leave_min` minutos (20 por
+  defecto) y el trabajo pendiente se sella como `sincro: [leave]` y se pushea, así tu
+  otra máquina hace pull de una rama fresca; volver antes lo cancela — más un selector de
   **Historia permanente**: *Checkpoints automáticos* — el auto-sellado recomendado — o
   *Solo mis propios commits*, es decir modo purista, con un **recordatorio de commit**
   opcional, como mucho una vez al día, cuando se acumula trabajo), backup y sync (autosnap,
@@ -214,6 +217,7 @@ Seal now, Quit.
 | **Revertir el repo entero** | Panel → *Time machine* → elige un estado → *Restore ENTIRE repo…* (con vista previa de qué cambia). |
 | **Hacer un commit limpio y documentado ya** | Botón **Commit…** del repo, o `--commit REPO`. |
 | **Llevar mi trabajo a otra máquina** | Solo **bloquea la pantalla / cierra la tapa** — SincroGit vuelca; en la otra, desbloquea y sincroniza. O **Smart Commit** antes de irte para un relevo instantáneo. |
+| **Irme sabiendo que en casa estará fresco** | Nada: bloquea (Win+L) y vete. Tras ~20 min fuera el trabajo pendiente se sella (`sincro: [leave]`) y se pushea; si vuelves antes, sin commit. Ajusta/desactiva con `seal_on_leave_min` (apagado en modo purista). |
 | **Recuperar tras un disco muerto** | En otra máquina: `--autosnaps` (o panel → *Time machine* → *Fetch autosnaps*), luego restaura. Pierdes ≤30 min. |
 | **Un corte de luz dejó git diciendo "branch broken"** | Nada — arranca SincroGit. Detecta la ref zeroed y la restaura desde el reflog al arrancar (verás un aviso "repair" en el Log). |
 | **Dejar de escribir commits automáticos (purista)** | Pon `seal_interval_min: inf`; commitea a mano con Smart Commit. |
