@@ -219,6 +219,16 @@ los momentos que enmarcan un cambio de máquina:
   push de autosnap *ya* (ignorando el intervalo) en un hilo de fondo, así el espejo remoto
   queda fresco en segundos. Best-effort al suspender (~2 s antes de que muera la red; el
   intervalo normal de autosnap es el backstop); fiable al bloquear.
+- **Irse de verdad** (bloqueado y ausente ≥ `seal_on_leave_min`, 20 min por defecto):
+  el **leave seal**. El lock arma una cuenta atrás de reloj de pared (de pared, no
+  monotónico: debe seguir contando a través de un suspend); unlock/resume la desarma;
+  al disparar corre las reglas normales del sellado fuera del tick con título
+  `sincro: [leave]` y pushea. Armarla no toca el reloj de 6 h — si el sellado normal
+  (o un commit manual) llega antes, el leave seal no encuentra nada que publicar y NO
+  mueve ningún reloj. Como mucho una vez por repo por ausencia; apagado en seco en
+  modo purista (la rama sigue siendo 100 % del usuario). Un SUSPEND inminente con la
+  cuenta atrás en marcha lo dispara al momento con el mensaje determinista (sin IA:
+  los ~2 s de gracia perderían el commit), porque una máquina dormida no tiene timer.
 - **Irse del todo** (**apagar / reiniciar / cerrar sesión**): `WM_QUERYENDSESSION` /
   `WM_ENDSESSION` (ambos, deduplicados — un apagado crítico puede saltarse el primero)
   disparan un `flush_now(wait=True, wait_timeout=20)` SÍNCRONO: el proceso muere cuando el

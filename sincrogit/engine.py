@@ -179,6 +179,13 @@ class Engine:
         self._emit_event = emit_event
         # This machine's name for the per-host autosnap ref (computed once).
         self._autosnap_host = autosnap_host()
+        # LEAVE SEAL: wall-clock time the machine was LOCKED (None = disarmed),
+        # and the repos already handled during this absence (fired or skipped —
+        # once per absence each). Wall clock, not monotonic: it must keep
+        # counting across a suspend. Written by the GUI's session hooks
+        # (arm/disarm), read by the tick — simple attribute swaps, GIL-atomic.
+        self._leave_epoch = None
+        self._leave_sealed = set()
         # pandoc is resolved lazily, only the first time a .docx is actually
         # staged or previewed (each .docx repo gets _pandoc_cmd as its resolver).
         # So a config without .docx — or a .docx repo where no .docx ever shows
@@ -719,7 +726,10 @@ class Engine:
     def _on_resume(self):
         """Woke from a long suspend (or the OS told us we unlocked/resumed): make a
         fetch/pull/handoff due now for every repo so we catch up to the other machine
-        promptly instead of waiting out the pull interval. See sync_soon."""
+        promptly instead of waiting out the pull interval. See sync_soon. A pending
+        leave seal is stale here — it already fired pre-suspend (see
+        leave_seal_now_if_armed) — so drop it rather than firing it on wake."""
+        self.disarm_leave_seal()
         self._emit("", "resume", "resumed; syncing to catch up")
         self.sync_soon()
 
@@ -737,6 +747,140 @@ class Engine:
             if math.isfinite(st.cfg.pull_interval_sec):
                 st.last_pull_mono = now - st.cfg.pull_interval_sec
         self._wake.set()
+
+    # ------------------------------------------------------------ leave seal
+    def arm_leave_seal(self):
+        """The machine was LOCKED: start the leave-seal countdown (a re-lock
+        restarts it). Arming NEVER touches the regular seal clock — if the 6 h
+        seal fires first, the leave seal simply finds nothing to do."""
+        self._leave_epoch = time.time()
+        self._leave_sealed = set()
+        self._wake.set()  # let _wait_seconds see the new deadline
+
+    def disarm_leave_seal(self):
+        """You're back (unlock/resume): the absence is over, cancel the
+        countdown. Also called by the wall-clock resume detector — after any
+        suspend the pending seal already fired pre-suspend (see
+        leave_seal_now_if_armed), so a surviving arm is stale."""
+        if self._leave_epoch is not None:
+            self._leave_epoch = None
+            self._leave_sealed = set()
+
+    def leave_seal_now_if_armed(self, wait_timeout: float = 8.0):
+        """The machine is about to SUSPEND with a leave-seal armed: the timer
+        cannot tick while asleep, so fire it NOW (bounded — Windows grants a
+        couple of seconds; the local commit lands, the push is dispatched and
+        retried on wake if the network dies first)."""
+        if self._leave_epoch is None:
+            return
+
+        def worker():
+            for st in self._states_snapshot():
+                if st.paused or st.user_paused:
+                    continue
+                if st.cfg.name in self._leave_sealed:
+                    continue
+                if not self._leave_seal_applies(st.cfg):
+                    continue
+                try:
+                    if self._branch_ok(st)[0]:
+                        # fast=True: the deterministic message, never the AI —
+                        # a ~30 s model call inside suspend's ~2 s grace would
+                        # lose the commit entirely.
+                        self._do_leave_seal(st, fast=True)
+                except GitError as e:
+                    log.error("[%s] pre-suspend leave-seal failed: %s", st.cfg.name, e)
+
+        t = threading.Thread(target=worker, name="sincrogit-leave-seal", daemon=True)
+        t.start()
+        t.join(timeout=wait_timeout)
+
+    @staticmethod
+    def _leave_seal_applies(cfg) -> bool:
+        """OFF when disabled ('off'/inf) and flat OFF in purist mode: the
+        purist promise is "only MY commits on the branch" — an automatic
+        leave seal would break it."""
+        return (math.isfinite(cfg.seal_on_leave_sec)
+                and math.isfinite(cfg.seal_interval_sec))
+
+    def _maybe_leave_seal(self, st: RepoState, now_epoch: float):
+        """Seal once the machine has been locked for seal_on_leave_min (the
+        "locked + walked away = session over" proxy), so the other machine
+        pulls a fresh BRANCH — not just the WIP mirror. Armed by the lock,
+        canceled by arrival, fired at most once per repo per absence. Firing
+        follows the normal seal rules: if the 6 h seal (or a manual commit)
+        got there first, there is nothing to seal and NOTHING is touched —
+        no clock is rescheduled on a no-op."""
+        left = self._leave_epoch
+        if left is None or st.cfg.name in self._leave_sealed:
+            return
+        if not self._leave_seal_applies(st.cfg):
+            return
+        if now_epoch - left < st.cfg.seal_on_leave_sec:
+            return
+        # Off-thread like the regular seal: the AI message may take ~30 s and
+        # must not block the tick. _do_leave_seal manages its own op_lock.
+        self._dispatch_network(st, "leave-seal",
+                               lambda: self._do_leave_seal(st), hold_lock=False)
+
+    def _do_leave_seal(self, st: RepoState, fast: bool = False):
+        """One leave-seal attempt. Skips (marking the repo handled for this
+        absence) on busy/staged/nothing-to-seal; seals with the distinctive
+        'sincro: [leave]' title otherwise. Push dispatched like any seal.
+        `fast` skips the AI (deterministic message) — the pre-suspend path.
+        Holding op_lock across the AI is fine HERE: the machine is locked and
+        idle, so no snapshot is waiting on this repo."""
+        if not st.op_lock.acquire(blocking=False):
+            return  # a worker holds the repo; stays pending, retried next tick
+        push_due = False
+        try:
+            repo, branch = st.repo, st.active_branch
+            if repo.is_busy():
+                self._leave_sealed.add(st.cfg.name)
+                return  # mid-merge/rebase is no moment for an automatic commit
+            if repo.has_staged_changes():
+                # Same contract as the auto-seal: never absorb a hand-crafted
+                # commit in progress — even if the user left it staged and went home.
+                self._leave_sealed.add(st.cfg.name)
+                self._emit(st.cfg.name, "leave-seal",
+                           "skipped: you have changes staged for a manual commit",
+                           "WARNING")
+                return
+            self._shadow_snapshot(st)
+            tree = repo.sync_shadow_index(branch)
+            head = repo.head_sha()
+            base_tree = repo.tree_of(head) if head else repo._empty_tree()
+            if repo.trees_match(base_tree, tree):
+                # The 6 h seal (or the user's own commit) got there first:
+                # nothing to publish, and — per the design — NO clock moves.
+                self._leave_sealed.add(st.cfg.name)
+                log.info("[%s] leave-seal: nothing to seal", st.cfg.name)
+                return
+            if fast:
+                title, body = build_fallback_message(
+                    st.repo.name_status_for_seal(base_tree, tree))
+            else:
+                title, body = self._seal_message(st, base_tree, tree)
+            # Distinctive title, keeping the machine-commit promise intact:
+            # every automatic commit starts with 'sincro: ' (README §skeptic).
+            if title.startswith("sincro: "):
+                title = title.replace("sincro: ", "sincro: [leave] ", 1)
+            else:
+                title = f"sincro: [leave] {title}"
+            new = repo.seal_from_shadow(branch, tree, title, body)
+            repo.reanchor_shadow(branch, new)
+            st.last_seal_epoch = time.time()  # a real seal resets the 6 h clock
+            st.has_sealed = True
+            st.autosnap_pending = True
+            self._leave_sealed.add(st.cfg.name)
+            self._mark_action(st, "leave-seal")
+            self._emit(st.cfg.name, "leave-seal", title)
+            repo.gc_auto()
+            push_due = st.cfg.push and repo.has_remote(st.cfg.remote)
+        finally:
+            st.op_lock.release()
+        if push_due:
+            self._dispatch_network(st, "push", lambda: self._do_push(st))
 
     def flush_now(self, wait: bool = False, wait_timeout: float = 180.0):
         """Force a snapshot + autosnap push of every (on-branch) repo NOW, ignoring
@@ -823,6 +967,12 @@ class Engine:
             cfg = st.cfg
             # next permanent seal
             soonest = min(soonest, st.last_seal_epoch + cfg.seal_interval_sec - now_epoch)
+            # pending leave seal (machine locked, countdown running)
+            if (self._leave_epoch is not None
+                    and cfg.name not in self._leave_sealed
+                    and self._leave_seal_applies(cfg)):
+                soonest = min(soonest,
+                              self._leave_epoch + cfg.seal_on_leave_sec - now_epoch)
             # next remote sync (fetch/push)
             if cfg.pull or cfg.push:
                 soonest = min(soonest, st.last_pull_mono + cfg.pull_interval_sec - now_mono)
@@ -863,6 +1013,7 @@ class Engine:
                 self._maybe_sync(st, now_mono)      # dispatched to a worker; returns at once
                 self._maybe_snapshot(st, now_mono)  # local; skipped if a worker holds the repo
                 self._dispatch_seal(st, now_epoch)  # off-thread: the AI message must not block the tick
+                self._maybe_leave_seal(st, now_epoch)  # locked ≥N min: publish, then go home
                 self._maybe_autosnap(st, now_mono)  # live mirror; dispatched to a worker
                 self._maybe_gc(st, now_mono)        # daily repo packing; background worker
                 self._maybe_nudge_commit(st, now_mono, now_epoch)  # purist "time to commit?"

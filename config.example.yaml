@@ -20,6 +20,11 @@ defaults:
                                   # history + live WIP) to a side ref on the remote ->
                                   # disk-failure recovery within autosnap_interval
   autosnap_interval_min: 30       # force-push the mirror every 30 min (only if it changed)
+  seal_on_leave_min: 20          # LEAVE SEAL: lock the machine and stay away this long
+                                 # -> seal (+push) the pending work, so your other machine
+                                 # pulls a fresh branch. Coming back first cancels it;
+                                 # about-to-sleep seals just before. "off" disables.
+                                 # Ignored in purist mode (seal_interval_min: inf).
   live_handoff: auto              # pick up your OTHER machine's live WIP. auto = fast-forward
                                   # automatically + notify; ask = notify + one-click Apply
                                   # (no silent change); off = manual. Never auto-merges on

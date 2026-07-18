@@ -111,7 +111,11 @@ SincroGit relates to jj, GitButler, dura and friends, see
 - ✅ **OS-event handoff** (Windows): locking/suspending **flushes** your latest state to the
   remote, unlocking/resuming **syncs** it — so "lock here → unlock there" hands off in
   seconds instead of waiting out the ~30 min mirror interval (+ a wall-clock-gap resume
-  detector that also works headless). A **shutdown / restart / logoff** also flushes
+  detector that also works headless). Locked and **stayed away ≥ ~20 min**? The
+  **leave seal** fires: your pending work becomes a real `sincro: [leave]` commit and
+  is pushed — you left for the day, so home pulls a fresh branch (coming back first
+  cancels it; an imminent suspend seals just before; `seal_on_leave_min`).
+  A **shutdown / restart / logoff** also flushes
   first — synchronously, holding the shutdown with a visible "backing up your work"
   reason while it runs. Every one of these leaves a `flush`/`resume` line in the Log.
 - ✅ **Branch guard**: if you `git checkout` another branch, SincroGit yields that repo
@@ -717,6 +721,7 @@ overridable per repo):
 | `pull_interval_min` | 10 | How often to fetch; pull (rebase) only if the remote is ahead (10 min) |
 | `autosnap` | true | Live mirror of the latest snapshot to `refs/autosnap/<user>/<host>/<branch>` (disk-failure recovery + handoff) |
 | `autosnap_interval_min` | 30 | How often the mirror is force-pushed (only if it changed) |
+| `seal_on_leave_min` | 20 | **Leave seal**: lock the machine and stay away this long → seal (+push) the pending work, so your other machine pulls a fresh branch. Coming back first cancels it; an imminent suspend seals just before. `off` disables; ignored in purist mode |
 | `live_handoff` | auto | Pick up your other machine's live WIP: `auto` (fast-forward + notify), `ask` (one-click apply), `off`. See [Cross-machine handoff](#cross-machine-handoff-live-wip) |
 | `track_current_branch` | false | Follow the **current** branch instead of pausing off `branch` (feature-branch workflow; pairs with purist mode). Opt-in |
 | `suggest_excludes` | true | Suggest (once, a notification) adding a high-churn folder to `extra_excludes` — never auto-edits |
@@ -756,7 +761,8 @@ error — never as a crash inside the engine hours later.
 Any interval or size threshold can be **turned off** by setting it to `inf` (or `off`,
 `none`, `never`): the action then **never fires** and the limit becomes **unlimited**.
 It works for `snapshot_interval_sec`, `seal_interval_min`, `pull_interval_min`,
-`autosnap_interval_min`, `debounce_sec`, `max_file_bytes` and `max_include_bytes`. The
+`autosnap_interval_min`, `seal_on_leave_min`, `debounce_sec`, `max_file_bytes` and
+`max_include_bytes`. The
 headline use is **purist mode**: `seal_interval_min: inf` (no automatic seal — you commit
 by hand). For example:
 

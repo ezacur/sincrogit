@@ -26,7 +26,7 @@ _DISABLE_TOKENS = {"inf", "infinity", "none", "never", "off", "false", "disabled
 # thresholds (no limit). git_timeout_sec and booleans keep their own semantics.
 _DISABLEABLE_FIELDS = (
     "snapshot_interval_sec", "debounce_sec", "seal_interval_min",
-    "pull_interval_min", "autosnap_interval_min",
+    "pull_interval_min", "autosnap_interval_min", "seal_on_leave_min",
     "max_file_bytes", "max_include_bytes",
 )
 
@@ -127,6 +127,7 @@ _INHERITABLE = [
     "git_timeout_sec",
     "autosnap",
     "autosnap_interval_min",
+    "seal_on_leave_min",
     "live_handoff",
     "track_current_branch",
     "suggest_excludes",
@@ -160,6 +161,13 @@ class RepoConfig:
                                           # history + the live WIP) to a side ref on the
                                           # remote -> disk-failure RPO ~= autosnap_interval
     autosnap_interval_min: int = 30       # how often the live mirror is force-pushed
+    seal_on_leave_min: int = 20           # LEAVE SEAL: seal (+push) this many minutes
+                                          # after the machine is LOCKED, unless you come
+                                          # back first — "lock + walk away" is the
+                                          # session-over proxy, so home pulls a fresh
+                                          # branch. 'off'/inf disables. IGNORED in purist
+                                          # mode (seal_interval_min: inf): the branch
+                                          # stays 100% yours there.
     live_handoff: object = "auto"         # pick up your OTHER machine's live WIP. 'auto'
                                           # = fast-forward automatically (notify on apply);
                                           # 'ask' = notify + one-click Apply (no silent
@@ -210,6 +218,10 @@ class RepoConfig:
     @property
     def autosnap_interval_sec(self) -> float:
         return self.autosnap_interval_min * 60
+
+    @property
+    def seal_on_leave_sec(self) -> float:
+        return self.seal_on_leave_min * 60
 
 
 @dataclass

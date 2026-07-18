@@ -51,6 +51,8 @@ defaults:
   git_timeout_sec: 60
   autosnap: true                  # mirror the shadow tip (latest snapshot, incl. live WIP) to refs/autosnap/<user>/<host>/<branch>
   autosnap_interval_min: 30       # force-push the live mirror every 30 min (only if changed)
+  seal_on_leave_min: 20           # seal (+push) 20 min after locking the machine, unless you
+                                  # come back first ("off" disables; ignored in purist mode)
   live_handoff: auto              # pick up your other machine's live WIP: auto (fast-forward
                                   # + notify) | ask (one-click apply) | off. Needs autosnap on.
   track_current_branch: false     # false = pause off `branch`; true = follow the current

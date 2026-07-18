@@ -217,6 +217,16 @@ keyed off the moments that bracket a machine switch:
   snapshot + autosnap push *now* (ignoring the interval) on a background thread, so the remote
   mirror is fresh in seconds. Best-effort on suspend (~2 s before the network dies; the normal
   autosnap interval is the backstop); reliable on lock.
+- **Left for real** (locked and away ≥ `seal_on_leave_min`, default 20 min): the
+  **leave seal**. The lock arms a wall-clock countdown (wall, not monotonic: it must
+  keep counting across a suspend); unlock/resume disarms it; firing runs the normal
+  seal rules off-thread with a `sincro: [leave]` title and pushes. Arming never
+  touches the 6 h clock — if the regular seal (or a manual commit) lands first, the
+  leave seal finds nothing to publish and moves NO clock. At most once per repo per
+  absence; flat OFF in purist mode (the branch stays 100 % the user's). An imminent
+  SUSPEND with the countdown running fires it immediately with the deterministic
+  message (no AI: the ~2 s grace would lose the commit), because a sleeping machine
+  has no timer.
 - **Leaving for good** (**shutdown / restart / logoff**): `WM_QUERYENDSESSION` /
   `WM_ENDSESSION` (both, deduped — a critical shutdown may skip the first) trigger a
   SYNCHRONOUS `flush_now(wait=True, wait_timeout=20)`: the process dies when the handler

@@ -530,7 +530,10 @@ al remoto al instante, y **desbloquear o reanudar** (has llegado) lo **sincroniz
 instante. Así "bloqueo aquí → desbloqueo allá" releva en segundos. (Una suspensión larga que
 corta la red a mitad del volcado cae al siguiente autosnap; un detector de salto de reloj
 también fuerza un sync tras cualquier reanudación, así que también funciona en headless para
-el lado del despertar.)
+el lado del despertar.) ¿Bloqueaste y **seguiste fuera ≥ ~20 min**? Dispara el **leave
+seal**: tu trabajo pendiente se convierte en un commit real `sincro: [leave]` y se pushea
+— te fuiste de verdad, así que en casa haces pull de una rama fresca (volver antes lo
+cancela; un suspend inminente sella justo antes; `seal_on_leave_min`).
 
 ### Usar SincroGit en equipo (repos compartidos)
 
@@ -743,6 +746,7 @@ sobreescribibles por repo):
 | `pull_interval_min` | 10 | Cada cuánto hacer fetch; pull (rebase) solo si el remoto adelanta (10 min) |
 | `autosnap` | true | Espejo en vivo del último snapshot a `refs/autosnap/<user>/<host>/<rama>` (recuperación ante fallo de disco + relevo) |
 | `autosnap_interval_min` | 30 | Cada cuánto se hace force-push del espejo (solo si cambió) |
+| `seal_on_leave_min` | 20 | **Leave seal**: bloquea la máquina y quédate fuera este tiempo → sella (+push) el trabajo pendiente, así tu otra máquina hace pull de una rama fresca. Volver antes lo cancela; un suspend inminente sella justo antes. `off` lo desactiva; ignorado en modo purista |
 | `live_handoff` | auto | Recoger el WIP vivo de tu otra máquina: `auto` (fast-forward + notifica), `ask` (aplicar a un clic), `off`. Ver [Relevo entre máquinas](#relevo-entre-máquinas-wip-vivo) |
 | `track_current_branch` | false | Seguir la rama **actual** en vez de pausar fuera de `branch` (flujo de feature branches; se acopla con el modo purista). Opt-in |
 | `suggest_excludes` | true | Sugerir (una vez, notificación) añadir una carpeta ruidosa a `extra_excludes` — nunca auto-edita |
@@ -782,7 +786,8 @@ con un error claro por campo — nunca como un crash dentro del motor horas desp
 Cualquier intervalo o umbral de tamaño se puede **apagar** poniéndolo en `inf` (o `off`,
 `none`, `never`): la acción **no se dispara nunca** y el límite pasa a ser **ilimitado**.
 Funciona para `snapshot_interval_sec`, `seal_interval_min`, `pull_interval_min`,
-`autosnap_interval_min`, `debounce_sec`, `max_file_bytes` y `max_include_bytes`. El uso
+`autosnap_interval_min`, `seal_on_leave_min`, `debounce_sec`, `max_file_bytes` y
+`max_include_bytes`. El uso
 estrella es el **modo purista**: `seal_interval_min: inf` (sin sellado automático —
 commiteas a mano). Por ejemplo:
 

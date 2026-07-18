@@ -89,6 +89,19 @@ class SettingsTab(QWidget):
         self.sp_seal.setToolTip("How often SincroGit adds an automatic checkpoint commit (and pushes).")
         f1.addRow("Automatic checkpoint every", self.sp_seal)
 
+        self.ck_leave = QCheckBox("Seal when I lock the machine and LEAVE (leave seal)")
+        self.ck_leave.setToolTip(
+            "Lock (Win+L) and stay away this long → the pending work is sealed and "
+            "pushed, so your other machine pulls a fresh branch. Coming back earlier "
+            "cancels it; if the machine is about to sleep, it seals just before. "
+            "Ignored in 'Only my own commits' (purist) mode.")
+        self.ck_leave.toggled.connect(lambda on: self.sp_leave.setEnabled(on))
+        f1.addRow(self.ck_leave)
+        self.sp_leave = _spin(QSpinBox())
+        self.sp_leave.setRange(1, 240)
+        self.sp_leave.setSuffix(" min")
+        f1.addRow("Seal after being away for", self.sp_leave)
+
         self.ck_nudge = QCheckBox("Remind me to commit when work piles up (a quiet moment, once a day at most)")
         self.ck_nudge.setToolTip(
             "Only for 'Only my own commits': if un-sealed work sits on a stagnant "
@@ -222,6 +235,11 @@ class SettingsTab(QWidget):
         purist = _is_disabled(seal)
         _select(self.cb_history, "manual" if purist else "auto")
         self.sp_seal.setValue(360 if purist else int(seal))
+        leave = d.get("seal_on_leave_min", 20)
+        self.ck_leave.setChecked(not _is_disabled(leave))
+        self.sp_leave.setValue(int(leave) if not _is_disabled(leave) else 20)
+        self.sp_leave.setEnabled(not _is_disabled(leave))
+
         self.ck_nudge.setChecked(bool(d.get("suggest_commit", True)))
         self._history_mode_changed()  # sync enable/disable to the selected mode
 
@@ -265,6 +283,8 @@ class SettingsTab(QWidget):
         d["snapshot_interval_sec"] = self.sp_snapshot.value()
         manual = self.cb_history.currentData() == "manual"
         d["seal_interval_min"] = "inf" if manual else self.sp_seal.value()
+        d["seal_on_leave_min"] = (self.sp_leave.value()
+                                  if self.ck_leave.isChecked() else "off")
         d["suggest_commit"] = self.ck_nudge.isChecked()
         d["autosnap"] = self.ck_autosnap.isChecked()
         d["autosnap_interval_min"] = self.sp_autosnap.value()

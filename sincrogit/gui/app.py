@@ -236,6 +236,15 @@ class TrayApp:
             self._session_hwnd = None
 
     def _on_machine_leave(self, reason):
+        # Leave-seal bookkeeping BEFORE the flush debounce (the debounce may
+        # swallow this call entirely): the LOCK arms the countdown (a re-lock
+        # restarts it); a SUSPEND with one pending fires it right now — the
+        # timer can't tick while the machine sleeps (bounded, deterministic
+        # message; see Engine.leave_seal_now_if_armed).
+        if reason == "lock":
+            self.engine.arm_leave_seal()
+        elif reason == "suspend":
+            self.engine.leave_seal_now_if_armed()
         # Debounce: lock usually precedes suspend — don't flush twice in a row.
         if time.monotonic() - self._last_leave_mono < 10:
             return
@@ -244,6 +253,9 @@ class TrayApp:
         self.engine.flush_now()
 
     def _on_machine_arrive(self, reason):
+        # You're back: a pending leave seal is off — BEFORE the debounce, which
+        # may swallow this call (resume usually precedes unlock).
+        self.engine.disarm_leave_seal()
         # Debounce: resume usually precedes unlock — don't sync twice in a row.
         if time.monotonic() - self._last_arrive_mono < 10:
             return

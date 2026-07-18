@@ -21,6 +21,7 @@ ACTIONS = [
     "startup",
     "snapshot",
     "seal",
+    "leave-seal",  # the seal fired ~20 min after locking the machine (left for real)
     "push",
     "autosnap",
     "pull",
