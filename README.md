@@ -136,9 +136,11 @@ SincroGit relates to jj, GitButler, dura and friends, see
     across machines). Repos can be added live, without restarting; **Properties…** edits
     one repo's settings as a form (only the changed fields are written — the rest keep
     inheriting the defaults) and can remove the repo from the config.
-  - *Timeline*: per repo, a day-grouped timeline of **every snapshot and seal** — the
-    files each one captured (with +/− line counts) and each file's **colored diff** —
-    without flooding the Log tab with one row per snapshot.
+  - *Time machine*: per repo, a day-grouped rail of **every snapshot, seal and
+    fetched mirror**, with a compare switch — *what changed then* (each state's files
+    and diffs vs its parent) or *vs today* (what a restore would change, with selective
+    and whole-repo restore) — and a **file pin** that turns the rail into that file's
+    version history (search across versions, per-file restore, hunk restore).
   - *Log*: events **filterable by repo, action, level and text** (newest first, live).
   - *Settings*: friendly form over the global defaults (purist mode, handoff, AI, theme…).
   - *Advanced (YAML)*: raw `config.yaml` editor (save / save and restart).
@@ -352,7 +354,7 @@ python -m sincrogit -c config.yaml --autosnaps
 ```
 
 In the tray app, the same is available from the control panel:
-**Status → "File history…"** (browse, preview any version, and restore a file or the
+the **Time machine tab** (pin the file: browse, preview any version, and restore a file or the
 whole repo).
 
 Restoring is itself protected: pending edits are first snapshotted into the WIP (so
@@ -397,7 +399,7 @@ every 6h: the accumulated snapshot tree becomes ONE sealed commit on the branch
 ```
 
 - **Undo a recent mistake**: the snapshots are real commits on the side ref
-  (≈5 min resolution) — browse/restore them from the File history / Time machine.
+  (≈5 min resolution) — browse/restore them from the Time machine tab.
 - **Go back to yesterday**: `git checkout`/`restore` from the matching sealed commit.
 - **Total disk failure**: recover on another machine from the `autosnap` ref (≤30 min).
 
@@ -568,7 +570,7 @@ SincroGit on the repos your agents work in and you get, with **zero integration*
   remotely — the daily `git gc` packs the extra loose objects. You can push it to near
   per-burst (`snapshot_interval_sec: 5`; the floor is really the debounce) at the cost
   of a longer snapshot chain. See [Tuning a "hot" repo](#tuning-a-hot-repo).
-- **Rollback of anything it did.** A bad agent edit from an hour ago? *File history* →
+- **Rollback of anything it did.** A bad agent edit from an hour ago? *Time machine* →
   restore the file (or the whole repo) to right before it happened.
 - **A clean separation of your work.** Run **purist mode** (`seal_interval_min: inf`):
   the permanent history stays 100 % yours (your Smart Commits), while the WIP + autosnap

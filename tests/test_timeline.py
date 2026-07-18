@@ -58,3 +58,27 @@ def test_timeline_binary_files_have_no_counts(make_repo, make_engine):
 def test_timeline_unknown_repo_is_empty(make_repo, make_engine):
     eng, _ = make_engine(make_repo())
     assert eng.snapshot_timeline("nope") == []
+
+
+def test_timeline_includes_fetched_autosnap_states(make_repo, make_engine):
+    """Another machine's fetched mirror is a recovery point: it must appear on
+    the same axis, kind 'autosnap', with its own files-vs-parent list. A real
+    peer state is a SIBLING commit — never part of this machine's shadow walk."""
+    repo = make_repo({"f.txt": "l1\n"})
+    # Fabricate the peer state: commit it, then move the branch back so the
+    # commit dangles exactly like a fetched refs/autosnap/* object would.
+    write(repo, "peer.txt", "from the other machine\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "sincro: snapshot")
+    peer_sha = git(repo, "rev-parse", "HEAD")
+    git(repo, "reset", "--hard", "HEAD~1")
+    git(repo, "update-ref", "refs/autosnap/me/OTHERPC/main", peer_sha)
+
+    eng, _ = make_engine(repo)
+    tl = eng.snapshot_timeline("t")
+    auto = [e for e in tl if e["kind"] == "autosnap"]
+    assert len(auto) == 1 and auto[0]["host"] == "OTHERPC"
+    assert auto[0]["sha"] == peer_sha and auto[0]["parent"]
+    files = {p: (s, a, d) for s, p, a, d in auto[0]["files"]}
+    assert files["peer.txt"] == ("A", 1, 0)
+    assert sum(1 for e in tl if e["sha"] == peer_sha) == 1  # never duplicated

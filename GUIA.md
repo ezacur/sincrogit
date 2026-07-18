@@ -64,7 +64,7 @@ Commit** antes de irte es siempre instantáneo.)
 > [README](README.md#cross-machine-handoff-live-wip)).
 
 > 🔥 **¿Y si el sobremesa se muere de verdad?** Para eso está la copia en la nube: en el
-> portátil, *File history… → "Fetch autosnaps (other machines)…"* recupera tu último estado (de hace ≤30 min).
+> portátil, *Time machine → "Fetch autosnaps"* recupera tu último estado (de hace ≤30 min).
 
 ## ✨ Tomando el control: el commit manual (Smart Commit)
 
@@ -87,7 +87,7 @@ documentado ya**, sin esperar 6 h.
 Has borrado una función vital, guardaste por reflejo (`Ctrl+S`)… y te das cuenta del
 desastre. Que no cunda el pánico.
 
-1. Abre el panel → **"File history…"**.
+1. Abre el panel → la pestaña **Time machine**.
 2. Elige el archivo que te cargaste.
 3. Verás **todas** sus versiones (incluidos los borradores secretos de hace 15 min), con
    un **diff en rojo/verde** frente a cómo está ahora.

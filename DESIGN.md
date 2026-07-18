@@ -526,7 +526,7 @@ repos:
 - Preview any version and restore it (`git checkout <sha> -- file`); the restore
   becomes a new snapshot, so it is itself versioned.
 - CLI: `--history FILE` (interactive) / `--history FILE --pick N` (non-interactive).
-- GUI: control panel → Status → "File history…" dialog.
+- GUI: control panel → the Time machine tab (pin a file for its history).
 
 **Phase 3 — Deployment (partial):**
 - ✅ Standalone single-file `SincroGit.exe` (GUI + CLI) via PyInstaller

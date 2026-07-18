@@ -536,7 +536,7 @@ repos:
 - Previsualizar cualquier versión y restaurarla (`git checkout <sha> -- fichero`);
   la restauración se convierte en un snapshot nuevo, así que queda versionada a su vez.
 - CLI: `--history FICHERO` (interactivo) / `--history FICHERO --pick N` (no interactivo).
-- GUI: panel de control → Status → diálogo "File history…".
+- GUI: panel de control → la pestaña Time machine (fija un fichero para su historial).
 
 **Fase 3 — Despliegue (parcial):**
 - ✅ `SincroGit.exe` autónomo de un solo fichero (GUI + CLI) vía PyInstaller

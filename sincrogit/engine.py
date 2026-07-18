@@ -765,6 +765,10 @@ class Engine:
                         if self._do_snapshot(st):
                             st.last_snapshot_wall = time.time()
                             self._mark_action(st, "snapshot")
+                            # Per-repo line, like the periodic snapshot emits:
+                            # without it a lock/suspend flush looked like it
+                            # never snapshotted anything in the Log.
+                            self._emit(st.cfg.name, "snapshot", "snapshot (leaving machine)")
                             did += 1
                         if (st.cfg.autosnap and st.autosnap_pending
                                 and st.repo.has_remote(st.cfg.remote)):

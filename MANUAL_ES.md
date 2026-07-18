@@ -144,22 +144,44 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
     de aplicar.
   - **How to fix…** — aparece cuando un repo está pausado por conflicto: explica qué pasó
     (el rebase se abortó; tus ficheros están intactos) y qué hacer, con botón *Open folder*.
-  - Barra superior: **File history…** (elige un FICHERO y explora sus versiones), **Time
-    machine…** (elige una VERSIÓN, ve todos los ficheros que difieren y restaura un
-    conjunto seleccionado), **Machines…** (el último espejo autosnap de cada máquina,
+  - Barra superior: **Time machine…** (salta a la pestaña Time machine enfocada en este
+    repo — todo el pasado del repo vive ahí), **Machines…** (el último espejo autosnap de cada máquina,
     con la frescura por color — detecta una máquina que dejó de respaldarse, y *Fetch
     latest* para refrescar) y **Add repo…** (opcionalmente deja un `.gitattributes`
     `* text=auto`; también puedes pegar una **URL de remoto** y **Verify**-icarla
     —accesibilidad más un push --dry-run para el acceso de escritura— antes de añadir, para
     que push/pull/sync funcionen desde el principio).
-  - Clic derecho en una fila: **Open folder / File history / Time machine / Properties**.
+  - Clic derecho en una fila: **Open folder / Time machine / Properties**.
   - Una línea de **resumen de actividad** bajo la barra de acciones: los snapshots /
     seals / pushes / pulls de hoy (el detalle está en el Log; esto es el vistazo).
-- **Timeline** — los snapshots que el Log deliberadamente no lista, una tarjeta cada uno:
-  por repo, una línea temporal agrupada por día con cada snapshot (~5 min) y cada sellado,
-  los ficheros que capturó cada uno (estado y contadores de líneas +/−) y, por fichero, el
-  **diff coloreado** de exactamente lo que guardó ese snapshot. Se refresca sola según
-  llegan snapshots nuevos; *Seals only* filtra las tarjetas a los commits permanentes.
+- **Time machine** — todas las vistas del pasado del repo, en una sola rejilla. El raíl
+  izquierdo lista los estados día a día — cada snapshot (~5 min), cada sellado y (tras
+  *Fetch autosnaps*) los espejos de tus otras máquinas, con color por tipo — y se
+  refresca solo según llegan snapshots nuevos (*Seals only* deja solo los commits
+  permanentes). El conmutador **Compare** decide la pregunta que responde la derecha:
+  - *what changed then* (por defecto): los ficheros que capturó ese estado (estado y
+    contadores +/−) y, por fichero, el **diff coloreado** de exactamente lo que guardó.
+  - *vs today*: **todos los ficheros que difieren del presente** en ese estado, cada uno
+    con su checkbox y su acción (*revert* / *delete* / *recreate*), más el diff del
+    fichero pulsado (**unificado o side-by-side**, con resaltado intra-línea).
+    **Restore selected (N)** recupera el conjunto marcado en UN paso atómico, capturado
+    como un único snapshot (reversible, como siempre); los ficheros cuyo contenido
+    actual los snapshots no pueden capturar aparecen con ⚠ y no se pueden seleccionar.
+    **Restore ENTIRE repo…** calcula primero una **vista previa** de qué cambiaría
+    exactamente (cuántos ficheros vuelven atrás / desaparecen / regresan, la lista
+    completa en Details, los ficheros en riesgo marcados) para que confirmes con datos,
+    no a ciegas.
+
+  **Fija un fichero** (doble clic en él, o *Pin a file…*) para seguir UN fichero a
+  través del tiempo: el raíl pasa a ser sus versiones (tiempos relativos, tipos con
+  color: sellado / snapshot / autosnap — el tooltip explica cada uno). El campo de
+  búsqueda cuenta un texto en todas las versiones y resalta dónde apareció, cambió o
+  desapareció ("¿cuándo cambió esta función?"). **Save a copy…** escribe la versión
+  elegida en un fichero NUEVO (sugerido `nombre (fecha).ext`) — recuperar una versión
+  vieja con otro nombre, sin sobrescribir nada. **Restore file** revierte el fichero
+  entero; **Restore hunks…** abre un selector donde marcas solo los bloques cambiados
+  que quieres recuperar (solo ficheros de texto), conservando el resto de tus ediciones
+  actuales — la restauración parcial también queda capturada como snapshot.
 - **Log** — eventos, lo más nuevo arriba y actualizándose en vivo (sin refresco manual);
   filtrables por repo / acción / nivel / texto, incluido el detalle DEBUG del log de fichero.
 - **Settings** — el formulario amable: ritmos (cadencia de snapshot, más un selector de
@@ -169,30 +191,6 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
   modo de relevo, seguir-rama), mensajes de IA, tema (claro/oscuro/auto), ruta de pandoc,
   nivel de log. Edita los defaults globales; *Save and restart* para aplicar.
 - **Advanced (YAML)** — el editor del `config.yaml` crudo, para overrides por repo y comentarios.
-
-El diálogo de **File history** muestra a la izquierda el **árbol de ficheros** del repo
-(`.git` oculto) — clic en cualquier fichero para ver sus versiones (tiempos relativos y
-tipos con color: sellado / snapshot / autosnap — el tooltip explica cada uno) y un diff con
-tema frente al fichero actual, con los tramos cambiados **resaltados dentro de cada
-línea**. El campo de búsqueda cuenta un texto en todas las versiones y resalta dónde
-apareció, cambió o desapareció ("¿cuándo cambió esta función?"). **Save a copy…**
-escribe la versión elegida en un fichero NUEVO (sugerido `nombre (fecha).ext`) —
-recuperar una versión vieja con otro nombre, sin sobrescribir nada. **Restore this file**
-revierte el fichero entero; **Restore hunks…** abre un selector donde marcas solo los
-bloques cambiados que quieres recuperar (solo ficheros de texto) y conservas el resto de
-tus ediciones actuales — la restauración parcial también queda capturada como snapshot.
-**Restore ENTIRE repo…** calcula primero una **vista previa** de qué cambiaría exactamente
-(cuántos ficheros vuelven atrás / desaparecen / regresan, la lista completa en Details, y
-los ficheros en riesgo marcados) para que confirmes con datos, no a ciegas.
-
-El diálogo **Time machine** es el mismo historial navegado al revés: a la izquierda la
-**línea temporal de versiones** del repo (sellados, snapshots, autosnaps fetcheados);
-eliges un punto y la derecha lista **todos los ficheros que difieren del presente**, cada
-uno con su checkbox y su acción (*revert* / *delete* / *recreate*), más el diff del
-fichero pulsado (**unificado o side-by-side**). **Restore selected (N)** recupera el
-conjunto marcado en UN paso atómico, capturado como un único snapshot (reversible, como
-siempre). Los ficheros cuyo contenido actual los snapshots no pueden capturar aparecen
-con ⚠ y no se pueden seleccionar.
 
 El **color del icono de bandeja** refleja el estado: verde = activo, ámbar = pausado, rojo =
 conflicto (te necesita), gris = parado. El menú de bandeja tiene además Pause/Resume, Sync now,
@@ -207,16 +205,16 @@ Seal now, Quit.
 | **Añadir un repo** | Panel → Status → *Add repo…* (o edita `repos:` en la config y *Save and restart*). |
 | **Cambiar la config de UN repo** | Selecciónalo → *Properties…* (rama, ritmos, sync, filtros como formulario). O edita su entrada en Advanced (YAML). |
 | **Quitar un repo de SincroGit** | *Properties…* → *Remove repo…* (solo la config; el repo git del disco no se toca). |
-| **Recuperar una versión anterior de un fichero** | Panel → *File history…* → elige el fichero → elige versión → *Restore this file*. O `--history FILE`. |
-| **Recuperar una versión vieja SIN sobrescribir** | *File history…* (o *Time machine…*) → elige la versión → *Save a copy…* → dale otro nombre. |
-| **Saber cuándo apareció/desapareció un texto** | *File history…* → elige el fichero → escribe el texto → *Find* (las transiciones se resaltan en azul). |
-| **Recuperar VARIOS ficheros a la vez** | Panel → *Time machine…* → elige una versión → marca los ficheros → *Restore selected*. |
+| **Recuperar una versión anterior de un fichero** | Panel → *Time machine* → fija el fichero (doble clic) → elige versión → *Restore file*. O `--history FILE`. |
+| **Recuperar una versión vieja SIN sobrescribir** | *Time machine* → elige la versión → *Save a copy…* → dale otro nombre. |
+| **Saber cuándo apareció/desapareció un texto** | *Time machine* → fija el fichero → escribe el texto → *Find* (las transiciones se resaltan). |
+| **Recuperar VARIOS ficheros a la vez** | Panel → *Time machine* → *vs today* → elige un estado → marca los ficheros → *Restore selected*. |
 | **Comprobar que todo el montaje está sano** | `python -m sincrogit --doctor` (git, remotos, credenciales, pandoc, IA, demonio). |
 | **Ver si mis otras máquinas se respaldan** | Panel → *Machines…* (los espejos rancios salen en rojo; *Fetch latest* refresca). |
-| **Revertir el repo entero** | Panel → *File history…* → *Restore ENTIRE repo…* a un punto elegido (con vista previa de qué cambia). |
+| **Revertir el repo entero** | Panel → *Time machine* → elige un estado → *Restore ENTIRE repo…* (con vista previa de qué cambia). |
 | **Hacer un commit limpio y documentado ya** | Botón **Commit…** del repo, o `--commit REPO`. |
 | **Llevar mi trabajo a otra máquina** | Solo **bloquea la pantalla / cierra la tapa** — SincroGit vuelca; en la otra, desbloquea y sincroniza. O **Smart Commit** antes de irte para un relevo instantáneo. |
-| **Recuperar tras un disco muerto** | En otra máquina: `--autosnaps` (o panel → *File history…* → *Fetch autosnaps (other machines)…*), luego restaura. Pierdes ≤30 min. |
+| **Recuperar tras un disco muerto** | En otra máquina: `--autosnaps` (o panel → *Time machine* → *Fetch autosnaps*), luego restaura. Pierdes ≤30 min. |
 | **Un corte de luz dejó git diciendo "branch broken"** | Nada — arranca SincroGit. Detecta la ref zeroed y la restaura desde el reflog al arrancar (verás un aviso "repair" en el Log). |
 | **Dejar de escribir commits automáticos (purista)** | Pon `seal_interval_min: inf`; commitea a mano con Smart Commit. |
 | **Trabajar en una feature branch (equipo)** | Pon `track_current_branch: true`, trabaja en tu rama, Smart Commit → Pull Request. Ver [LEAME → Usar en equipo](LEAME.md#usar-sincrogit-en-equipo-repos-compartidos). |

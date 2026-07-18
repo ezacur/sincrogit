@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from .history_dialog import _ago, _fmt
+from .time_machine_tab import _ago, _fmt
 
 # Freshness buckets by mirror age (tooltips carry the exact stamp).
 _FRESH_H, _STALE_H = 2, 48

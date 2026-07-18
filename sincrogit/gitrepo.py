@@ -1258,9 +1258,11 @@ class GitRepo:
         return out
 
     def snapshot_timeline(self, branch: str = "main", limit: int = 200) -> list:
-        """Per-state change lists for the Timeline tab, newest first. Each item:
-        {sha, parent, epoch, subject, kind ('snapshot' | 'seal'), files:
-        [(status, path, adds, dels)]} — adds/dels are ints, or None for binary.
+        """Per-state change lists for the Time machine tab, newest first. Each
+        item: {sha, parent, epoch, subject, kind ('snapshot' | 'seal' |
+        'autosnap'), files: [(status, path, adds, dels)]} — adds/dels are ints,
+        or None for binary. Autosnap entries (other machines' fetched mirrors,
+        this branch only) also carry "host".
 
         Same two walks as file_history (the live shadow chain + its reflog,
         both bounded), each run twice: --name-status for the A/M/D letter and
@@ -1320,6 +1322,37 @@ class GitRepo:
                                          int(d) if d.isdigit() else None)
             for f in e["files"]:
                 f[2], f[3] = counts.get(f[1], (None, None))
+
+        # Other machines' fetched mirrors (recovery points) belong on the same
+        # axis. Each is one commit; its file list is its diff vs its parent —
+        # the same meaning as every other entry. A handful of refs at most, so
+        # the two extra git calls per ref are cheap.
+        for r in self.list_autosnap_refs():
+            sha = r["sha"]
+            if r["branch"] != branch or sha in entries:
+                continue
+            files = {}
+            res = self._run(["log", "-1", "--no-renames", "--name-status",
+                             "--format=", sha], check=False)
+            for ln in res.stdout.splitlines():
+                parts = ln.split("\t")
+                if len(parts) >= 2 and parts[0].strip():
+                    files[parts[-1]] = [parts[0][:1], parts[-1], None, None]
+            res = self._run(["log", "-1", "--no-renames", "--numstat",
+                             "--format=", sha], check=False)
+            for ln in res.stdout.splitlines():
+                parts = ln.split("\t")
+                if len(parts) >= 3 and parts[-1] in files:
+                    a, d = parts[0], parts[1]
+                    files[parts[-1]][2] = int(a) if a.isdigit() else None
+                    files[parts[-1]][3] = int(d) if d.isdigit() else None
+            parent = self._run(["rev-parse", "--verify", "--quiet", f"{sha}^"],
+                               check=False).stdout.strip()
+            entries[sha] = {
+                "sha": sha, "parent": parent, "epoch": r["epoch"],
+                "subject": f"autosnap: {r['host']}", "kind": "autosnap",
+                "host": r["host"], "files": list(files.values()),
+            }
 
         out = sorted(entries.values(), key=lambda e: e["epoch"], reverse=True)
         for e in out:

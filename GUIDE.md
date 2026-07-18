@@ -62,7 +62,7 @@ min. And a **Smart Commit** before you go is always instant.)
 > [README](README.md#cross-machine-handoff-live-wip)).
 
 > 🔥 **What if the desktop actually dies?** That's what the cloud copy is for: on the
-> laptop, *File history… → "Fetch autosnaps (other machines)…"* recovers your latest state (up to ~30 min old).
+> laptop, *Time machine → "Fetch autosnaps"* recovers your latest state (up to ~30 min old).
 
 ## ✨ Taking control: the manual commit (Smart Commit)
 
@@ -84,7 +84,7 @@ Being lazy doesn't mean you don't do important things. Say you just finished som
 You deleted a vital function, saved out of reflex (`Ctrl+S`)… and then realize the
 disaster. Don't panic.
 
-1. Open the panel → **"File history…"**.
+1. Open the panel → the **Time machine** tab.
 2. Pick the file you messed up.
 3. You'll see **all** its versions (including the secret drafts from 15 min ago), with a
    **red/green diff** against how it is now.

@@ -140,21 +140,43 @@ Open it from the tray icon (double-click) or *Open control panel*.
     `live_handoff: ask` mode). Shows what it will do (which machine, how old) before applying.
   - **How to fix…** — appears when a repo is paused on a conflict: explains what happened
     (the rebase was aborted; your files are intact) and what to do, with an *Open folder* button.
-  - Top bar: **File history…** (pick a FILE, browse its versions), **Time machine…**
-    (pick a VERSION, see every file that differs, restore a selected set),
-    **Machines…** (each machine's last autosnap mirror, freshness color-coded — spot a
-    machine that stopped backing itself up, and *Fetch latest* to refresh) and **Add
-    repo…** (optionally drops a `* text=auto` `.gitattributes`; you can also paste a
-    **remote URL** and **Verify** it — reachability plus a dry-run push for write access —
-    before adding, so push/pull/sync work from the start).
-  - Right-click a repo row for **Open folder / File history / Time machine / Properties**.
+  - Top bar: **Time machine…** (jumps to the Time machine tab focused on this repo —
+    the repo's whole past lives there), **Machines…** (each machine's last autosnap
+    mirror, freshness color-coded — spot a machine that stopped backing itself up, and
+    *Fetch latest* to refresh) and **Add repo…** (optionally drops a `* text=auto`
+    `.gitattributes`; you can also paste a **remote URL** and **Verify** it —
+    reachability plus a dry-run push for write access — before adding, so
+    push/pull/sync work from the start).
+  - Right-click a repo row for **Open folder / Time machine / Properties**.
   - A one-line **activity digest** under the action bar: today's snapshot / seal /
     push / pull counts (the Log has the detail; this is the glance).
-- **Timeline** — the snapshots the Log deliberately doesn't list, one card each: per
-  repo, a day-grouped timeline of every ~5-min snapshot and every seal, with the files
-  each one captured (status and +/− line counts) and, per file, the **colored diff** of
-  exactly what that snapshot saved. It refreshes itself as new snapshots land; *Seals
-  only* filters the cards down to the permanent commits.
+- **Time machine** — every view of the repo's past, in one grid. The left rail lists
+  the states day by day — every ~5-min snapshot, every seal and (after *Fetch
+  autosnaps*) your other machines' mirrors, color-coded — and refreshes itself as new
+  snapshots land (*Seals only* trims the rail to the permanent commits). The
+  **Compare** switch decides the question the right side answers:
+  - *what changed then* (default): the files that state captured (status and +/− line
+    counts) and, per file, the **colored diff** of exactly what that snapshot saved.
+  - *vs today*: **every file that differs from the present** at that state, each with
+    a checkbox and its action (*revert* / *delete* / *recreate*), plus the clicked
+    file's diff (**unified or side-by-side**, with intra-line highlights). **Restore
+    selected (N)** brings the checked set back in ONE atomic step, captured as a
+    single snapshot (reversible, as always); files whose current content snapshots
+    can't capture show ⚠ and can't be selected. **Restore ENTIRE repo…** first
+    computes a **preview** of exactly what would change (how many files revert /
+    disappear / come back, the full list under Details, any at-risk files flagged) so
+    you confirm on facts, not on faith.
+
+  **Pin a file** (double-click it in the list, or *Pin a file…*) to follow ONE file
+  through time: the rail becomes that file's versions (relative times, color-coded
+  types: sealed / snapshot / autosnap — hover for what each means). The search box
+  counts a text across every version and highlights where it appeared, changed or
+  vanished ("when did this function change?"). **Save a copy…** writes the selected
+  version to a NEW file (suggested `name (stamp).ext`) — recover an old version under
+  another name, overwriting nothing. **Restore file** rolls the whole file back;
+  **Restore hunks…** opens a picker where you tick only the changed blocks you want
+  back (text files only), keeping the rest of your current edits — the partial
+  restore is captured as a snapshot too.
 - **Log** — events, newest first and updating live (no refresh needed); filterable by
   repo / action / level / text, including the DEBUG detail the file log gets.
 - **Settings** — the friendly form: rhythms (snapshot cadence, plus a **Permanent history**
@@ -163,28 +185,6 @@ Open it from the tray icon (double-click) or *Open control panel*.
   backup & sync (autosnap, handoff mode, follow-branch), AI messages, theme (light/dark/auto),
   pandoc path, log level. Edits the global defaults; *Save and restart* to apply.
 - **Advanced (YAML)** — the raw `config.yaml` editor, for per-repo overrides and comments.
-
-The **File history** dialog shows the repo's **file tree** on the left (`.git` hidden) —
-click any file to see its versions (with relative times and color-coded types:
-sealed / snapshot / autosnap — hover for what each means) and a themed diff against the
-current file, with the changed spans **highlighted inside each line**. The search box
-counts a text across every version and highlights where it appeared, changed or
-vanished ("when did this function change?"). **Save a copy…** writes the selected
-version to a NEW file (suggested `name (stamp).ext`) — recover an old version under
-another name, overwriting nothing. **Restore this file** rolls the whole file back;
-**Restore hunks…** opens a picker where you tick only the changed blocks you want back
-(text files only) and keep the rest of your current edits — the partial restore is
-captured as a snapshot too. **Restore ENTIRE repo…** first computes a **preview** of
-exactly what would change (how many files revert / disappear / come back, the full list
-under Details, and any at-risk files flagged) so you confirm on facts, not on faith.
-
-The **Time machine** dialog is the same history navigated the other way around: the
-repo's **version timeline** on the left (seals, snapshots, fetched autosnaps); pick a
-point and the right side lists **every file that differs from the present**, each with a
-checkbox and its action (*revert* / *delete* / *recreate*), plus a diff of the clicked
-file (**unified or side-by-side**). **Restore selected (N)** brings the checked set back
-in ONE atomic step, captured as a single snapshot (reversible, as always). Files whose
-current content snapshots can't capture show ⚠ and can't be selected.
 
 The **tray icon colour** reflects state: green = active, amber = paused, red = conflict
 (needs you), gray = stopped. The tray menu also has Pause/Resume, Sync now, Seal now, Quit.
@@ -198,16 +198,16 @@ The **tray icon colour** reflects state: green = active, amber = paused, red = c
 | **Add a repo** | Panel → Status → *Add repo…* (or edit `repos:` in the config and *Save and restart*). |
 | **Change ONE repo's settings** | Select it → *Properties…* (branch, rhythms, sync, filters as a form). Or edit its entry in Advanced (YAML). |
 | **Remove a repo from SincroGit** | *Properties…* → *Remove repo…* (config only; the git repo on disk is untouched). |
-| **Get back an earlier version of a file** | Panel → *File history…* → pick the file → pick a version → *Restore this file*. Or `--history FILE`. |
-| **Recover an old version WITHOUT overwriting** | *File history…* (or *Time machine…*) → pick the version → *Save a copy…* → give it another name. |
-| **Find when a text appeared/vanished** | *File history…* → pick the file → type the text → *Find* (transitions highlighted in blue). |
-| **Get back SEVERAL files at once** | Panel → *Time machine…* → pick a version → check the files → *Restore selected*. |
+| **Get back an earlier version of a file** | Panel → *Time machine* → pin the file (double-click it) → pick a version → *Restore file*. Or `--history FILE`. |
+| **Recover an old version WITHOUT overwriting** | *Time machine* → pick the version → *Save a copy…* → give it another name. |
+| **Find when a text appeared/vanished** | *Time machine* → pin the file → type the text → *Find* (transitions highlighted). |
+| **Get back SEVERAL files at once** | Panel → *Time machine* → *vs today* → pick a state → check the files → *Restore selected*. |
 | **Check the whole setup is healthy** | `python -m sincrogit --doctor` (git, remotes, credentials, pandoc, AI, daemon). |
 | **See if my other machines are backing up** | Panel → *Machines…* (stale mirrors show in red; *Fetch latest* refreshes). |
-| **Roll the whole repo back** | Panel → *File history…* → *Restore ENTIRE repo…* to a chosen point (with a preview of what changes). |
+| **Roll the whole repo back** | Panel → *Time machine* → pick a state → *Restore ENTIRE repo…* (with a preview of what changes). |
 | **Make a clean, documented commit now** | Per-repo **Commit…** button, or `--commit REPO`. |
 | **Move my work to another machine** | Just **lock the screen / close the lid** — SincroGit flushes; on the other machine, unlock and it syncs. Or **Smart Commit** before leaving for an instant handoff. |
-| **Recover after a dead disk** | On another machine: `--autosnaps` (or panel → *File history…* → *Fetch autosnaps (other machines)…*), then restore. Loses at most ~30 min. |
+| **Recover after a dead disk** | On another machine: `--autosnaps` (or panel → *Time machine* → *Fetch autosnaps*), then restore. Loses at most ~30 min. |
 | **Power cut left git saying "branch broken"** | Nothing — just start SincroGit. It detects the zeroed ref and restores it from the reflog at startup (a "repair" warning shows in the Log). |
 | **Stop writing automatic commits (purist)** | Set `seal_interval_min: inf`; commit by hand with Smart Commit. |
 | **Work on a feature branch (team)** | Set `track_current_branch: true`, work on your own branch, Smart Commit → Pull Request. See [README → Using it in a team](README.md#using-it-in-a-team-shared-repos). |

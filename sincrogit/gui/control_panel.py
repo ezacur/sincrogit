@@ -49,13 +49,11 @@ from PyQt5.QtWidgets import (
 from .. import __version__
 from ..events import ACTIONS
 from .add_repo_dialog import AddRepoDialog
-from .history_dialog import HistoryDialog
-from .timeline_tab import TimelineTab
 from .machines_dialog import MachinesDialog
 from .repo_properties_dialog import RepoPropertiesDialog
 from .settings_tab import SettingsTab
 from .smart_commit_dialog import SmartCommitDialog
-from .time_machine_dialog import TimeMachineDialog
+from .time_machine_tab import TimeMachineTab
 
 _LEVEL_COLOR = {
     "DEBUG": QColor("#8a929c"),    # muted: high-volume detail (filtered files, ...)
@@ -137,8 +135,9 @@ class ControlPanel(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
         self.tabs.addTab(self._build_status_tab(), "Status")
-        self.timeline = TimelineTab(self.c)
-        self.tabs.addTab(self.timeline, "Timeline")
+        self.timeline = TimeMachineTab(self.c)  # attribute name kept: the
+        # event hook (append_event -> notice_event) predates the unification.
+        self.tabs.addTab(self.timeline, "Time machine")
         self.tabs.addTab(self._build_log_tab(), "Log")
         self.tabs.addTab(SettingsTab(self.c), "Settings")
         self.tabs.addTab(self._build_config_tab(), "Advanced (YAML)")
@@ -173,13 +172,10 @@ class ControlPanel(QMainWindow):
         f.setBold(True)
         self.lbl_state.setFont(f)
         top.addWidget(self.lbl_state, 1)
-        btn_history = QPushButton("File history…")
-        btn_history.setToolTip("Pick a FILE and browse its versions")
-        btn_history.clicked.connect(self._open_history)
         btn_time = QPushButton("Time machine…")
-        btn_time.setToolTip("Pick a VERSION, see every file that differs, and "
-                            "restore a selected set")
-        btn_time.clicked.connect(self._open_time_machine)
+        btn_time.setToolTip("This repo's past: snapshots, seals and mirrors, "
+                            "per-file diffs, search, and every restore")
+        btn_time.clicked.connect(lambda: self._goto_time_machine(self._selected_repo()))
         btn_machines = QPushButton("Machines…")
         btn_machines.setToolTip("Each machine's last autosnap mirror — your "
                                 "recovery points, and who's gone stale")
@@ -188,7 +184,7 @@ class ControlPanel(QMainWindow):
         btn_add.clicked.connect(self._open_add_repo)
         self.btn_pause = QPushButton("Pause all")
         self.btn_pause.clicked.connect(self._toggle_pause)
-        for b in (btn_history, btn_time, btn_machines, btn_add, self.btn_pause):
+        for b in (btn_time, btn_machines, btn_add, self.btn_pause):
             top.addWidget(b)
         v.addLayout(top)
 
@@ -208,7 +204,8 @@ class ControlPanel(QMainWindow):
         self.tbl_repos.setShowGrid(False)
         self.tbl_repos.verticalHeader().setDefaultSectionSize(34)  # row breathing room
         self.tbl_repos.itemSelectionChanged.connect(self._sync_action_bar)
-        self.tbl_repos.doubleClicked.connect(lambda _i: self._open_history())
+        self.tbl_repos.doubleClicked.connect(
+            lambda _i: self._goto_time_machine(self._selected_repo()))
         self.tbl_repos.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tbl_repos.customContextMenuRequested.connect(self._repo_context_menu)
         v.addWidget(self.tbl_repos)
@@ -518,19 +515,17 @@ class ControlPanel(QMainWindow):
             return
         menu = QMenu(self)
         act_open = menu.addAction("Open folder")
-        act_hist = menu.addAction("File history…")
         act_time = menu.addAction("Time machine…")
         act_props = menu.addAction("Properties…")
         chosen = menu.exec_(self.tbl_repos.viewport().mapToGlobal(pos))
+        menu.deleteLater()
         if chosen is act_open:
             try:
                 os.startfile(r["path"])
             except OSError:
                 pass
-        elif chosen is act_hist:
-            self._open_history()
         elif chosen is act_time:
-            self._open_time_machine()
+            self._goto_time_machine(name)
         elif chosen is act_props:
             self._open_repo_properties(name)
 
@@ -541,21 +536,11 @@ class ControlPanel(QMainWindow):
         if accepted:
             self.refresh_status()
 
-    def _open_history(self):
-        row = self.tbl_repos.currentRow()
-        preselect = None
-        if row >= 0 and self.tbl_repos.item(row, 0):
-            preselect = self.tbl_repos.item(row, 0).text()
-        dlg = HistoryDialog(self.c, parent=self, preselect_repo=preselect)
-        dlg.exec_()
-        dlg.deleteLater()  # also frees its QFileSystemModel watching the tree
-
-    def _open_time_machine(self):
-        preselect = self._selected_repo() or None
-        dlg = TimeMachineDialog(self.c, parent=self, preselect_repo=preselect)
-        dlg.exec_()
-        dlg.deleteLater()
-        self.refresh_status()
+    def _goto_time_machine(self, name=None, pin=None):
+        """Jump to the Time machine tab, focused on `name` (and optionally with
+        a file pinned) — the one place every view of the past now lives."""
+        self.timeline.focus_repo(name or self._selected_repo() or None, pin)
+        self.tabs.setCurrentWidget(self.timeline)
 
     def _open_machines(self):
         dlg = MachinesDialog(self.c, parent=self)
@@ -623,7 +608,10 @@ class ControlPanel(QMainWindow):
 
     def _passes_filter(self, ev) -> bool:
         repo_sel = self.cb_repo.currentText()
-        if repo_sel not in ("", "(all)") and ev.repo != repo_sel:
+        # GLOBAL events (repo == "": session lock/unlock, flush, pause, engine
+        # errors) concern every repo — hiding them under a repo filter made the
+        # OS-event flushes look like they never fired.
+        if repo_sel not in ("", "(all)") and ev.repo and ev.repo != repo_sel:
             return False
         act = self.cb_action.currentText()
         if act != "(all)" and ev.action != act:

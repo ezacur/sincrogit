@@ -169,3 +169,18 @@ def test_search_filter_is_debounced(panel, qspin):
     p.ed_search.setText("zzz-matches-nothing")
     assert p._search_debounce.isActive()   # not rebuilt on the keystroke itself
     assert qspin(lambda: "0 event(s) match" in p.lbl_log_count.text())
+
+
+def test_global_events_pass_any_repo_filter(panel, qspin):
+    """Session lock/unlock, flushes and engine errors carry repo == "" — they
+    must stay visible even when the Log is filtered to one repo (hiding them
+    made the OS-event flushes look like they never fired)."""
+    _, p = panel
+    _goto_log_tab(p)
+    p.cb_repo.addItem("t")
+    p.cb_repo.setCurrentText("t")              # filter to one repo
+    ev = types.SimpleNamespace(ts=time.time(), repo="", action="flush",
+                               level="INFO", message="machine lock: flushing")
+    assert p._passes_filter(ev)                # global event survives the filter
+    p.append_event(ev)
+    assert p.tbl_log.item(0, 4).text().startswith("machine lock")

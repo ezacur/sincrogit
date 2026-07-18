@@ -321,3 +321,14 @@ def test_sync_soon_keeps_disabled_interval_disabled(make_repo, make_engine):
     before = st.last_pull_mono
     eng.sync_soon()
     assert st.last_pull_mono == before
+
+
+def test_flush_now_emits_per_repo_snapshot_event(make_repo, make_engine):
+    """The lock/suspend flush snapshots silently before this: the Log showed no
+    'snapshot' line for the very event the OS hook exists to guarantee."""
+    repo = make_repo()
+    eng, events = make_engine(repo)
+    write(repo, "a.txt", "edited before locking\n")
+    eng.flush_now(wait=True)
+    assert any(r == "t" and a == "snapshot" and "leaving machine" in m
+               for r, a, _l, m in events)
