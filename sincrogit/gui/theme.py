@@ -308,6 +308,17 @@ QScrollBar::add-page, QScrollBar::sub-page {{
     background: transparent;
 }}
 
+/* ---------------------------------------------------- busy indicator */
+QProgressBar[cssClass="busy"] {{
+    background: {p['sunken']};
+    border: none;
+    border-radius: 2px;
+}}
+QProgressBar[cssClass="busy"]::chunk {{
+    background: {p['accent']};
+    border-radius: 2px;
+}}
+
 /* ---------------------------------------------------------------- misc */
 QSplitter::handle {{
     background: {p['border']};

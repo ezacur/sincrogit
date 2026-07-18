@@ -24,11 +24,13 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
+    QApplication,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -484,8 +486,22 @@ class ControlPanel(QMainWindow):
             self.c.pause_all()
         self.refresh_status()
 
+    @staticmethod
+    @contextmanager
+    def _wait_cursor():
+        """Show the busy cursor while a modal dialog is being CONSTRUCTED — its
+        __init__ may read config or dispatch its first worker, a brief gap where
+        a click otherwise looks ignored. Once the dialog is up, its own BusyBar
+        takes over. Always restored, even if construction raises."""
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            yield
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def _open_add_repo(self):
-        dlg = AddRepoDialog(self.c, parent=self)
+        with self._wait_cursor():
+            dlg = AddRepoDialog(self.c, parent=self)
         accepted = dlg.exec_()
         dlg.deleteLater()
         if accepted:
@@ -494,7 +510,8 @@ class ControlPanel(QMainWindow):
     def _open_repo_properties(self, name):
         if not name:
             return
-        dlg = RepoPropertiesDialog(self.c, name, parent=self)
+        with self._wait_cursor():
+            dlg = RepoPropertiesDialog(self.c, name, parent=self)
         dlg.exec_()
         dlg.deleteLater()
         self.refresh_status()
@@ -530,7 +547,8 @@ class ControlPanel(QMainWindow):
             self._open_repo_properties(name)
 
     def _open_smart_commit(self, name):
-        dlg = SmartCommitDialog(self.c, name, parent=self)
+        with self._wait_cursor():
+            dlg = SmartCommitDialog(self.c, name, parent=self)
         accepted = dlg.exec_()
         dlg.deleteLater()
         if accepted:
@@ -543,7 +561,8 @@ class ControlPanel(QMainWindow):
         self.tabs.setCurrentWidget(self.timeline)
 
     def _open_machines(self):
-        dlg = MachinesDialog(self.c, parent=self)
+        with self._wait_cursor():
+            dlg = MachinesDialog(self.c, parent=self)
         dlg.exec_()
         dlg.deleteLater()
 

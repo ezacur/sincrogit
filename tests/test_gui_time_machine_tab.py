@@ -300,3 +300,25 @@ def test_notice_event_refreshes_only_matching_repo(tab, qspin):
     assert t._stale and not t._debounce.isActive()
     t.notice_event(Ev("t", "snapshot"))
     assert t._debounce.isActive()
+
+
+# ------------------------------------------------------- busy indicator wiring
+def test_busy_bar_shows_during_load_and_hides_after(tab, qspin):
+    """The rail load runs on a worker: the bar must be visible while it runs
+    (start() is synchronous on dispatch) and gone once the result lands."""
+    _, t, _ = tab
+    t._set_pin(None)                 # trigger a fresh reload
+    assert t.busy.active             # start() ran synchronously before the thread
+    assert qspin(lambda: not t.busy.active)   # stop() ran when the worker finished
+    assert not t.busy.isVisible()
+
+
+def test_busy_bar_covers_overlapping_workers(tab, qspin):
+    """Rail + diff can run at once: the ref count keeps the bar up until BOTH
+    finish, never flickering to idle between them."""
+    _, t, _ = tab
+    assert qspin(lambda: t.tbl_files.rowCount() == 2)   # initial load settled
+    t._set_pin("src/app.py")         # reload (rail) …
+    t._load_diff()                   # … and a diff, overlapping
+    assert t.busy.active
+    assert qspin(lambda: not t.busy.active)

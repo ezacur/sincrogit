@@ -31,6 +31,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from .busy import BusyBar
+
 
 class AddRepoDialog(QDialog):
     # Emitted from background threads; delivered on the GUI thread (queued).
@@ -116,6 +118,9 @@ class AddRepoDialog(QDialog):
             "Only existing git repos are accepted. Without a remote the repo is "
             "versioned locally only — no push/pull and no cross-machine sync."
         ))
+
+        self.busy = BusyBar()
+        v.addWidget(self.busy)
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -221,6 +226,7 @@ class AddRepoDialog(QDialog):
             return
         self.btn_verify.setEnabled(False)
         self._remote_msg("Checking reachability and push access…")
+        self.busy.start("Checking the remote (reachability + push access)…")
         threading.Thread(
             target=self._do_verify_remote,
             args=(path, url, self.ed_branch.text().strip() or "main"),
@@ -238,6 +244,7 @@ class AddRepoDialog(QDialog):
             pass  # dialog closed while verifying
 
     def _on_remote_verified(self, ok, msg):
+        self.busy.stop()
         self.btn_verify.setEnabled(True)
         self._remote_ok = ok
         self._remote_msg(msg, ok=ok)
@@ -252,6 +259,7 @@ class AddRepoDialog(QDialog):
         # live, .gitattributes) which on a slow drive would otherwise let the
         # user click Add twice.
         self.btn_add.setEnabled(False)
+        self.busy.start("Adding the repo…")
         threading.Thread(
             target=self._do_add,
             args=(path, self.ed_branch.text().strip() or "main",
@@ -281,6 +289,7 @@ class AddRepoDialog(QDialog):
             pass  # dialog closed while adding
 
     def _on_added(self, ok, msg):
+        self.busy.stop()
         self.btn_add.setEnabled(True)
         if ok:
             QMessageBox.information(self, "Add repo", "Repo added.")

@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from .busy import BusyBar
 from .time_machine_tab import _ago, _fmt
 
 # Freshness buckets by mirror age (tooltips carry the exact stamp).
@@ -68,6 +69,9 @@ class MachinesDialog(QDialog):
         self.tbl.verticalHeader().setVisible(False)
         v.addWidget(self.tbl, 1)
 
+        self.busy = BusyBar()
+        v.addWidget(self.busy)
+
         row = QHBoxLayout()
         self.lbl_info = QLabel()
         self.lbl_info.setProperty("cssClass", "muted")
@@ -97,6 +101,7 @@ class MachinesDialog(QDialog):
         gen = self._gen
         names = [name for name, _ in self.c.repo_list()]
         self.lbl_info.setText("Reading local mirrors…")
+        self.busy.start("Reading local mirrors…")
 
         def work():
             rows = []
@@ -115,6 +120,7 @@ class MachinesDialog(QDialog):
                          daemon=True).start()
 
     def _on_rows_ready(self, gen, rows):
+        self.busy.stop()
         if gen != self._gen:
             return  # a newer reload superseded this one
         me = self.c.this_host()
@@ -144,6 +150,7 @@ class MachinesDialog(QDialog):
     def _fetch(self):
         self.btn_fetch.setEnabled(False)
         self.lbl_info.setText("Fetching mirrors from the remotes…")
+        self.busy.start("Fetching mirrors from the remotes…")
         names = [name for name, _ in self.c.repo_list()]
         threading.Thread(target=self._do_fetch, args=(names,),
                          name="sincrogit-machines-fetch", daemon=True).start()
@@ -162,6 +169,7 @@ class MachinesDialog(QDialog):
             pass  # dialog closed while fetching
 
     def _on_fetch_done(self, ok, total):
+        self.busy.stop()
         self.btn_fetch.setEnabled(True)
         extra = "" if ok == total else f"  ({total - ok} repo(s) unreachable)"
         self._note = f" — refreshed{extra}"  # appended when the async reload lands

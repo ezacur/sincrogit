@@ -49,6 +49,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from .busy import BusyBar
 from .diff import diff_html, diff_html_sbs
 
 ROLE_ENTRY = Qt.UserRole        # the state/version dict (None on day headers)
@@ -409,6 +410,12 @@ class TimeMachineTab(QWidget):
         split.setStretchFactor(1, 1)
         v.addWidget(split, 1)
 
+        # A visible "working…" bar: this tab runs the rail load and a file diff
+        # (and more) on workers CONCURRENTLY, so the ref-counted BusyBar is
+        # exactly right — it stays up until the last worker of a burst finishes.
+        self.busy = BusyBar()
+        v.addWidget(self.busy)
+
         # ------------------------------------------------------ action row
         act = QHBoxLayout()
         self.lbl_info = QLabel("")
@@ -607,9 +614,12 @@ class TimeMachineTab(QWidget):
             except RuntimeError:
                 pass  # tab destroyed while loading
 
+        self.busy.start("Loading the file's versions…" if pinned
+                        else "Loading the timeline…")
         threading.Thread(target=work, name="sincrogit-tm-when", daemon=True).start()
 
     def _on_timeline_loaded(self, gen, entries):
+        self.busy.stop()  # unconditional: one dispatch fired exactly one handler
         if gen != self._gen or self._pinned:
             return
         self._cache = entries
@@ -623,6 +633,7 @@ class TimeMachineTab(QWidget):
         self._render()
 
     def _on_versions_loaded(self, gen, rel, versions):
+        self.busy.stop()  # unconditional (see _on_timeline_loaded)
         if gen != self._gen or rel != self._pinned:
             return
         # Normalize to card dicts (kind from source; no per-state file list).
@@ -748,9 +759,11 @@ class TimeMachineTab(QWidget):
             except RuntimeError:
                 pass  # tab destroyed while comparing
 
+        self.busy.start("Comparing with the current state…")
         threading.Thread(target=work, name="sincrogit-tm-today", daemon=True).start()
 
     def _on_today_ready(self, gen, ok, payload, sha):
+        self.busy.stop()
         e = self._selected_entry()
         if gen != self._files_gen or not e or e["sha"] != sha:
             return  # a newer selection superseded this computation
@@ -847,6 +860,8 @@ class TimeMachineTab(QWidget):
         self._diff_gen += 1
         gen = self._diff_gen
         pinned, m = self._pinned, mode
+        self.diff.setPlainText("Loading the diff…")  # the pane no longer shows stale content
+        self.busy.start("Loading the diff…")
 
         def work():
             try:
@@ -894,6 +909,7 @@ class TimeMachineTab(QWidget):
         threading.Thread(target=work, name="sincrogit-tm-diff", daemon=True).start()
 
     def _on_diff_ready(self, gen, html):
+        self.busy.stop()
         if gen != self._diff_gen:
             return  # the user already picked another file/state
         if not html:
@@ -922,9 +938,11 @@ class TimeMachineTab(QWidget):
             except RuntimeError:
                 pass  # tab destroyed while searching
 
+        self.busy.start(f"Searching '{term}' across versions…")
         threading.Thread(target=work, name="sincrogit-tm-search", daemon=True).start()
 
     def _on_search_ready(self, rel, term, results):
+        self.busy.stop()
         self.btn_search.setEnabled(True)
         if rel != self._pinned:
             return  # the user unpinned / switched meanwhile
@@ -967,9 +985,11 @@ class TimeMachineTab(QWidget):
             except RuntimeError:
                 pass  # tab destroyed while fetching
 
+        self.busy.start("Fetching autosnaps from the remote…")
         threading.Thread(target=work, name="sincrogit-tm-fetch", daemon=True).start()
 
     def _on_fetch_done(self, ok, count, name, err):
+        self.busy.stop()
         self.btn_fetch.setEnabled(True)
         self.lbl_info.setText("")
         if not ok:
@@ -1039,6 +1059,7 @@ class TimeMachineTab(QWidget):
             return
         name, sha = self.cb_repo.currentText(), e["sha"]
         self.btn_saveas.setEnabled(False)
+        self.busy.start("Saving a copy…")
 
         def work():  # git show of a raw blob + write: seconds for a big binary
             try:
@@ -1053,6 +1074,7 @@ class TimeMachineTab(QWidget):
         threading.Thread(target=work, name="sincrogit-tm-export", daemon=True).start()
 
     def _on_export_done(self, ok, msg, dest):
+        self.busy.stop()
         self.btn_saveas.setEnabled(True)
         if ok:
             QMessageBox.information(self, "Save a copy", f"Saved to:\n{dest}")
@@ -1119,6 +1141,7 @@ class TimeMachineTab(QWidget):
         name, sha = self.cb_repo.currentText(), e["sha"]
         self.btn_restore_repo.setEnabled(False)
         self.lbl_info.setText("Computing what the restore would change…")
+        self.busy.start("Computing what the restore would change…")
 
         def work():
             try:
@@ -1133,6 +1156,7 @@ class TimeMachineTab(QWidget):
         threading.Thread(target=work, name="sincrogit-tm-preview", daemon=True).start()
 
     def _on_preview_ready(self, ok, payload, sha, when):
+        self.busy.stop()
         self.btn_restore_repo.setEnabled(True)
         self.lbl_info.setText("")
         if not ok:
@@ -1191,6 +1215,7 @@ class TimeMachineTab(QWidget):
                   self.btn_restore_repo, self.btn_hunks, self.btn_saveas):
             b.setEnabled(False)
         self.lbl_info.setText("Restoring…")
+        self.busy.start("Restoring…")
 
         def work():
             try:
@@ -1210,6 +1235,7 @@ class TimeMachineTab(QWidget):
         threading.Thread(target=work, name="sincrogit-tm-restore", daemon=True).start()
 
     def _on_restore_done(self, ok, msg):
+        self.busy.stop()
         self.lbl_info.setText("")
         self._sync_actions()
         if ok:

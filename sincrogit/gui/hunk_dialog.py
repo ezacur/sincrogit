@@ -27,6 +27,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from .busy import BusyBar
+
 _MONO = QFont("Consolas", 9)
 _PREVIEW_LINES = 12  # per hunk, so a huge block doesn't blow up the dialog
 
@@ -64,6 +66,9 @@ class HunkRestoreDialog(QDialog):
         self.area.setWidget(self._holder)
         v.addWidget(self.area, 1)
 
+        self.busy = BusyBar()
+        v.addWidget(self.busy)
+
         row = QHBoxLayout()
         self.lbl = QLabel("")
         self.lbl.setProperty("cssClass", "muted")
@@ -88,6 +93,7 @@ class HunkRestoreDialog(QDialog):
 
         self._loaded.connect(self._on_loaded)
         self._done.connect(self._on_done)
+        self.busy.start("Loading the changed blocks…")
         threading.Thread(target=self._do_load, name="sincrogit-hunks",
                          daemon=True).start()
 
@@ -103,6 +109,7 @@ class HunkRestoreDialog(QDialog):
             pass  # dialog closed while loading
 
     def _on_loaded(self, ok, payload):
+        self.busy.stop()
         # Clear the placeholder.
         while self._holder_v.count():
             item = self._holder_v.takeAt(0)
@@ -185,6 +192,7 @@ class HunkRestoreDialog(QDialog):
         self.btn_all.setEnabled(False)
         self.btn_none.setEnabled(False)
         self.lbl.setText("Restoring…")
+        self.busy.start("Restoring the selected blocks…")
         threading.Thread(
             target=self._do_restore, args=(selected, self._base),
             name="sincrogit-restore-hunks", daemon=True).start()
@@ -201,6 +209,7 @@ class HunkRestoreDialog(QDialog):
             pass  # dialog closed while restoring
 
     def _on_done(self, ok, msg):
+        self.busy.stop()
         if ok:
             QMessageBox.information(self, "Restore hunks", msg)
             self.accept()

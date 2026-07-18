@@ -22,6 +22,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from .busy import BusyBar
+
 
 class SmartCommitDialog(QDialog):
     # Emitted from background threads; delivered on the GUI thread (queued).
@@ -52,6 +54,9 @@ class SmartCommitDialog(QDialog):
         self.files_view.setMaximumHeight(140)
         v.addWidget(self.files_view)
 
+        self.busy = BusyBar()
+        v.addWidget(self.busy)
+
         row = QHBoxLayout()
         self.lbl = QLabel("Proposing a message…")
         row.addWidget(self.lbl, 1)
@@ -67,6 +72,9 @@ class SmartCommitDialog(QDialog):
 
         self._proposed.connect(self._on_proposed)
         self._committed.connect(self._on_committed)
+        # The AI proposal is the slowest thing in the app (Ollama: seconds): the
+        # bar makes the wait legible instead of a greyed-out box that looks hung.
+        self.busy.start("Proposing a commit message (AI)…")
         threading.Thread(target=self._do_propose, name="sincrogit-propose", daemon=True).start()
 
     # ----------------------------------------------------- propose (background)
@@ -81,6 +89,7 @@ class SmartCommitDialog(QDialog):
             pass  # dialog closed while loading
 
     def _on_proposed(self, ok, title, body, files):
+        self.busy.stop()
         if not ok:
             QMessageBox.information(self, "Smart Commit", files or "Nothing to commit.")
             self.reject()
@@ -103,6 +112,7 @@ class SmartCommitDialog(QDialog):
         self.btn_cancel.setEnabled(False)
         self.ed_msg.setEnabled(False)
         self.lbl.setText("Committing…")
+        self.busy.start("Sealing and pushing…")
         threading.Thread(target=self._do_commit, name="sincrogit-smartcommit", daemon=True).start()
 
     def _do_commit(self):
@@ -116,6 +126,7 @@ class SmartCommitDialog(QDialog):
             pass  # dialog closed while loading
 
     def _on_committed(self, ok, m):
+        self.busy.stop()
         if ok:
             self.accept()
             return

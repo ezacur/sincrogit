@@ -536,10 +536,24 @@ class TrayApp:
         threading.Thread(target=worker, name=f"sincrogit-{label}", daemon=True).start()
 
     def sync_now(self):
+        # A tray menu action with no visible acknowledgment reads as "nothing
+        # happened" — the work runs on a worker and only lands in the Log later.
+        # A balloon confirms the click; the per-repo results follow as events.
+        self._tray_ack("Syncing all repos", "Fetching and pushing in the background…")
         self._run_async(self.engine.sync_all_now, "sync")
 
     def seal_now(self):
+        self._tray_ack("Sealing all repos", "Committing and pushing in the background…")
         self._run_async(self.engine.seal_all_now, "seal")
+
+    def _tray_ack(self, title, body):
+        """Immediate acknowledgment of a tray-menu action (the work itself is
+        async and reports via events). Best-effort: a platform without balloon
+        support just skips it."""
+        try:
+            self.tray.showMessage(title, body, QSystemTrayIcon.Information, 3000)
+        except Exception:  # noqa: BLE001 — feedback is best-effort
+            pass
 
     def show_panel(self):
         self.panel.show()
