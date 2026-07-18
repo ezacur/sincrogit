@@ -2,24 +2,31 @@
 
 Tabbed window:
   - Status: repos table + an action bar for the selected repo.
+  - Timeline: per-repo snapshot timeline (its own tab module).
   - Log: events filterable by repo, action, level and text.
   - Settings: friendly form over the global defaults.
   - Advanced (YAML): raw config.yaml editor (save / save and restart).
 
 It talks to the app through a `controller` (duck-typed). What THIS window uses
 directly (per-repo dialogs it opens declare their own controller contracts):
-  status(), events_all(), app_state(), make_icon(state),
+  status(), events_all(), events_recent(), app_state(), make_icon(state),
   pause_all(), resume_all(), pause_repo(name), resume_repo(name),
   seal_repo_now(name), pull_repo_now(name), apply_handoff(name),
   config_path, config_text(), save_config(text)->(ok,msg), restart().
+
+Responsiveness contract: NOTHING on the GUI thread reads disk or spawns git.
+The full JSONL event history (megabytes on a long install) loads on a worker
+at construction; the Log table — the panel's most expensive redraw — is only
+rebuilt while its tab is the one being looked at (dirty-flag otherwise).
 """
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -108,13 +115,18 @@ def _fmt_time(epoch) -> str:
 
 
 class ControlPanel(QMainWindow):
+    # Full JSONL history, parsed on a worker thread -> delivered here (queued).
+    _history_loaded = pyqtSignal(list)
+
     def __init__(self, controller):
         super().__init__()
         self.c = controller
-        # In-memory event cache for the Log tab: the JSONL file is read ONCE per
-        # open/Refresh (reload_log); filter changes only re-filter this list, so
-        # typing in the search box never re-reads the file from disk.
+        # In-memory event cache for the Log tab. Seeded with the engine's
+        # in-memory tail (instant); the full JSONL history merges in from a
+        # background load. Filter changes only re-filter this list — the GUI
+        # thread never reads the file.
         self._events_cache = []
+        self._log_dirty = False  # log table rebuild pending (done lazily)
         self.setWindowTitle(f"⏳g SincroGit v{__version__} — Control panel")
         self.resize(880, 560)
         try:
@@ -137,7 +149,16 @@ class ControlPanel(QMainWindow):
         self._timer.timeout.connect(self.refresh_status)
 
         self.refresh_status()
-        self.reload_log()
+        # Log seeding: the in-memory tail NOW (no disk), the full history on a
+        # worker. Reading/parsing a multi-MB events.jsonl on the GUI thread is
+        # exactly what made the panel take seconds to appear on a tray click.
+        recent = getattr(self.c, "events_recent", None)
+        self._events_cache = list(recent()) if recent else []
+        self._history_loaded.connect(self._on_history_loaded)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._maybe_refresh_log()
+        threading.Thread(target=self._load_history,
+                         name="sincrogit-panel-history", daemon=True).start()
 
     # =============================================================== STATUS
     _COLS = ["Repo", "Branch", "State", "Since last seal", "Last action"]
@@ -333,8 +354,12 @@ class ControlPanel(QMainWindow):
         midnight = datetime.now().replace(hour=0, minute=0, second=0,
                                           microsecond=0).timestamp()
         counts = {}
-        for ev in getattr(self, "_events_cache", []):
-            if ev.ts >= midnight and ev.action in self._DIGEST_ACTIONS:
+        # The cache is time-ordered: walk from the newest and STOP at midnight —
+        # scanning a long session's full 60k cache on every 2 s tick was waste.
+        for ev in reversed(getattr(self, "_events_cache", [])):
+            if ev.ts < midnight:
+                break
+            if ev.action in self._DIGEST_ACTIONS:
                 counts[ev.action] = counts.get(ev.action, 0) + 1
         self.lbl_digest.setText(
             "Today:  " + "   ·   ".join(
@@ -564,7 +589,14 @@ class ControlPanel(QMainWindow):
         filt.addWidget(QLabel("Text:"))
         self.ed_search = QLineEdit()
         self.ed_search.setPlaceholderText("filter by message…")
-        self.ed_search.textChanged.connect(self.refresh_log)
+        # Debounced: re-filtering tens of thousands of events and rebuilding
+        # the table on EVERY keystroke made typing here feel like molasses.
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(250)
+        self._search_debounce.timeout.connect(self.refresh_log)
+        self.ed_search.textChanged.connect(
+            lambda _t: self._search_debounce.start())
         filt.addWidget(self.ed_search, 1)
 
         v.addLayout(filt)
@@ -575,6 +607,10 @@ class ControlPanel(QMainWindow):
         for col in range(4):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.Stretch)
+        # ResizeToContents measures EVERY row on each layout pass by default —
+        # with the 5000-row cap that's a visible stall on show/insert. Sampling
+        # a fixed number of rows is indistinguishable here (uniform content).
+        hdr.setResizeContentsPrecision(64)
         self.tbl_log.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tbl_log.setAlternatingRowColors(True)
         self.tbl_log.setShowGrid(False)
@@ -600,15 +636,53 @@ class ControlPanel(QMainWindow):
             return False
         return True
 
-    def reload_log(self):
-        """Re-read the full event history from disk (on open). After that the tab
-        stays current by itself: every new event arrives live through the Qt
-        signal (append_event), so there is no manual Refresh button. Filter
-        changes go through refresh_log, which reuses the cache."""
-        self._events_cache = list(self.c.events_all())
-        self.refresh_log()
+    def _load_history(self):
+        """Worker: parse the full JSONL history (megabytes on a long install —
+        NEVER on the GUI thread). Once loaded the tab stays current by itself:
+        every new event arrives live through the Qt signal (append_event), so
+        there is no manual Refresh button and no re-read on later shows."""
+        try:
+            events = list(self.c.events_all())
+        except Exception:  # noqa: BLE001 — an unreadable history is an empty one
+            events = []
+        try:
+            self._history_loaded.emit(events)
+        except RuntimeError:
+            pass  # panel destroyed while loading
+
+    def _on_history_loaded(self, events):
+        """Merge the on-disk history UNDER the live tail. The engine writes the
+        file before emitting the GUI signal, so anything already in the live
+        cache also exists in the disk list — dedupe by exact identity."""
+        if not events:
+            return
+        live = self._events_cache
+        live_keys = {(e.ts, e.repo, e.action, e.message) for e in live}
+        history = [e for e in events
+                   if (e.ts, e.repo, e.action, e.message) not in live_keys]
+        self._events_cache = history + live
+        if len(self._events_cache) > 60_000:
+            del self._events_cache[:len(self._events_cache) - 40_000]
+        self._maybe_refresh_log()
+
+    def _log_tab_current(self) -> bool:
+        return self.tabs.tabText(self.tabs.currentIndex()) == "Log"
+
+    def _maybe_refresh_log(self):
+        """Rebuilding the log table (MAX_LOG_ROWS × 5 items) is the panel's most
+        expensive redraw: do it only while the Log tab is the one being looked
+        at; otherwise just flag it for the next visit."""
+        if self._log_tab_current():
+            self.refresh_log()
+        else:
+            self._log_dirty = True
+
+    def _on_tab_changed(self, _index):
+        if self._log_dirty and self._log_tab_current():
+            self.refresh_log()
 
     def refresh_log(self):
+        self._log_dirty = False
         events = self._events_cache
 
         # Repopulate the repo dropdown, preserving the selection.
@@ -641,7 +715,11 @@ class ControlPanel(QMainWindow):
             f"{len(filtered)} event(s) match of {len(events)} total{capped}")
 
     def append_event(self, ev):
-        """Append a new event live if it passes the current filter (Qt signal)."""
+        """Record a new event (Qt signal). The table row is only added while
+        the Log tab is actually being looked at — otherwise the cache takes it
+        and the table rebuilds lazily on the next visit. A hidden panel does
+        ZERO widget work per event, so a DEBUG-level flood (one event per git
+        detail line) can never stall the GUI thread in the background."""
         # The Timeline tab refreshes itself off the same event stream (a new
         # snapshot/seal for the repo it shows), debounced; never raises.
         self.timeline.notice_event(ev)
@@ -656,6 +734,9 @@ class ControlPanel(QMainWindow):
         # If the repo isn't in the dropdown, add it.
         if ev.repo and self.cb_repo.findText(ev.repo) < 0:
             self.cb_repo.addItem(ev.repo)
+        if not (self.isVisible() and self._log_tab_current()):
+            self._log_dirty = True
+            return
         if not self._passes_filter(ev):
             return
         self.tbl_log.insertRow(0)  # newest first
@@ -724,7 +805,10 @@ class ControlPanel(QMainWindow):
     def showEvent(self, e):
         super().showEvent(e)
         self.refresh_status()
-        self.reload_log()
+        # NO disk re-read here: the cache stays live through append_event even
+        # while hidden. Just rebuild the Log table if it went stale and it's
+        # the visible tab (re-reading megabytes here froze the panel open).
+        self._on_tab_changed(self.tabs.currentIndex())
         self._timer.start()
 
     def hideEvent(self, e):

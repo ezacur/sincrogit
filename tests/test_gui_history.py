@@ -109,9 +109,12 @@ def test_save_a_copy(dlg, monkeypatch, tmp_path, qspin):
     monkeypatch.setattr(hd.QFileDialog, "getSaveFileName",
                         staticmethod(lambda *a, **k: (dest, "")))
     d._save_copy()
-    assert ctl.exported is not None and ctl.exported[2] == dest
-    assert boxes and "Saved to" in boxes[-1][1]
+    # The export (git show + write) runs on a worker now: spin until it lands.
+    assert qspin(lambda: ctl.exported is not None)
+    assert ctl.exported[2] == dest
+    assert qspin(lambda: boxes and "Saved to" in boxes[-1][1])
     assert os.path.exists(dest)
+    assert d.btn_saveas.isEnabled()   # re-enabled after the export
 
 
 def test_switching_repo_clears_stale_versions(qapp, tmp_path, qspin):

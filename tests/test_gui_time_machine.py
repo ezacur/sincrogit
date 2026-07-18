@@ -109,3 +109,17 @@ def test_selective_restore_roundtrip(dlg, qspin):
     assert ctl.restored == ("t", ("a.txt", "d.txt"), "wip111")
     assert qspin(lambda: "already matches" in d.lbl_files.text())  # recomputed
     assert boxes and boxes[-1][0] == "info"
+
+
+def test_files_table_caps_and_announces(dlg):
+    """A version differing in tens of thousands of paths froze the GUI on every
+    click; the table now caps the rows and says so — never a silent cut."""
+    _, d, _ = dlg
+    d._sha = "capsha"
+    payload = {"changes": [("revert", f"f{i}.txt")
+                           for i in range(d.MAX_FILE_ROWS + 50)],
+               "risky": []}
+    d._on_files_ready(True, payload, "capsha")
+    assert d.tbl_files.rowCount() == d.MAX_FILE_ROWS
+    assert "showing the first" in d.lbl_files.text()
+    assert str(d.MAX_FILE_ROWS + 50) in d.lbl_files.text()  # the true total stays visible

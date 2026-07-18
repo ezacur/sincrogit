@@ -139,6 +139,7 @@ class _Bridge(QObject):
     activate = pyqtSignal()  # a second launch asks us to show the panel
     quit_requested = pyqtSignal()  # flushquit command: exit cleanly on the GUI thread
     refresh_tray = pyqtSignal()  # workers may not touch QSystemTrayIcon/QAction directly
+    teardown_done = pyqtSignal()  # the engine thread joined; finish quit/restart (GUI)
 
 
 class TrayApp:
@@ -163,6 +164,9 @@ class TrayApp:
         self.bridge.activate.connect(self.show_panel)
         self.bridge.quit_requested.connect(self.quit)  # flushquit -> clean exit (GUI thread)
         self.bridge.refresh_tray.connect(self._refresh_tray)
+        self.bridge.teardown_done.connect(self._on_teardown_done)
+        self._teardown_then = None   # GUI-thread continuation after the join
+        self._quitting = False       # quit/restart in progress (ignore repeats)
 
         # Mirror the Python logger into the GUI event log (DEBUG detail and
         # warnings that don't go through Engine._emit). The logger's configured
@@ -405,30 +409,61 @@ class TrayApp:
                 pass
             self._lock_socket = None
 
-    def quit(self):
+    def _teardown_engine_async(self, then):
+        """Stop the engine and JOIN its thread OFF the GUI thread. The engine's
+        shutdown takes each repo's op_lock (up to 5 s apiece behind a slow
+        network worker) for the final snapshots — joining that on the GUI
+        thread froze the tray for up to 15 s and read as 'SincroGit hung on
+        quit'. `then` continues on the GUI thread once the engine is down."""
         self._timer.stop()
         self._remove_session_hooks()
+        self._teardown_then = then
         self.engine.stop()
-        if self._engine_thread:
-            self._engine_thread.join(timeout=15)
+
+        def work():
+            if self._engine_thread:
+                self._engine_thread.join(timeout=15)
+            try:
+                self.bridge.teardown_done.emit()
+            except RuntimeError:
+                pass  # app object torn down already
+
+        threading.Thread(target=work, name="sincrogit-teardown", daemon=True).start()
+
+    def _on_teardown_done(self):
+        then, self._teardown_then = self._teardown_then, None
+        if then:
+            then()
+
+    def quit(self):
+        if self._quitting:
+            return
+        self._quitting = True
+        self.tray.setToolTip("SincroGit — shutting down…")
+        self._teardown_engine_async(self._finish_quit)
+
+    def _finish_quit(self):
         self._release_lock()
         self.tray.hide()
         self.qapp.quit()
 
     def restart(self):
         """Relaunches the process to apply the new config."""
+        if self._quitting:
+            return
+        self._quitting = True
         # Leave a trace in the event log: without it a restart reads as an
         # unexplained gap followed by fresh startup lines.
         self._on_engine_event("", "restart",
                               "restarting to apply the new configuration", "INFO")
-        self._remove_session_hooks()
-        self.engine.stop()
-        if self._engine_thread:
-            self._engine_thread.join(timeout=15)
+        self.tray.setToolTip("SincroGit — restarting…")
+        self._teardown_engine_async(self._finish_restart)
+
+    def _finish_restart(self):
         self._release_lock()  # free the single-instance port before re-launching
-        # Also release the named mutex NOW: os.execv spawns the child while this
-        # process is still dying — if it still held the mutex, the child would
-        # see "already running" and exit, leaving no SincroGit at all.
+        # Also release the named mutex NOW: the child starts while this process
+        # is still dying — if it still held the mutex, the child would see
+        # "already running" and exit, leaving no SincroGit at all.
         release_instance_mutex()
         self.tray.hide()
         if getattr(sys, "frozen", False):
@@ -446,7 +481,14 @@ class TrayApp:
         return self.engine.status()
 
     def events_all(self):
+        """FULL history — parses the whole JSONL (megabytes). The panel only
+        calls this from a worker thread; never call it on the GUI thread."""
         return self.event_log.load_all()
+
+    def events_recent(self):
+        """The in-memory tail (instant, no disk): what the panel seeds its Log
+        with so the window appears immediately."""
+        return self.event_log.recent()
 
     def app_state(self) -> str:
         st = self.engine.status()

@@ -38,11 +38,13 @@ class MachCtl:
         return "DESKTOP"
 
 
-def test_machines_rows_and_freshness(qapp):
+def test_machines_rows_and_freshness(qapp, qspin):
     ctl = MachCtl()
     d = md.MachinesDialog(ctl)
     try:
-        assert d.tbl.rowCount() == 2
+        # The listing loads on a worker now (one `git for-each-ref` per repo
+        # used to freeze the dialog open): spin until it lands.
+        assert qspin(lambda: d.tbl.rowCount() == 2)
         assert "DESKTOP" in d.tbl.item(0, 0).text()      # newest first
         assert "(this machine)" in d.tbl.item(0, 0).text()
         fresh = d.tbl.item(0, 3).foreground().color().name().lower()
@@ -56,10 +58,12 @@ def test_machines_fetch_async(qapp, qspin):
     ctl = MachCtl()
     d = md.MachinesDialog(ctl)
     try:
+        assert qspin(lambda: d.tbl.rowCount() == 2)      # initial async load
         d._fetch()
         assert qspin(lambda: d.btn_fetch.isEnabled())
         assert ctl.fetched == ["t"]
-        assert d.tbl.rowCount() == 3  # the new mirror appears after the fetch
+        assert qspin(lambda: d.tbl.rowCount() == 3)      # new mirror after fetch
+        assert "refreshed" in d.lbl_info.text()
     finally:
         d.close()
 

@@ -104,6 +104,7 @@ class HistoryDialog(QDialog):
     _history_ready = pyqtSignal(int, str, list)            # gen, relpath, versions
     _file_preview_ready = pyqtSignal(int, object, object)  # gen, content|None, current
     _restore_done = pyqtSignal(bool, str)                  # ok, message
+    _export_done = pyqtSignal(bool, str, str)              # ok, message, dest path
 
     def __init__(self, controller, parent=None, preselect_repo=None):
         super().__init__(parent)
@@ -158,6 +159,7 @@ class HistoryDialog(QDialog):
         self._history_ready.connect(self._on_history_ready)
         self._file_preview_ready.connect(self._on_file_preview_ready)
         self._restore_done.connect(self._on_restore_done)
+        self._export_done.connect(self._on_export_done)
         row2.addWidget(self.btn_fetch)
         self.ed_search = QLineEdit()
         self.ed_search.setPlaceholderText("find text across versions (e.g. a function name)…")
@@ -462,7 +464,25 @@ class HistoryDialog(QDialog):
             self, "Save a copy of this version", suggested)
         if not dest:
             return
-        ok, msg = self.c.export_file_version(self._repo_name(), rel, ver["sha"], dest)
+        # Worker: the export is a `git show` of the raw blob + a write — a big
+        # binary (.docx, .pptx, MBs) took seconds inline and froze the dialog.
+        self.btn_saveas.setEnabled(False)
+        threading.Thread(
+            target=self._do_export, args=(self._repo_name(), rel, ver["sha"], dest),
+            name="sincrogit-export", daemon=True).start()
+
+    def _do_export(self, name, rel, sha, dest):
+        try:
+            ok, msg = self.c.export_file_version(name, rel, sha, dest)
+        except Exception as e:  # noqa: BLE001 — surfaced in the dialog
+            ok, msg = False, str(e)
+        try:
+            self._export_done.emit(ok, msg, dest)
+        except RuntimeError:
+            pass  # dialog closed while exporting
+
+    def _on_export_done(self, ok, msg, dest):
+        self.btn_saveas.setEnabled(True)
         if ok:
             QMessageBox.information(self, "Save a copy", f"Saved to:\n{dest}")
         else:

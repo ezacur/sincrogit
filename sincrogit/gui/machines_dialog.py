@@ -36,8 +36,9 @@ _COLOR_FRESH, _COLOR_AGING, _COLOR_STALE = "#2E9E5B", "#E0A400", "#D23F3F"
 
 
 class MachinesDialog(QDialog):
-    # Emitted from the fetch thread; delivered on the GUI thread (queued).
-    _fetch_done = pyqtSignal(int, int)  # repos fetched OK, repos total
+    # Emitted from worker threads; delivered on the GUI thread (queued).
+    _fetch_done = pyqtSignal(int, int)   # repos fetched OK, repos total
+    _rows_ready = pyqtSignal(int, list)  # gen, [(host, repo, branch, epoch)]
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -83,15 +84,40 @@ class MachinesDialog(QDialog):
         v.addLayout(row)
 
         self._fetch_done.connect(self._on_fetch_done)
+        self._rows_ready.connect(self._on_rows_ready)
+        self._gen = 0      # discard a stale listing if a newer reload started
+        self._note = ""    # suffix for lbl_info (set by a finished fetch)
         self._reload()
 
     def _reload(self):
-        """Populate from the locally-known refs (cheap, no network)."""
+        """Gather the rows on a worker: list_autosnaps spawns one `git
+        for-each-ref` subprocess PER REPO — no network, but N × subprocess
+        latency froze the dialog open for seconds with several repos."""
+        self._gen += 1
+        gen = self._gen
+        names = [name for name, _ in self.c.repo_list()]
+        self.lbl_info.setText("Reading local mirrors…")
+
+        def work():
+            rows = []
+            for name in names:
+                try:
+                    for r in self.c.list_autosnaps(name):
+                        rows.append((r["host"], name, r["branch"], r["epoch"]))
+                except Exception:  # noqa: BLE001 — a broken repo just lists nothing
+                    pass
+            try:
+                self._rows_ready.emit(gen, rows)
+            except RuntimeError:
+                pass  # dialog closed while listing
+
+        threading.Thread(target=work, name="sincrogit-machines-list",
+                         daemon=True).start()
+
+    def _on_rows_ready(self, gen, rows):
+        if gen != self._gen:
+            return  # a newer reload superseded this one
         me = self.c.this_host()
-        rows = []
-        for name, _path in self.c.repo_list():
-            for r in self.c.list_autosnaps(name):
-                rows.append((r["host"], name, r["branch"], r["epoch"]))
         rows.sort(key=lambda r: r[3], reverse=True)
         now = time.time()
         self.tbl.setRowCount(len(rows))
@@ -109,9 +135,10 @@ class MachinesDialog(QDialog):
                 self.tbl.setItem(i, j, item)
         if not rows:
             self.lbl_info.setText(
-                "No mirrors known yet — Fetch latest, or enable autosnap.")
+                "No mirrors known yet — Fetch latest, or enable autosnap." + self._note)
         else:
-            self.lbl_info.setText(f"{len(rows)} mirror(s) known locally")
+            self.lbl_info.setText(f"{len(rows)} mirror(s) known locally" + self._note)
+        self._note = ""
 
     # ------------------------------------------------------------- fetching
     def _fetch(self):
@@ -136,6 +163,6 @@ class MachinesDialog(QDialog):
 
     def _on_fetch_done(self, ok, total):
         self.btn_fetch.setEnabled(True)
-        self._reload()
         extra = "" if ok == total else f"  ({total - ok} repo(s) unreachable)"
-        self.lbl_info.setText(self.lbl_info.text() + f" — refreshed{extra}")
+        self._note = f" — refreshed{extra}"  # appended when the async reload lands
+        self._reload()

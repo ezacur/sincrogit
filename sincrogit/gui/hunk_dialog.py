@@ -32,6 +32,8 @@ _PREVIEW_LINES = 12  # per hunk, so a huge block doesn't blow up the dialog
 
 
 class HunkRestoreDialog(QDialog):
+    # Max hunk widgets built (see _on_loaded); the rest is announced, not shown.
+    MAX_HUNKS = 200
     # Emitted from background threads; delivered on the GUI thread (queued).
     _loaded = pyqtSignal(bool, object)   # ok, payload|error-str
     _done = pyqtSignal(bool, str)        # ok, message
@@ -118,13 +120,26 @@ class HunkRestoreDialog(QDialog):
                 "This file already matches that version — nothing to restore."))
             self._holder_v.addStretch(1)
             return
-        for h in hunks:
+        # Cap the widgets: each hunk is a QWidget+QCheckBox+QLabel, and a
+        # heavily-rewritten file can have thousands — seconds of layout on the
+        # GUI thread. Announced, never silent; past the cap, picking blocks one
+        # by one stops making sense anyway (whole-file restore covers it).
+        shown = hunks[:self.MAX_HUNKS]
+        for h in shown:
             self._holder_v.addWidget(self._hunk_widget(h))
+        if len(hunks) > len(shown):
+            more = QLabel(
+                f"… {len(hunks) - len(shown)} more block(s) not shown — with this "
+                f"much change, 'Restore this file' (the whole version) is the tool.")
+            more.setProperty("cssClass", "muted")
+            self._holder_v.addWidget(more)
         self._holder_v.addStretch(1)
         self.btn_all.setEnabled(True)
         self.btn_none.setEnabled(True)
         self.btn_restore.setEnabled(True)
-        self.lbl.setText(f"{len(hunks)} changed block(s).")
+        self.lbl.setText(f"{len(hunks)} changed block(s)."
+                         + (f"  Showing the first {len(shown)}."
+                            if len(hunks) > len(shown) else ""))
 
     def _hunk_widget(self, h) -> QWidget:
         box = QWidget()

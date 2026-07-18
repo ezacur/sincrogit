@@ -60,6 +60,7 @@ class TimeMachineDialog(QDialog):
     _files_ready = pyqtSignal(bool, object, str)    # ok, payload|msg, sha
     _restore_done = pyqtSignal(bool, str)           # ok, message
     _diff_ready = pyqtSignal(int, object, object, bool)  # gen, old|None, new, sbs
+    _export_done = pyqtSignal(bool, str, str)            # ok, message, dest path
 
     def __init__(self, controller, parent=None, preselect_repo=None):
         super().__init__(parent)
@@ -179,6 +180,7 @@ class TimeMachineDialog(QDialog):
         self._files_ready.connect(self._on_files_ready)
         self._restore_done.connect(self._on_restore_done)
         self._diff_ready.connect(self._on_diff_ready)
+        self._export_done.connect(self._on_export_done)
         self._load_history()
 
     # ------------------------------------------------------------- timeline
@@ -263,16 +265,27 @@ class TimeMachineDialog(QDialog):
         except RuntimeError:
             pass  # dialog closed meanwhile
 
+    # Max rows the per-version file table builds (see _on_files_ready).
+    MAX_FILE_ROWS = 4000
+
     def _on_files_ready(self, ok, payload, sha):
         if sha != self._sha:
             return  # a newer selection superseded this computation
         if not ok:
             self.lbl_files.setText(f"Could not compare: {payload}")
             return
-        self._files = payload["changes"]
+        changes = payload["changes"]
+        n = len(changes)
+        # Cap the table: an old version can differ in tens of thousands of
+        # paths and 3 items × row froze the GUI on every version click. The
+        # cut is announced, never silent; a whole-repo restore (History tab)
+        # covers anything beyond the selectable window.
+        self._files = changes[:self.MAX_FILE_ROWS]
         self._risky = set(payload["risky"])
-        n = len(self._files)
         extra = f"  (⚠ {len(self._risky)} at risk)" if self._risky else ""
+        if n > len(self._files):
+            extra += (f"  — showing the first {len(self._files)}; use a "
+                      f"whole-repo restore for the rest")
         self.lbl_files.setText(
             f"{n} file(s) differ from the current state{extra}" if n or self._risky
             else "The working tree already matches this version")
@@ -366,7 +379,24 @@ class TimeMachineDialog(QDialog):
             self, "Save a copy of this version", suggested)
         if not dest:
             return
-        ok, msg = self.c.export_file_version(self._repo_name(), path, ver["sha"], dest)
+        # Worker: `git show` of a raw blob + write — seconds for a big binary,
+        # and it froze the dialog inline (same fix as the history dialog).
+        threading.Thread(
+            target=self._do_export,
+            args=(self._repo_name(), path, ver["sha"], dest),
+            name="sincrogit-tm-export", daemon=True).start()
+
+    def _do_export(self, name, path, sha, dest):
+        try:
+            ok, msg = self.c.export_file_version(name, path, sha, dest)
+        except Exception as e:  # noqa: BLE001 — surfaced in the dialog
+            ok, msg = False, str(e)
+        try:
+            self._export_done.emit(ok, msg, dest)
+        except RuntimeError:
+            pass  # dialog closed while exporting
+
+    def _on_export_done(self, ok, msg, dest):
         if ok:
             QMessageBox.information(self, "Save a copy", f"Saved to:\n{dest}")
         else:

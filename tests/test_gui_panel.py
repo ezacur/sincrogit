@@ -23,11 +23,17 @@ class PanelCtl:
             "last_action": "", "last_action_ts": 0.0, "push": True, "pull": True,
         }
         self.calls = []
+        self.history_reads = 0
 
     def status(self):
         return {"paused": False, "running": True, "repos": [dict(self.repo)]}
 
+    def events_recent(self):
+        return [types.SimpleNamespace(ts=time.time(), repo="t", action="startup",
+                                      level="INFO", message="live tail")]
+
     def events_all(self):
+        self.history_reads += 1
         return []
 
     def config_text(self):
@@ -119,3 +125,47 @@ def test_activity_digest(panel):
                                          level="INFO", message="sealed"))
     p.refresh_status()
     assert "1 snapshot" in p.lbl_digest.text() and "1 seal" in p.lbl_digest.text()
+
+
+def _goto_log_tab(p):
+    for i in range(p.tabs.count()):
+        if p.tabs.tabText(i) == "Log":
+            p.tabs.setCurrentIndex(i)
+            return
+
+
+def test_log_history_loads_in_background_and_only_once(panel, qspin):
+    """Opening the panel must NOT re-read the JSONL from disk: the history
+    loads once (worker) at construction and the cache stays live afterwards —
+    the synchronous re-read on every show is what froze the tray click."""
+    ctl, p = panel
+    assert qspin(lambda: ctl.history_reads == 1)
+    p.hide(); p.show()
+    p.hide(); p.show()
+    assert ctl.history_reads == 1
+
+
+def test_log_history_merges_under_live_tail_without_dupes(qapp, qspin):
+    live = types.SimpleNamespace(ts=1000.0, repo="t", action="seal",
+                                 level="INFO", message="dup")
+    old = types.SimpleNamespace(ts=1.0, repo="t", action="snapshot",
+                                level="INFO", message="old")
+    ctl = PanelCtl()
+    ctl.events_recent = lambda: [live]
+    ctl.events_all = lambda: [old, live]   # the disk list contains the live one too
+    p = cp.ControlPanel(ctl)
+    try:
+        assert qspin(lambda: len(p._events_cache) == 2)
+        assert p._events_cache[0] is old   # history merges UNDER the live tail
+        assert p._events_cache[1] is live
+    finally:
+        p.close()
+        p.deleteLater()
+
+
+def test_search_filter_is_debounced(panel, qspin):
+    _, p = panel
+    _goto_log_tab(p)
+    p.ed_search.setText("zzz-matches-nothing")
+    assert p._search_debounce.isActive()   # not rebuilt on the keystroke itself
+    assert qspin(lambda: "0 event(s) match" in p.lbl_log_count.text())
