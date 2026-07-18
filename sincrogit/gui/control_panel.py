@@ -51,6 +51,7 @@ from PyQt5.QtWidgets import (
 from .. import __version__
 from ..events import ACTIONS
 from .add_repo_dialog import AddRepoDialog
+from .busy import BusyBar
 from .machines_dialog import MachinesDialog
 from .repo_properties_dialog import RepoPropertiesDialog
 from .settings_tab import SettingsTab
@@ -126,7 +127,8 @@ class ControlPanel(QMainWindow):
         # background load. Filter changes only re-filter this list — the GUI
         # thread never reads the file.
         self._events_cache = []
-        self._log_dirty = False  # log table rebuild pending (done lazily)
+        self._log_dirty = False        # log table rebuild pending (done lazily)
+        self._log_refresh_scheduled = False  # a deferred rebuild is queued
         self.setWindowTitle(f"⏳g SincroGit v{__version__} — Control panel")
         self.resize(880, 560)
         try:
@@ -516,8 +518,13 @@ class ControlPanel(QMainWindow):
         dlg.deleteLater()
         self.refresh_status()
 
-    # Max rows the live Log table holds; the full history lives in _events_cache.
-    MAX_LOG_ROWS = 5000
+    # Max rows the live Log table renders. Kept modest ON PURPOSE: this table is
+    # the panel's heaviest widget to build/lay out, and a live log is read
+    # newest-first — nobody scrolls thousands of rows. The full history stays in
+    # _events_cache (searchable via the filters); the count label discloses the
+    # cap ("newest N shown of TOTAL"). 5000 rows took long enough to render that
+    # activating the Log tab looked frozen.
+    MAX_LOG_ROWS = 1000
 
     def _repo_context_menu(self, pos):
         # A right-click doesn't move the selection on its own, so select the row
@@ -621,6 +628,8 @@ class ControlPanel(QMainWindow):
         self.tbl_log.verticalHeader().setVisible(False)
         v.addWidget(self.tbl_log)
 
+        self.log_busy = BusyBar()
+        v.addWidget(self.log_busy)
         self.lbl_log_count = QLabel()
         v.addWidget(self.lbl_log_count)
         return w
@@ -676,17 +685,36 @@ class ControlPanel(QMainWindow):
         return self.tabs.tabText(self.tabs.currentIndex()) == "Log"
 
     def _maybe_refresh_log(self):
-        """Rebuilding the log table (MAX_LOG_ROWS × 5 items) is the panel's most
-        expensive redraw: do it only while the Log tab is the one being looked
-        at; otherwise just flag it for the next visit."""
+        """Rebuilding the log table is the panel's heaviest redraw: only do it
+        while the Log tab is the one being looked at; otherwise flag it for the
+        next visit. When it IS current, defer so the click paints first."""
         if self._log_tab_current():
-            self.refresh_log()
+            self._schedule_log_refresh()
         else:
             self._log_dirty = True
 
     def _on_tab_changed(self, _index):
         if self._log_dirty and self._log_tab_current():
-            self.refresh_log()
+            self._schedule_log_refresh()
+
+    def _schedule_log_refresh(self):
+        """Rebuild the Log table, but let the tab PAINT FIRST. currentChanged
+        fires before the tab is shown, so a synchronous rebuild froze the switch
+        for a beat; a 0-timer lets the empty tab appear, then the rows fill with
+        a visible busy bar. Coalesced: a burst of events schedules one rebuild."""
+        if self._log_refresh_scheduled:
+            return
+        self._log_refresh_scheduled = True
+        self.log_busy.start("Loading the log…")
+        QTimer.singleShot(0, self._run_scheduled_log_refresh)
+
+    def _run_scheduled_log_refresh(self):
+        self._log_refresh_scheduled = False
+        try:
+            if self._log_tab_current():   # the user may have switched away meanwhile
+                self.refresh_log()
+        finally:
+            self.log_busy.stop()
 
     def refresh_log(self):
         self._log_dirty = False
@@ -708,15 +736,21 @@ class ControlPanel(QMainWindow):
         # multi-ten-thousand-row widget; the label stays honest about the cap.
         filtered = [e for e in reversed(events) if self._passes_filter(e)]
         shown = filtered[:self.MAX_LOG_ROWS]
-        self.tbl_log.setRowCount(len(shown))
-        for i, ev in enumerate(shown):
-            cells = [_fmt_time(ev.ts), ev.repo or "—", ev.action, ev.level, ev.message]
-            for j, val in enumerate(cells):
-                item = QTableWidgetItem(str(val))
-                color = _LEVEL_COLOR.get(ev.level)
-                if color:
-                    item.setForeground(color)
-                self.tbl_log.setItem(i, j, item)
+        # setUpdatesEnabled(False): build all rows without a repaint per insert,
+        # one paint at the end. Noticeable on the full-table rebuild.
+        self.tbl_log.setUpdatesEnabled(False)
+        try:
+            self.tbl_log.setRowCount(len(shown))
+            for i, ev in enumerate(shown):
+                cells = [_fmt_time(ev.ts), ev.repo or "—", ev.action, ev.level, ev.message]
+                for j, val in enumerate(cells):
+                    item = QTableWidgetItem(str(val))
+                    color = _LEVEL_COLOR.get(ev.level)
+                    if color:
+                        item.setForeground(color)
+                    self.tbl_log.setItem(i, j, item)
+        finally:
+            self.tbl_log.setUpdatesEnabled(True)
         capped = f" (newest {len(shown)} shown)" if len(filtered) > len(shown) else ""
         self.lbl_log_count.setText(
             f"{len(filtered)} event(s) match of {len(events)} total{capped}")

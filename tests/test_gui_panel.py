@@ -184,3 +184,48 @@ def test_global_events_pass_any_repo_filter(panel, qspin):
     assert p._passes_filter(ev)                # global event survives the filter
     p.append_event(ev)
     assert p.tbl_log.item(0, 4).text().startswith("machine lock")
+
+
+def test_log_tab_activation_is_deferred_and_capped(qapp, qspin):
+    """Activating the Log tab must not rebuild inline (that froze the switch):
+    it schedules a deferred rebuild with a visible busy bar, and the table is
+    capped at MAX_LOG_ROWS with the cap disclosed."""
+    now = time.time()
+    many = [types.SimpleNamespace(ts=now - i, repo="t", action="snapshot",
+            level="INFO", message=f"event {i}")
+            for i in range(cp.ControlPanel.MAX_LOG_ROWS + 500)]
+    ctl = PanelCtl()
+    ctl.events_recent = lambda: list(many)
+    ctl.events_all = lambda: list(many)
+    p = cp.ControlPanel(ctl)
+    p.show()
+    try:
+        _goto_log_tab(p)
+        assert p._log_refresh_scheduled       # deferred, NOT built inline
+        assert p.log_busy.active              # busy bar up while it's pending
+        assert qspin(lambda: not p._log_refresh_scheduled)
+        assert not p.log_busy.active
+        assert p.tbl_log.rowCount() == cp.ControlPanel.MAX_LOG_ROWS   # capped
+        assert "newest" in p.lbl_log_count.text()  # cap disclosed honestly
+    finally:
+        p.close()
+        p.deleteLater()
+
+
+def test_log_refresh_burst_coalesces_to_one_rebuild(qapp):
+    """A flurry of events while on the Log tab must schedule ONE rebuild, not
+    one per event (the busy bar's ref count would otherwise pile up)."""
+    ctl = PanelCtl()
+    p = cp.ControlPanel(ctl)
+    p.show()
+    try:
+        _goto_log_tab(p)
+        p._log_refresh_scheduled = False      # start from a clean slate
+        p.log_busy.reset()
+        p._schedule_log_refresh()
+        p._schedule_log_refresh()
+        p._schedule_log_refresh()
+        assert p._log_refresh_scheduled and p.log_busy._count == 1
+    finally:
+        p.close()
+        p.deleteLater()
