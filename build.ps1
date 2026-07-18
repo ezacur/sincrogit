@@ -97,6 +97,18 @@ Write-Host "==> Running PyInstaller ($(if ($Fast) {'onedir/fast'} else {'onefile
 python -m PyInstaller @pyiArgs
 $sw.Stop()
 
+# A failed build must SAY so and must not pretend — without this check the
+# script printed "Done" and relaunched the OLD exe, which then held the file
+# lock and made every retry fail with Access denied on dist\SincroGit.exe.
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ("==> BUILD FAILED (PyInstaller exit {0}) after {1:N1}s." -f $LASTEXITCODE, $sw.Elapsed.TotalSeconds)
+    if ($relaunch) {
+        Write-Host "==> Relaunching the daemon with the PREVIOUS build (never leave it dead)..."
+        Start-Process -FilePath $exePath
+    }
+    exit $LASTEXITCODE
+}
+
 $out = if ($Fast) { "dist\SincroGit\SincroGit.exe" } else { "dist\SincroGit.exe" }
 Write-Host ""
 Write-Host ("==> Done in {0:N1}s. Executable: {1}" -f $sw.Elapsed.TotalSeconds, $out)
