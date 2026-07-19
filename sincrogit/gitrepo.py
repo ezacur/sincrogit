@@ -1275,7 +1275,12 @@ class GitRepo:
         """
         sref = self.shadow_ref(branch)
         fmt = "--format=%x01%H%x09%P%x09%ct%x09%s"
-        walks = (["log", "-n", "500"], ["log", "-g", "-n", "500"])
+        # Walk only a little past what we'll show (states collapse by identical
+        # tree, so allow headroom). Walking a flat 500 and slicing to `limit`
+        # meant computing --name-status/--numstat for hundreds of commits that
+        # never reach the rail — the biggest slice of the load time.
+        depth = str(min(500, max(limit + 100, 120)))
+        walks = (["log", "-n", depth], ["log", "-g", "-n", depth])
 
         def records(extra: str):
             """Yield (sha, parent, epoch, subject, [file lines]) per commit,

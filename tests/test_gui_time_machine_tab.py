@@ -296,10 +296,13 @@ def test_notice_event_refreshes_only_matching_repo(tab, qspin):
             self.repo, self.action = repo, action
 
     t._debounce.stop()
+    t._stale = False
     t.notice_event(Ev("other", "snapshot"))
-    assert t._stale and not t._debounce.isActive()
-    t.notice_event(Ev("t", "snapshot"))
-    assert t._debounce.isActive()
+    # An event on ANOTHER repo must NOT stale the view (revisiting the tab
+    # would reload needlessly) nor schedule a reload.
+    assert not t._stale and not t._debounce.isActive()
+    t.notice_event(Ev("t", "snapshot"))       # the shown repo -> reload
+    assert t._stale and t._debounce.isActive()
 
 
 # ------------------------------------------------------- busy indicator wiring

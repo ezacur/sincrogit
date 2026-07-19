@@ -20,7 +20,10 @@ DIFF_DARK = {"meta": "#9aa3af", "hunk": "#6cb0f0", "add": "#4cc07a", "add_bg": "
 
 # Row cap for BOTH renderers: keeps QTextEdit responsive on huge files. The
 # cut is always announced with a visible "… truncated …" row, never silent.
-_MAX_ROWS = 5000
+# Kept modest because QTextEdit.setHtml() of a big HTML table is a real
+# GUI-thread cost on a live display (a 5000-row side-by-side diff was ~1 s
+# on screen); 2000 rows is far more than anyone reads in a preview.
+_MAX_ROWS = 2000
 
 
 def mark_intraline(old_line: str, new_line: str, c: dict) -> tuple:

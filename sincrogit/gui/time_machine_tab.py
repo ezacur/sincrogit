@@ -479,12 +479,17 @@ class TimeMachineTab(QWidget):
             self._reload()
 
     def notice_event(self, ev):
-        """Panel hook (GUI thread): refresh when new states land for the shown
-        repo — debounced while visible, deferred to the next show otherwise."""
+        """Panel hook (GUI thread): refresh only when new states land for the
+        repo CURRENTLY SHOWN. An event on another repo used to mark the view
+        stale too, so returning to the tab reloaded needlessly — with 5 repos
+        and a busy daemon the rail was almost always 'stale' and every visit
+        paid a fresh load. Other repos reload on demand when selected anyway."""
         if getattr(ev, "action", "") not in ("snapshot", "seal", "handoff", "pull"):
             return
+        if getattr(ev, "repo", "") != self.cb_repo.currentText():
+            return  # not the shown repo: switching to it will reload if needed
         self._stale = True
-        if self.isVisible() and getattr(ev, "repo", "") == self.cb_repo.currentText():
+        if self.isVisible():
             self._debounce.start()
 
     # ------------------------------------------------------------- lifecycle
