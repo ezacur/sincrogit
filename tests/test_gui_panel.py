@@ -183,17 +183,19 @@ def test_global_events_pass_any_repo_filter(panel, qspin):
                                level="INFO", message="machine lock: flushing")
     assert p._passes_filter(ev)                # global event survives the filter
     p.append_event(ev)
-    assert p.tbl_log.item(0, 4).text().startswith("machine lock")
+    assert p._log_model.index(0, 4).data().startswith("machine lock")
 
 
-def test_log_tab_activation_is_deferred_and_capped(qapp, qspin):
-    """Activating the Log tab must not rebuild inline (that froze the switch):
-    it schedules a deferred rebuild with a visible busy bar, and the table is
-    capped at MAX_LOG_ROWS with the cap disclosed."""
+def test_log_tab_shows_all_matching_rows_virtualized(qapp, qspin):
+    """The Log model is virtualized (QTableView), so there is no row cap and no
+    deferral: activating the tab shows every matching event and the view only
+    renders the visible ones. This is what makes the switch instant."""
     now = time.time()
-    many = [types.SimpleNamespace(ts=now - i, repo="t", action="snapshot",
+    # Oldest-first, like the real in-memory cache (append order); refresh_log
+    # reverses it for newest-first display.
+    many = [types.SimpleNamespace(ts=now - (8000 - i), repo="t", action="snapshot",
             level="INFO", message=f"event {i}")
-            for i in range(cp.ControlPanel.MAX_LOG_ROWS + 500)]
+            for i in range(8000)]
     ctl = PanelCtl()
     ctl.events_recent = lambda: list(many)
     ctl.events_all = lambda: list(many)
@@ -201,31 +203,22 @@ def test_log_tab_activation_is_deferred_and_capped(qapp, qspin):
     p.show()
     try:
         _goto_log_tab(p)
-        assert p._log_refresh_scheduled       # deferred, NOT built inline
-        assert p.log_busy.active              # busy bar up while it's pending
-        assert qspin(lambda: not p._log_refresh_scheduled)
-        assert not p.log_busy.active
-        assert p.tbl_log.rowCount() == cp.ControlPanel.MAX_LOG_ROWS   # capped
-        assert "newest" in p.lbl_log_count.text()  # cap disclosed honestly
+        # No cap: the model holds all 8000 matching events (the view renders
+        # only the ~visible handful).
+        assert p._log_model.rowCount() == 8000
+        assert p._log_model.index(0, 4).data() == "event 7999"   # newest first
+        assert "8000 event(s) match" in p.lbl_log_count.text()
     finally:
         p.close()
         p.deleteLater()
 
 
-def test_log_refresh_burst_coalesces_to_one_rebuild(qapp):
-    """A flurry of events while on the Log tab must schedule ONE rebuild, not
-    one per event (the busy bar's ref count would otherwise pile up)."""
-    ctl = PanelCtl()
-    p = cp.ControlPanel(ctl)
-    p.show()
-    try:
-        _goto_log_tab(p)
-        p._log_refresh_scheduled = False      # start from a clean slate
-        p.log_busy.reset()
-        p._schedule_log_refresh()
-        p._schedule_log_refresh()
-        p._schedule_log_refresh()
-        assert p._log_refresh_scheduled and p.log_busy._count == 1
-    finally:
-        p.close()
-        p.deleteLater()
+def test_log_append_prepends_to_model_when_visible(panel, qspin):
+    _, p = panel
+    _goto_log_tab(p)
+    before = p._log_model.rowCount()
+    ev = types.SimpleNamespace(ts=time.time(), repo="t", action="seal",
+                               level="INFO", message="fresh event")
+    p.append_event(ev)
+    assert p._log_model.rowCount() == before + 1
+    assert p._log_model.index(0, 4).data() == "fresh event"

@@ -27,9 +27,10 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QHBoxLayout,
@@ -41,6 +42,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QTableView,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -51,7 +53,6 @@ from PyQt5.QtWidgets import (
 from .. import __version__
 from ..events import ACTIONS
 from .add_repo_dialog import AddRepoDialog
-from .busy import BusyBar
 from .machines_dialog import MachinesDialog
 from .repo_properties_dialog import RepoPropertiesDialog
 from .settings_tab import SettingsTab
@@ -115,6 +116,58 @@ def _fmt_time(epoch) -> str:
         return "—"
 
 
+class _LogModel(QAbstractTableModel):
+    """A VIRTUALIZED model for the Log table: the view renders only the ~30
+    visible rows, so switching to the Log tab and scrolling stay instant no
+    matter how many events are held (a QTableWidget built one item per cell for
+    thousands of rows, which is what made the tab slow to render). Rows are
+    newest-first; the filtered view is set wholesale, and a new live event is
+    a cheap single-row insert at the top."""
+
+    _HEADERS = ("Time", "Repo", "Action", "Level", "Message")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rows = []  # events, newest first
+
+    # -- Qt model interface --
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._HEADERS)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        ev = self._rows[index.row()]
+        if role == Qt.DisplayRole:
+            return (_fmt_time(ev.ts), ev.repo or "—", ev.action, ev.level,
+                    ev.message)[index.column()]
+        if role == Qt.ForegroundRole:
+            return _LEVEL_COLOR.get(ev.level)
+        return None
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            return self._HEADERS[section]
+        return None
+
+    # -- panel helpers --
+    def set_rows(self, rows):
+        self.beginResetModel()
+        self._rows = rows
+        self.endResetModel()
+
+    def prepend(self, ev):
+        self.beginInsertRows(QModelIndex(), 0, 0)
+        self._rows.insert(0, ev)
+        self.endInsertRows()
+
+    def row(self, i):
+        return self._rows[i]
+
+
 class ControlPanel(QMainWindow):
     # Full JSONL history, parsed on a worker thread -> delivered here (queued).
     _history_loaded = pyqtSignal(list)
@@ -127,8 +180,7 @@ class ControlPanel(QMainWindow):
         # background load. Filter changes only re-filter this list — the GUI
         # thread never reads the file.
         self._events_cache = []
-        self._log_dirty = False        # log table rebuild pending (done lazily)
-        self._log_refresh_scheduled = False  # a deferred rebuild is queued
+        self._log_dirty = False        # log model refresh pending for next visit
         self.setWindowTitle(f"⏳g SincroGit v{__version__} — Control panel")
         self.resize(880, 560)
         try:
@@ -518,14 +570,6 @@ class ControlPanel(QMainWindow):
         dlg.deleteLater()
         self.refresh_status()
 
-    # Max rows the live Log table renders. Kept modest ON PURPOSE: this table is
-    # the panel's heaviest widget to build/lay out, and a live log is read
-    # newest-first — nobody scrolls thousands of rows. The full history stays in
-    # _events_cache (searchable via the filters); the count label discloses the
-    # cap ("newest N shown of TOTAL"). 5000 rows took long enough to render that
-    # activating the Log tab looked frozen.
-    MAX_LOG_ROWS = 1000
-
     def _repo_context_menu(self, pos):
         # A right-click doesn't move the selection on its own, so select the row
         # under the cursor first — otherwise the menu acts on the previously
@@ -612,24 +656,32 @@ class ControlPanel(QMainWindow):
 
         v.addLayout(filt)
 
-        self.tbl_log = QTableWidget(0, 5)
-        self.tbl_log.setHorizontalHeaderLabels(["Time", "Repo", "Action", "Level", "Message"])
+        # A QTableView over a virtualized model (not a QTableWidget): only the
+        # visible rows are rendered, so activation and scrolling are instant
+        # regardless of how many events are shown.
+        self._log_model = _LogModel(self)
+        self.tbl_log = QTableView()
+        self.tbl_log.setModel(self._log_model)
         hdr = self.tbl_log.horizontalHeader()
+        # Fixed/interactive widths — NEVER ResizeToContents on a virtual model
+        # (it would consult every row, defeating virtualization). Message stretches.
+        self.tbl_log.setColumnWidth(0, 74)   # Time
+        self.tbl_log.setColumnWidth(1, 130)  # Repo
+        self.tbl_log.setColumnWidth(2, 90)   # Action
+        self.tbl_log.setColumnWidth(3, 70)   # Level
         for col in range(4):
-            hdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+            hdr.setSectionResizeMode(col, QHeaderView.Interactive)
         hdr.setSectionResizeMode(4, QHeaderView.Stretch)
-        # ResizeToContents measures EVERY row on each layout pass by default —
-        # with the 5000-row cap that's a visible stall on show/insert. Sampling
-        # a fixed number of rows is indistinguishable here (uniform content).
-        hdr.setResizeContentsPrecision(64)
-        self.tbl_log.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tbl_log.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_log.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_log.setAlternatingRowColors(True)
         self.tbl_log.setShowGrid(False)
         self.tbl_log.verticalHeader().setVisible(False)
+        # Uniform row heights let the view skip per-row height computation.
+        self.tbl_log.verticalHeader().setDefaultSectionSize(24)
+        self.tbl_log.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         v.addWidget(self.tbl_log)
 
-        self.log_busy = BusyBar()
-        v.addWidget(self.log_busy)
         self.lbl_log_count = QLabel()
         v.addWidget(self.lbl_log_count)
         return w
@@ -685,36 +737,18 @@ class ControlPanel(QMainWindow):
         return self.tabs.tabText(self.tabs.currentIndex()) == "Log"
 
     def _maybe_refresh_log(self):
-        """Rebuilding the log table is the panel's heaviest redraw: only do it
-        while the Log tab is the one being looked at; otherwise flag it for the
-        next visit. When it IS current, defer so the click paints first."""
+        """Refresh the model only while the Log tab is current; otherwise flag
+        it for the next visit. With the virtualized model this is cheap (filter
+        + set the list; the view renders only visible rows), so no deferral or
+        busy bar is needed — the switch is instant."""
         if self._log_tab_current():
-            self._schedule_log_refresh()
+            self.refresh_log()
         else:
             self._log_dirty = True
 
     def _on_tab_changed(self, _index):
         if self._log_dirty and self._log_tab_current():
-            self._schedule_log_refresh()
-
-    def _schedule_log_refresh(self):
-        """Rebuild the Log table, but let the tab PAINT FIRST. currentChanged
-        fires before the tab is shown, so a synchronous rebuild froze the switch
-        for a beat; a 0-timer lets the empty tab appear, then the rows fill with
-        a visible busy bar. Coalesced: a burst of events schedules one rebuild."""
-        if self._log_refresh_scheduled:
-            return
-        self._log_refresh_scheduled = True
-        self.log_busy.start("Loading the log…")
-        QTimer.singleShot(0, self._run_scheduled_log_refresh)
-
-    def _run_scheduled_log_refresh(self):
-        self._log_refresh_scheduled = False
-        try:
-            if self._log_tab_current():   # the user may have switched away meanwhile
-                self.refresh_log()
-        finally:
-            self.log_busy.stop()
+            self.refresh_log()
 
     def refresh_log(self):
         self._log_dirty = False
@@ -731,37 +765,21 @@ class ControlPanel(QMainWindow):
         self.cb_repo.setCurrentIndex(idx if idx >= 0 else 0)
         self.cb_repo.blockSignals(False)
 
-        # Newest first: the latest event is what you came to see. Cap the rendered
-        # rows (same bound append_event keeps) so a huge history never builds a
-        # multi-ten-thousand-row widget; the label stays honest about the cap.
+        # Newest first, no cap: the model is virtualized, so handing it the whole
+        # filtered list is O(1) to display — the view only renders visible rows.
         filtered = [e for e in reversed(events) if self._passes_filter(e)]
-        shown = filtered[:self.MAX_LOG_ROWS]
-        # setUpdatesEnabled(False): build all rows without a repaint per insert,
-        # one paint at the end. Noticeable on the full-table rebuild.
-        self.tbl_log.setUpdatesEnabled(False)
-        try:
-            self.tbl_log.setRowCount(len(shown))
-            for i, ev in enumerate(shown):
-                cells = [_fmt_time(ev.ts), ev.repo or "—", ev.action, ev.level, ev.message]
-                for j, val in enumerate(cells):
-                    item = QTableWidgetItem(str(val))
-                    color = _LEVEL_COLOR.get(ev.level)
-                    if color:
-                        item.setForeground(color)
-                    self.tbl_log.setItem(i, j, item)
-        finally:
-            self.tbl_log.setUpdatesEnabled(True)
-        capped = f" (newest {len(shown)} shown)" if len(filtered) > len(shown) else ""
+        self._log_model.set_rows(filtered)
+        self.tbl_log.scrollToTop()
         self.lbl_log_count.setText(
-            f"{len(filtered)} event(s) match of {len(events)} total{capped}")
+            f"{len(filtered)} event(s) match of {len(events)} total")
 
     def append_event(self, ev):
-        """Record a new event (Qt signal). The table row is only added while
-        the Log tab is actually being looked at — otherwise the cache takes it
-        and the table rebuilds lazily on the next visit. A hidden panel does
-        ZERO widget work per event, so a DEBUG-level flood (one event per git
-        detail line) can never stall the GUI thread in the background."""
-        # The Timeline tab refreshes itself off the same event stream (a new
+        """Record a new event (Qt signal). It's prepended to the model only
+        while the Log tab is being looked at — otherwise the cache takes it and
+        the model refreshes on the next visit. A hidden panel does ZERO view
+        work per event, so a DEBUG-level flood can't stall the GUI in the
+        background; and a single-row insert is cheap even when visible."""
+        # The Time machine tab refreshes itself off the same event stream (a new
         # snapshot/seal for the repo it shows), debounced; never raises.
         self.timeline.notice_event(ev)
         # A seal/pull/push/sync event for a repo marks its manual action as done:
@@ -780,19 +798,7 @@ class ControlPanel(QMainWindow):
             return
         if not self._passes_filter(ev):
             return
-        self.tbl_log.insertRow(0)  # newest first
-        cells = [_fmt_time(ev.ts), ev.repo or "—", ev.action, ev.level, ev.message]
-        for j, val in enumerate(cells):
-            item = QTableWidgetItem(str(val))
-            color = _LEVEL_COLOR.get(ev.level)
-            if color:
-                item.setForeground(color)
-            self.tbl_log.setItem(0, j, item)
-        # Bound the WIDGET: without this the table grows one row per event for
-        # the whole session (the _events_cache is capped, but the table only
-        # rebuilds from it on open/filter change). Drop the oldest (bottom) rows.
-        while self.tbl_log.rowCount() > self.MAX_LOG_ROWS:
-            self.tbl_log.removeRow(self.tbl_log.rowCount() - 1)
+        self._log_model.prepend(ev)   # newest first; O(1) insert, view stays put
 
     # =========================================================== CONFIGURATION
     def _build_config_tab(self) -> QWidget:
