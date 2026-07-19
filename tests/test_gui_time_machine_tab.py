@@ -325,3 +325,17 @@ def test_busy_bar_covers_overlapping_workers(tab, qspin):
     t._load_diff()                   # … and a diff, overlapping
     assert t.busy.active
     assert qspin(lambda: not t.busy.active)
+
+
+def test_rail_delegate_caches_fonts(qapp):
+    """The rail delegate must build QFont/QFontMetrics ONCE, not per paint —
+    per-paint construction was the on-screen 'sluggish rail' cause."""
+    from PyQt5.QtGui import QFont
+    d = tmt._RailDelegate({"is_dark": False})
+    assert not d._fonts_ready
+    base = QFont("Segoe UI", 10)
+    d._ensure_fonts(base)
+    assert d._fonts_ready
+    fm_bold, fm = d._fm_bold, d._fm
+    d._ensure_fonts(QFont("Arial", 20))   # already built -> must NOT rebuild
+    assert d._fm_bold is fm_bold and d._fm is fm

@@ -146,6 +146,23 @@ class _RailDelegate(QStyledItemDelegate):
         self._bad = QColor(p.get("danger", "#d23f3f"))
         self._sel = QColor(p.get("sel_bg", "#dce9f7"))
         self._auto = QColor(_TYPE_COLOR["autosnap"])
+        # Fonts + metrics are CACHED, built once from the first paint's font.
+        # Constructing QFont/QFontMetrics on every paint (per visible row, on
+        # every hover/scroll/selection) is the classic Qt delegate stall — it
+        # made the rail feel sluggish on a real screen. See _ensure_fonts.
+        self._fonts_ready = False
+        self._bold = None
+        self._fm_bold = None
+        self._fm = None
+
+    def _ensure_fonts(self, base_font):
+        if self._fonts_ready:
+            return
+        self._bold = QFont(base_font)
+        self._bold.setBold(True)
+        self._fm_bold = QFontMetrics(self._bold)
+        self._fm = QFontMetrics(base_font)
+        self._fonts_ready = True
 
     def sizeHint(self, option, index):
         if index.data(ROLE_ENTRY) is None:
@@ -160,21 +177,19 @@ class _RailDelegate(QStyledItemDelegate):
         return self._accent, 4
 
     def paint(self, painter: QPainter, option, index):
+        self._ensure_fonts(option.font)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         r = option.rect
         entry = index.data(ROLE_ENTRY)
 
         if entry is None:  # ---- day header ----
-            f = QFont(option.font)
-            f.setBold(True)
-            painter.setFont(f)
+            painter.setFont(self._bold)
             painter.setPen(self._muted)
             label = index.data(ROLE_DAY) or ""
             painter.drawText(r.adjusted(8, 0, -8, 0),
                              Qt.AlignVCenter | Qt.AlignLeft, label)
-            fm = QFontMetrics(f)
-            x0 = 8 + fm.horizontalAdvance(label) + 10
+            x0 = 8 + self._fm_bold.horizontalAdvance(label) + 10
             painter.setPen(QPen(self._rail, 1))
             painter.drawLine(x0, r.center().y(), r.right() - 8, r.center().y())
             painter.restore()
@@ -194,18 +209,16 @@ class _RailDelegate(QStyledItemDelegate):
                                    2 * radius, 2 * radius))
 
         y1 = r.top() + int(_CARD_H * 0.42)
-        f = QFont(option.font)
-        f.setBold(True)
-        painter.setFont(f)
+        painter.setFont(self._bold)
         # A search transition (pinned mode) tints the time text — "the change
         # happened HERE".
         painter.setPen(self._accent if index.data(ROLE_MARK) else self._text)
         time_txt = _fmt_time(entry["epoch"])
         painter.drawText(_TEXT_X, y1, time_txt)
-        x = _TEXT_X + QFontMetrics(f).horizontalAdvance(time_txt) + 10
+        x = _TEXT_X + self._fm_bold.horizontalAdvance(time_txt) + 10
 
         painter.setFont(option.font)
-        fm = QFontMetrics(option.font)
+        fm = self._fm
         painter.setPen(self._muted)
         kind_txt = {"sealed": "seal"}.get(kind, kind)
         if entry.get("host"):
@@ -721,6 +734,7 @@ class TimeMachineTab(QWidget):
         self._risky = set()
         self.lbl_files.setText("files this state captured (vs its parent)")
         self.tbl_files.blockSignals(True)
+        self.tbl_files.setUpdatesEnabled(False)  # one repaint, not one per cell
         self.tbl_files.setRowCount(len(self._files))
         for row, (s, path, adds, dels) in enumerate(self._files):
             it = QTableWidgetItem(s)
@@ -741,6 +755,7 @@ class TimeMachineTab(QWidget):
                 self.tbl_files.setItem(row, 3, d_it)
             self.tbl_files.setItem(row, 4, QTableWidgetItem(""))
         self.tbl_files.blockSignals(False)
+        self.tbl_files.setUpdatesEnabled(True)
         if self._files:
             self.tbl_files.selectRow(0)
         else:
@@ -791,6 +806,7 @@ class TimeMachineTab(QWidget):
             else "The working tree already matches this state")
         muted = QColor(self._pal.get("muted", "#6b7280"))
         self.tbl_files.blockSignals(True)
+        self.tbl_files.setUpdatesEnabled(False)  # one repaint for the whole build
         self.tbl_files.setRowCount(len(self._files))
         for i, (verb, path, _a, _d) in enumerate(self._files):
             chk = QTableWidgetItem("")
@@ -815,6 +831,7 @@ class TimeMachineTab(QWidget):
             self.tbl_files.setItem(i, 4, QTableWidgetItem(""))
             _ = muted
         self.tbl_files.blockSignals(False)
+        self.tbl_files.setUpdatesEnabled(True)
         if self._files:
             self.tbl_files.selectRow(0)
         self._sync_actions()
