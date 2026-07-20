@@ -140,9 +140,9 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
     "working…" mientras una corre — y un botón "How to fix…" cuando un conflicto pausa
     el repo) y un botón **"Add repo…"** (que opcionalmente crea un `.gitattributes`
     `* text=auto` para que los finales de línea sean consistentes entre máquinas). Los
-    repos se añaden en caliente, sin reiniciar; **Properties…** edita la configuración
-    de un repo como formulario (solo se escriben los campos cambiados — el resto sigue
-    heredando los defaults) y permite quitarlo de la config.
+    repos se añaden en caliente, sin reiniciar; **Properties…** salta a la sección del
+    repo en la pestaña Settings — toda su configuración se edita inline, cada campo
+    marcado como heredado u override (solo se escriben los campos cambiados).
   - *Time machine*: por repo, un raíl agrupado por día con **cada snapshot, sellado y
     espejo fetcheado**, con un conmutador de comparación — *what changed then* (los
     ficheros y diffs de cada estado frente a su padre) o *vs today* (qué cambiaría una
@@ -150,7 +150,8 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
     convierte el raíl en el historial de versiones de ese fichero (búsqueda entre
     versiones, restore por fichero, restore por bloques).
   - *Log*: eventos **filtrables por repo, acción, nivel y texto** (lo más nuevo arriba, en vivo).
-  - *Settings*: formulario amable sobre los defaults globales (purista, relevo, IA, tema…).
+  - *Settings*: master-detail — los defaults globales más la lista de repos; al elegir
+    un repo se edita inline toda su configuración, con pistas de heredado-vs-override.
   - *Advanced (YAML)*: editor del `config.yaml` crudo (guardar / guardar y reiniciar).
 - ✅ **Notificaciones** de escritorio (toast de Windows vía `winotify`; la app de bandeja
   además las muestra con globos Qt) ante conflictos, relevos y errores.

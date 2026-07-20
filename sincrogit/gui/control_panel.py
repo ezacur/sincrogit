@@ -54,7 +54,6 @@ from .. import __version__
 from ..events import ACTIONS
 from .add_repo_dialog import AddRepoDialog
 from .machines_dialog import MachinesDialog
-from .repo_properties_dialog import RepoPropertiesDialog
 from .settings_tab import SettingsTab
 from .smart_commit_dialog import SmartCommitDialog
 from .time_machine_tab import TimeMachineTab
@@ -195,7 +194,8 @@ class ControlPanel(QMainWindow):
         # event hook (append_event -> notice_event) predates the unification.
         self.tabs.addTab(self.timeline, "Time machine")
         self.tabs.addTab(self._build_log_tab(), "Log")
-        self.tabs.addTab(SettingsTab(self.c), "Settings")
+        self.settings = SettingsTab(self.c)
+        self.tabs.addTab(self.settings, "Settings")
         self.tabs.addTab(self._build_config_tab(), "Advanced (YAML)")
 
         # Periodic status refresh while the window is visible.
@@ -562,13 +562,12 @@ class ControlPanel(QMainWindow):
             self.refresh_status()
 
     def _open_repo_properties(self, name):
+        """Jump to the repo's settings, INLINE in the Settings tab — the modal
+        Properties window is gone (a new window per repo felt clunky)."""
         if not name:
             return
-        with self._wait_cursor():
-            dlg = RepoPropertiesDialog(self.c, name, parent=self)
-        dlg.exec_()
-        dlg.deleteLater()
-        self.refresh_status()
+        self.settings.select_repo(name)
+        self.tabs.setCurrentWidget(self.settings)
 
     def _repo_context_menu(self, pos):
         # A right-click doesn't move the selection on its own, so select the row

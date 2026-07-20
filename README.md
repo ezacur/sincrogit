@@ -137,16 +137,17 @@ SincroGit relates to jj, GitButler, dura and friends, see
     Fetch+Pull, Apply handoff — with a "working…" indicator while one runs — and a
     "How to fix…" helper when a conflict pauses the repo) and an **"Add repo…"** button
     (optionally drops a `* text=auto` **`.gitattributes`** so line endings stay consistent
-    across machines). Repos can be added live, without restarting; **Properties…** edits
-    one repo's settings as a form (only the changed fields are written — the rest keep
-    inheriting the defaults) and can remove the repo from the config.
+    across machines). Repos can be added live, without restarting; **Properties…**
+    jumps to the repo's section in the Settings tab — every per-repo setting edited
+    inline, each field marked inherited-vs-override (only changed fields are written).
   - *Time machine*: per repo, a day-grouped rail of **every snapshot, seal and
     fetched mirror**, with a compare switch — *what changed then* (each state's files
     and diffs vs its parent) or *vs today* (what a restore would change, with selective
     and whole-repo restore) — and a **file pin** that turns the rail into that file's
     version history (search across versions, per-file restore, hunk restore).
   - *Log*: events **filterable by repo, action, level and text** (newest first, live).
-  - *Settings*: friendly form over the global defaults (purist mode, handoff, AI, theme…).
+  - *Settings*: master-detail — the global defaults plus a per-repo list; picking a
+    repo edits every one of its settings inline, with inherited-vs-override hints.
   - *Advanced (YAML)*: raw `config.yaml` editor (save / save and restart).
 - ✅ Desktop **notifications** (Windows toast via `winotify`; the tray app also surfaces
   them through Qt tray balloons) on conflicts, handoffs and errors.

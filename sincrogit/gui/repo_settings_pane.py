@@ -1,4 +1,4 @@
-"""Per-repo Properties dialog (the friendly alternative to editing YAML).
+"""Per-repo settings PANE — embedded in the Settings tab (no extra window).
 
 Covers EVERY per-repo option (each inheritable key of RepoConfig), and next to
 each field says where its value comes from: "default (X)" when the repo
@@ -8,6 +8,10 @@ keys of that repo's entry — everything you don't touch keeps inheriting; and
 "Use defaults…" drops every override at once, returning the repo to pure
 inheritance. Same trades as Add repo / the Settings form: comments inside the
 `repos:` section are rewritten, and changes apply on restart.
+
+It used to be a modal dialog opened from Status; per Ernesto's call it now
+lives INLINE in the Settings tab (pick the repo on the left), so no window
+ever pops. `removed`/`reset_done` tell the hosting tab to refresh.
 
 Talks to the app through the `controller`:
   repo_config_view(name) -> (entry_dict, effective_dict, defaults_dict)
@@ -19,9 +23,9 @@ Talks to the app through the `controller`:
 
 import math
 
+from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
-    QDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -68,13 +72,14 @@ def _fmt_default(key: str, v) -> str:
     return str(v)
 
 
-class RepoPropertiesDialog(QDialog):
+class RepoSettingsPane(QWidget):
+    removed = pyqtSignal()     # the repo's entry was deleted from the config
+    reset_done = pyqtSignal()  # overrides dropped — the host should rebuild me
+
     def __init__(self, controller, repo_name, parent=None):
         super().__init__(parent)
         self.c = controller
         self.name = repo_name
-        self.setWindowTitle(f"⏳g SincroGit — Properties ({repo_name})")
-        self.resize(640, 700)
 
         entry, eff, defaults = self.c.repo_config_view(repo_name)
         self._found = bool(eff)
@@ -260,9 +265,6 @@ class RepoPropertiesDialog(QDialog):
         self.btn_save_restart.setProperty("cssClass", "primary")
         self.btn_save_restart.clicked.connect(lambda: self._save(restart=True))
         row2.addWidget(self.btn_save_restart)
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.clicked.connect(self.reject)
-        row2.addWidget(btn_cancel)
         outer.addLayout(row2)
 
         self._load(eff)
@@ -387,7 +389,6 @@ class RepoPropertiesDialog(QDialog):
                 self, "Repo properties",
                 "Saved. Changes apply when SincroGit restarts ('Save and restart').",
             )
-            self.accept()
 
     def _reset_overrides(self):
         overrides = sorted(k for k in self._entry if k in self._hints)
@@ -407,7 +408,7 @@ class RepoPropertiesDialog(QDialog):
         QMessageBox.information(
             self, "Use defaults",
             f"{msg}. Applies when SincroGit restarts.")
-        self.accept()
+        self.reset_done.emit()
 
     def _remove(self):
         if QMessageBox.warning(
@@ -426,4 +427,4 @@ class RepoPropertiesDialog(QDialog):
             self, "Remove repo",
             "Removed from the config. It disappears when SincroGit restarts.",
         )
-        self.accept()
+        self.removed.emit()

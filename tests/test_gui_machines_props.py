@@ -8,7 +8,7 @@ import time
 import pytest
 
 import sincrogit.gui.machines_dialog as md
-import sincrogit.gui.repo_properties_dialog as rp
+import sincrogit.gui.repo_settings_pane as rp
 
 
 class MachCtl:
@@ -115,7 +115,7 @@ def props(qapp, monkeypatch):
     monkeypatch.setattr(rp.QMessageBox, "critical",
                         staticmethod(lambda *a, **k: infos.append("CRIT:" + a[2])))
     ctl = PropsCtl()
-    d = rp.RepoPropertiesDialog(ctl, "t")
+    d = rp.RepoSettingsPane(ctl, "t")
     yield ctl, d, infos
     d.close()
 
@@ -187,7 +187,7 @@ def test_use_defaults_disabled_without_overrides(qapp, monkeypatch):
     monkeypatch.setattr(rp.QMessageBox, "information",
                         staticmethod(lambda *a, **k: infos.append(a[2])))
     ctl = PropsCtl(entry={"path": "C:/tmp/alpha", "branch": "main"})
-    d = rp.RepoPropertiesDialog(ctl, "t")
+    d = rp.RepoSettingsPane(ctl, "t")
     try:
         assert not d.btn_reset.isEnabled()    # nothing to reset
     finally:

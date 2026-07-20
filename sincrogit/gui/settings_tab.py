@@ -1,9 +1,11 @@
-"""Friendly Settings form (the lazy person's alternative to raw YAML).
+"""Friendly Settings tab (the lazy person's alternative to raw YAML).
 
-Edits the GLOBAL `defaults:` (plus ai/theme/log/pandoc) of config.yaml through
-spinners and toggles, with the headline modes (purist, autosnap, handoff) as
-plain checkboxes/combos. Per-repo overrides intentionally stay in the Advanced
-(YAML) tab — they're the power-user path.
+Master-detail, everything in ONE screen (no dialogs — Ernesto's call): the
+list on the left holds **Global defaults** plus every repo; picking an item
+edits it inline on the right. The global page edits `defaults:` (plus
+ai/theme/log/pandoc) through spinners and toggles; a repo page is a
+RepoSettingsPane — every per-repo option, each field carrying a hint of
+whether it inherits the default (and which) or overrides it.
 
 Saving rewrites the file structurally (comments are not preserved — that's the
 Advanced tab's trade); changes take effect on restart, same as the YAML editor.
@@ -18,17 +20,20 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-# Widget idioms shared with the per-repo Properties dialog (kept re-exported here
+# Widget idioms shared with the per-repo settings pane (kept re-exported here
 # so the tests that reach in via settings_tab._select still work).
 from .formwidgets import _HANDOFF, _combo, _is_disabled, _load_spin, _select, _spin
+from .repo_settings_pane import RepoSettingsPane
 
 # Combo entries: (stored value, human label)
 # Permanent-history mode, framed by RESULT — not the "purist/pragmatic" jargon,
@@ -50,15 +55,32 @@ _LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
 
 
 class SettingsTab(QWidget):
-    """Form over config.yaml's global keys. Duck-typed controller: config_text(),
-    save_config(text) -> (ok, msg), restart()."""
+    """Master-detail settings. Duck-typed controller: config_text(),
+    save_config(text) -> (ok, msg), restart() — and, for the per-repo pages,
+    repo_list() plus the RepoSettingsPane contract (repo_config_view,
+    update/reset/remove_repo_config). Controllers without repo_list (tests)
+    simply get the global page alone."""
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.c = controller
 
-        outer = QVBoxLayout(self)
+        outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+        # Master list: the global defaults + one entry per repo. Selecting a
+        # repo edits ITS settings right here, inline — no window ever opens.
+        self.lst = QListWidget()
+        self.lst.setMaximumWidth(190)
+        self.lst.currentRowChanged.connect(self._on_pick)
+        outer.addWidget(self.lst)
+        self.stack = QStackedWidget()
+        outer.addWidget(self.stack, 1)
+
+        # ---------------- page 0: the global defaults form (as always) -------
+        page = QWidget()
+        pv = QVBoxLayout(page)
+        pv.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
@@ -176,9 +198,10 @@ class SettingsTab(QWidget):
         v.addWidget(g4)
 
         note = QLabel(
-            "These are the GLOBAL defaults — every repo inherits them. Per-repo overrides "
-            "(a \"hot\" repo, another branch…) live in the Advanced (YAML) tab. Saving from "
-            "here rewrites the file, so YAML comments are kept only when editing there."
+            "These are the GLOBAL defaults — every repo inherits them unless it "
+            "overrides a field (pick a repo on the left to see and edit ITS "
+            "settings, with each override marked). Saving from here rewrites the "
+            "file, so YAML comments are kept only when editing the Advanced tab."
         )
         note.setWordWrap(True)
         note.setProperty("cssClass", "muted")
@@ -186,7 +209,7 @@ class SettingsTab(QWidget):
         v.addStretch(1)
 
         scroll.setWidget(body)
-        outer.addWidget(scroll, 1)
+        pv.addWidget(scroll, 1)
 
         row = QHBoxLayout()
         row.addStretch(1)
@@ -200,9 +223,65 @@ class SettingsTab(QWidget):
         self.btn_save_restart.setProperty("cssClass", "primary")
         self.btn_save_restart.clicked.connect(lambda: self._save(restart=True))
         row.addWidget(self.btn_save_restart)
-        outer.addLayout(row)
+        pv.addLayout(row)
+        self.stack.addWidget(page)
 
+        # -------- page 1: the selected repo's pane (rebuilt fresh per pick) --
+        self._repo_host = QWidget()
+        self._repo_v = QVBoxLayout(self._repo_host)
+        self._repo_v.setContentsMargins(0, 0, 0, 0)
+        self._pane = None
+        self.stack.addWidget(self._repo_host)
+
+        self._sync_repos()
         self.load_values()
+
+    # ------------------------------------------------------ repo master list
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._sync_repos()  # repos can be added live
+
+    def _sync_repos(self):
+        lister = getattr(self.c, "repo_list", None)
+        names = [n for n, _p in lister()] if lister else []
+        want = ["Global defaults"] + names
+        have = [self.lst.item(i).text() for i in range(self.lst.count())]
+        if want == have:
+            return
+        cur = self.lst.currentItem().text() if self.lst.currentItem() else ""
+        self.lst.blockSignals(True)
+        self.lst.clear()
+        self.lst.addItems(want)
+        self.lst.setCurrentRow(want.index(cur) if cur in want else 0)
+        self.lst.blockSignals(False)
+        self._on_pick(self.lst.currentRow())
+
+    def _on_pick(self, row):
+        if row <= 0:
+            self.stack.setCurrentIndex(0)
+            return
+        self._build_pane(self.lst.item(row).text())
+        self.stack.setCurrentIndex(1)
+
+    def _build_pane(self, name):
+        """A FRESH pane per visit: it re-reads entry/effective/defaults, so
+        edits made meanwhile (global form, Advanced YAML, a reset) show up."""
+        if self._pane is not None:
+            self._repo_v.removeWidget(self._pane)
+            self._pane.deleteLater()
+        self._pane = RepoSettingsPane(self.c, name)
+        self._pane.removed.connect(lambda: self.lst.setCurrentRow(0))
+        self._pane.reset_done.connect(lambda n=name: self._build_pane(n))
+        self._repo_v.addWidget(self._pane)
+
+    def select_repo(self, name):
+        """Jump straight to one repo's settings (Status's Properties… and the
+        context menu land here — inline, never a window)."""
+        self._sync_repos()
+        for i in range(self.lst.count()):
+            if self.lst.item(i).text() == name:
+                self.lst.setCurrentRow(i)
+                return
 
     def _history_mode_changed(self):
         """The checkpoint interval only applies to automatic mode; the commit

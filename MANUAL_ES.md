@@ -129,14 +129,8 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
   un conflicto pausó el repo, qué es un relevo pendiente, por qué un merge/rebase muestra
   *Busy*). Botones:
   - **Pause / Resume** — parar/reanudar el autosync de ese repo.
-  - **Properties…** — TODA la configuración por repo como formulario (rama, remoto,
-    ritmos — incluidos el leave seal y el debounce —, sync, modo de relevo, timeout de
-    red, filtros de ficheros y topes de tamaño, avisos) en vez de YAML. Junto a cada
-    campo, una pista dice de dónde viene el valor: *default (X)* si se hereda de la
-    pestaña Settings, u *override — default: X* si este repo lo fija. Solo se escriben
-    los campos que cambies; el resto sigue heredando. **Use defaults…** quita todos los
-    overrides de golpe (rama/remoto se conservan), y **Remove repo…** elimina la entrada
-    (solo de la config — el repo git del disco no se toca). Se aplica al reiniciar.
+  - **Properties…** — salta a la sección de ese repo en la **pestaña Settings** (sin
+    ventana: todo se edita inline allí — ver Settings abajo).
   - **Commit…** — Smart Commit (diálogo con mensaje propuesto por IA).
   - **Seal+Push** — sellar ya los snapshots pendientes en un commit real y pushear.
   - **Fetch+Pull** — traer y rebasar del remoto ahora.
@@ -188,7 +182,15 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
   actuales — la restauración parcial también queda capturada como snapshot.
 - **Log** — eventos, lo más nuevo arriba y actualizándose en vivo (sin refresco manual);
   filtrables por repo / acción / nivel / texto, incluido el detalle DEBUG del log de fichero.
-- **Settings** — el formulario amable: ritmos (cadencia de snapshot, un interruptor de
+- **Settings** — master-detail, todo en una pantalla: la lista de la izquierda tiene
+  **Global defaults** más cada repo. Al elegir un repo se edita inline TODA su
+  configuración (rama, remoto, ritmos — incluidos el leave seal y el debounce —, sync,
+  modo de relevo, timeout de red, filtros de ficheros y topes de tamaño, avisos); junto
+  a cada campo, una pista dice de dónde viene el valor — *default (X)* si se hereda, u
+  *override — default: X* si el repo lo fija. Solo se escriben los campos que cambies;
+  **Use defaults…** quita todos los overrides de golpe, y **Remove repo…** elimina la
+  entrada (solo de la config). La página **Global defaults** es el formulario amable:
+  ritmos (cadencia de snapshot, un interruptor de
   **leave seal** — bloquea la máquina y quédate fuera `seal_on_leave_min` minutos (20 por
   defecto) y el trabajo pendiente se sella como `sincro: [leave]` y se pushea, así tu
   otra máquina hace pull de una rama fresca; volver antes lo cancela — más un selector de

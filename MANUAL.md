@@ -127,14 +127,8 @@ Open it from the tray icon (double-click) or *Open control panel*.
   buttons. Hovering the **State** cell explains it (why a conflict paused the repo, what a
   pending handoff is, why a merge/rebase shows *Busy*). Buttons:
   - **Pause / Resume** — stop/resume autosync for that repo.
-  - **Properties…** — EVERY per-repo setting as a form (branch, remote, rhythms —
-    including the leave seal and the debounce —, sync, handoff mode, network timeout,
-    file filters and size caps, notices) instead of YAML. Next to each field a hint
-    says where the value comes from: *default (X)* when inherited from the Settings
-    tab, or *override — default: X* when this repo pins it. Only the fields you change
-    are written; the rest keep inheriting. **Use defaults…** drops every override at
-    once (branch/remote kept), and **Remove repo…** removes the entry (config only —
-    the git repo on disk is untouched). Applies on restart.
+  - **Properties…** — jumps to this repo's section in the **Settings tab** (no
+    window: everything edits inline there — see Settings below).
   - **Commit…** — Smart Commit (AI-proposed message dialog).
   - **Seal+Push** — seal the pending snapshots into a real commit now and push.
   - **Fetch+Pull** — fetch and rebase from the remote now.
@@ -183,7 +177,15 @@ Open it from the tray icon (double-click) or *Open control panel*.
   restore is captured as a snapshot too.
 - **Log** — events, newest first and updating live (no refresh needed); filterable by
   repo / action / level / text, including the DEBUG detail the file log gets.
-- **Settings** — the friendly form: rhythms (snapshot cadence, a **leave seal** toggle —
+- **Settings** — master-detail, all in one screen: the list on the left holds
+  **Global defaults** plus every repo. Picking a repo shows EVERY per-repo setting
+  inline (branch, remote, rhythms — including the leave seal and the debounce —,
+  sync, handoff mode, network timeout, file filters and size caps, notices); next
+  to each field a hint says where the value comes from — *default (X)* when
+  inherited, or *override — default: X* when the repo pins it. Only the fields you
+  change are written; **Use defaults…** drops every override at once, and
+  **Remove repo…** removes the entry (config only). The **Global defaults** page is
+  the friendly form: rhythms (snapshot cadence, a **leave seal** toggle —
   lock the machine and stay away `seal_on_leave_min` minutes (20 by default) and the
   pending work is sealed as `sincro: [leave]` and pushed, so your other machine pulls a
   fresh branch; coming back earlier cancels it — plus a **Permanent history**
