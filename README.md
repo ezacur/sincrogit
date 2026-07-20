@@ -132,7 +132,8 @@ SincroGit relates to jj, GitButler, dura and friends, see
   **color reflects the state**: green=active, amber=paused, red=conflict, gray=stopped.
 - ✅ Tray **menu**: open panel, pause/resume, sync now, seal now, quit.
 - ✅ **Control panel** with tabs:
-  - *Status*: repos table (branch, state, time since last seal, last action) with an
+  - *Status*: repos table (branch, state, snapshot age, time since last seal, unsealed
+    snapshots — with a ✎ marker for edits awaiting the next capture — last action) with an
     **action bar for the selected repo** (Pause/Resume, Properties…, Commit…, Seal+Push,
     Fetch+Pull, Apply handoff — with a "working…" indicator while one runs — and a
     "How to fix…" helper when a conflict pauses the repo) and an **"Add repo…"** button
@@ -189,7 +190,10 @@ In priority order:
    exe + config in the **per-user Run key** (no admin; also toggleable from Task
    Manager → Startup apps), `--doctor` reports its state, and the tray self-heals an
    entry left pointing at a program that no longer exists — see [DESIGN.md §9](DESIGN.md).
-3. **`sincrogit status` command** (the tray menu already covers the common actions).
+3. **`sincrogit status` command** — **done**, together with its sibling `sincrogit log`:
+   one glance per repo (branch, snapshot/commit ages, unsealed work) and the panel's
+   event log in the terminal (`--repo`, `--action`, `--level`, `--tail`). Both are
+   read-only and safe alongside the running daemon.
 
 ### TODO — AI messages (the aicommit2-inspired batch)
 
@@ -706,6 +710,14 @@ running from a *different* path is left alone.
   in `%APPDATA%\SincroGit\`. On first run with none found, it creates a default next to
   the exe (falling back to `%APPDATA%\SincroGit\` if that folder isn't writable) and
   opens the Configuration tab. `sincrogit.log` is written next to the config.
+
+**Distribution is portable by design** (the deliberate alternative to an installer):
+copy the single exe into a folder and that folder is the installation — the config is
+looked up **there first**, and the one generated on first run lists **every option**
+with its default value and a comment (a test introspects the dataclasses, so a new
+option can't ship without appearing in the template). Moving the folder moves the
+whole setup; the only machine-global trace is the optional start-at-login Run entry,
+which self-heals to the new location on the next launch.
 
 Notes: it's a `--onefile --noconsole` build (~55 MB); first launch unpacks to a temp
 dir (~1–2 s). For output redirection/scripting, prefer `python -m sincrogit`.

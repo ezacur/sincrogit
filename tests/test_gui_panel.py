@@ -237,3 +237,18 @@ def test_first_event_does_not_pin_the_repo_filter(panel):
     assert p.cb_repo.currentText() == "(all)"
     p.refresh_log()  # the Log tab visit must keep it too
     assert p.cb_repo.currentText() == "(all)"
+
+
+def test_status_table_shows_snapshot_and_unsealed(panel):
+    """The CLI status came to the GUI: Snapshot age + 'Unsealed' (with the ✎
+    pending-edits marker) straight from engine.status() — no git in the view."""
+    ctl, p = panel
+    ctl.repo.update(unsealed=3, pending_edits=True,
+                    last_snapshot=time.time() - 120)
+    p.refresh_status()
+    assert p.tbl_repos.item(0, 5).text() == "3 ✎"
+    assert "publish" in p.tbl_repos.item(0, 5).toolTip()
+    assert p.tbl_repos.item(0, 3).text() not in ("", "—")
+    ctl.repo.update(unsealed=0, pending_edits=False)
+    p.refresh_status()
+    assert p.tbl_repos.item(0, 5).text() == "0"

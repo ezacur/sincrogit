@@ -472,6 +472,32 @@ class GitRepo:
         res = self._run(["rev-parse", f"{ref}^{{tree}}"], check=False)
         return res.stdout.strip() if res.returncode == 0 else None
 
+    # Read-only introspection for `sincrogit status` — safe alongside a
+    # running daemon (nothing here takes locks or writes the index).
+    def ref_time(self, ref: str) -> float | None:
+        """Committer epoch of `ref`'s tip commit, or None if it doesn't resolve."""
+        res = self._run(["log", "-1", "--format=%ct", ref], check=False)
+        out = res.stdout.strip().splitlines()
+        try:
+            return float(out[0]) if res.returncode == 0 and out else None
+        except ValueError:
+            return None
+
+    def commits_ahead(self, base: str, tip: str) -> int | None:
+        """How many commits `tip` holds beyond `base` (rev-list --count), or
+        None when either ref doesn't resolve."""
+        res = self._run(["rev-list", "--count", f"{base}..{tip}"], check=False)
+        out = res.stdout.strip()
+        return int(out) if res.returncode == 0 and out.isdigit() else None
+
+    def worktree_differs_from(self, ref: str) -> bool:
+        """Does the worktree differ from `ref`'s tree? GIT_OPTIONAL_LOCKS=0
+        keeps git from opportunistically rewriting the index stat-cache, so
+        this never contends with the daemon's own git work."""
+        res = self._run(["diff", "--quiet", ref], check=False,
+                        extra_env={"GIT_OPTIONAL_LOCKS": "0"})
+        return res.returncode == 1
+
     def ensure_shadow(self, branch: str) -> bool:
         """Make sure the shadow ref exists (anchored at HEAD — or at an empty
         root snapshot in a repo with no commits) and that git RECORDS its

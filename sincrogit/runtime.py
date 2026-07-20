@@ -96,6 +96,13 @@ log:
   level: INFO
 
 repos: []
+# Example entry (uncomment and adjust — or just use the GUI: Status -> "Add repo..."):
+#   - path: C:/work/myproject
+#     name: myproject             # display name (defaults to the folder name)
+#     branch: main
+#     remote: origin
+#     # ...plus ANY key from 'defaults:' above to override it for this repo only,
+#     # e.g. seal_interval_min: inf   (purist mode just here)
 """
 
 

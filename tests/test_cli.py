@@ -14,7 +14,8 @@ def _args(**kw):
     """An argparse.Namespace with every CLI flag at its default, overridden by kw."""
     d = dict(tray=False, headless=False, history=None, autosnaps=False,
              commit=None, apply_handoff=None, doctor=False, autostart=None,
-             snapshot_once=False, seal_once=False, sync_once=False,
+             status=False, log=False, repo=None, action=None, level=None,
+             tail=None, snapshot_once=False, seal_once=False, sync_once=False,
              pick=None, message=None, yes=False)
     d.update(kw)
     return argparse.Namespace(**d)
@@ -75,3 +76,40 @@ def test_autostart_is_an_action_like_any_other():
     assert _cli_conflict(_args(autostart="on")) is None
     msg = _cli_conflict(_args(autostart="on", doctor=True))
     assert msg and "--autostart" in msg and "--doctor" in msg
+
+
+def test_status_and_log_are_actions():
+    assert _cli_conflict(_args(status=True)) is None
+    assert _cli_conflict(_args(log=True, repo="x", action="seal",
+                               level="INFO", tail=5)) is None
+    msg = _cli_conflict(_args(status=True, log=True))
+    assert msg and "--status" in msg and "--log" in msg
+
+
+def test_view_modifiers_need_their_action():
+    assert "--repo" in _cli_conflict(_args(repo="x"))
+    assert _cli_conflict(_args(status=True, repo="x")) is None
+    msg = _cli_conflict(_args(status=True, tail=5))
+    assert msg and "--tail" in msg and "--log" in msg
+
+
+def test_word_aliases_reach_the_flag_handlers(tmp_path, capsys, monkeypatch):
+    """`sincrogit status` / `sincrogit log` are sugar for --status/--log."""
+    import logging
+
+    import sincrogit.__main__ as m
+    import sincrogit.views as views
+    monkeypatch.setattr(views, "ping_existing_instance", lambda: False)
+    # main() wires the real file logger before dispatching; leaving that
+    # handler on the 'sincrogit' logger poisons every later caplog test (and
+    # writes to a tmp file that pytest deletes).
+    monkeypatch.setattr(m, "setup_logging",
+                        lambda *a, **k: logging.getLogger("sincrogit-cli-test"))
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("repos: []\nlog:\n  file: %s\n"
+                   % str(tmp_path / "s.log").replace("\\", "/"),
+                   encoding="utf-8")
+    assert main(["status", "-c", str(cfg)]) == 0
+    assert "daemon:" in capsys.readouterr().out
+    assert main(["log", "-c", str(cfg), "--tail", "5"]) == 0
+    assert "has the daemon run?" in capsys.readouterr().out

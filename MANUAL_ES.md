@@ -84,6 +84,12 @@ terminal y sale. Todo disparo necesita una config (autodetectada, o `--config PA
 | `--apply-handoff REPO` | Aplicar a REPO el trabajo vivo pendiente de tu otra máquina. |
 | `--doctor` | Chequeo de salud: git, config, rama/remoto/credenciales de cada repo (push --dry-run), pandoc, backends de IA, demonio, auto-arranque. Exit 0 = sano. |
 | `--autostart on\|off` | Registrar / quitar el arranque al iniciar sesión del usuario actual (clave Run de Windows) y salir. Seguro con el demonio corriendo. |
+| `status` / `--status` | Un vistazo a cada repo: rama, estado, edades de snapshot/commit, snapshots sin sellar, ediciones pendientes. Solo lectura — seguro con el demonio corriendo. `--repo NAME` lo limita a un repo. |
+| `log` / `--log` | Imprimir el log estructurado de eventos (la pestaña Log del panel, en la terminal), de antiguo a reciente. Solo lectura — seguro con el demonio corriendo. |
+| `--repo NAME` | Con `status`/`log`: solo ese repo (`log` conserva además los eventos globales, como el filtro del panel). |
+| `--action A[,B,...]` | Con `log`: solo esos tipos de acción (p. ej. `seal,leave-seal,push`). |
+| `--level LVL` | Con `log`: severidad mínima (`DEBUG`/`INFO`/`WARNING`/`ERROR`). |
+| `--tail N` | Con `log`: últimos N eventos (0 = todos; por defecto 50). |
 | `--force` | Ejecutar un disparo único aunque el demonio esté corriendo (salta el rechazo de seguridad). |
 | `--help`, `-h` | Mostrar el uso y salir. |
 
@@ -134,10 +140,12 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
 
 Ábrelo desde el icono de bandeja (doble clic) o *Open control panel*.
 
-- **Status** — la tabla de repos (rama, estado, tiempo desde el último sellado, última acción)
-  con botones por repo. Al pasar el ratón por la celda **State** se explica el estado (por qué
-  un conflicto pausó el repo, qué es un relevo pendiente, por qué un merge/rebase muestra
-  *Busy*). Botones:
+- **Status** — la tabla de repos (rama, estado, edad del snapshot, tiempo desde el último
+  sellado, snapshots sin sellar, última acción) con botones por repo. Al pasar el ratón por
+  la celda **State** se explica el estado (por qué un conflicto pausó el repo, qué es un
+  relevo pendiente, por qué un merge/rebase muestra *Busy*); **Unsealed** cuenta los
+  snapshots que publicará el siguiente commit permanente, y marca con ✎ las ediciones más
+  nuevas que el último snapshot (el `status` de la CLI enseña los mismos números). Botones:
   - **Pause / Resume** — parar/reanudar el autosync de ese repo.
   - **Properties…** — salta a la sección de ese repo en la **pestaña Settings** (sin
     ventana: todo se edita inline allí — ver Settings abajo).

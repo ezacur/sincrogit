@@ -82,6 +82,12 @@ exits. Every one-shot needs a config (auto-discovered, or `--config PATH`).
 | `--apply-handoff REPO` | Apply your other machine's pending live work to REPO. |
 | `--doctor` | Health check: git, config, each repo's branch/remote/credentials (dry-run push), pandoc, AI backends, daemon, auto-start. Exit 0 = healthy. |
 | `--autostart on\|off` | Register / unregister start-at-login for the current user (Windows Run key), then exit. Safe alongside a running daemon. |
+| `status` / `--status` | One glance at every repo: branch, state, snapshot/commit ages, unsealed snapshots, pending edits. Read-only — safe alongside the daemon. `--repo NAME` limits it to one repo. |
+| `log` / `--log` | Print the structured event log (the panel's Log tab, in the terminal), oldest to newest. Read-only — safe alongside the daemon. |
+| `--repo NAME` | With `status`/`log`: only this repo (`log` keeps global events too, like the panel's filter). |
+| `--action A[,B,...]` | With `log`: only these action types (e.g. `seal,leave-seal,push`). |
+| `--level LVL` | With `log`: minimum severity (`DEBUG`/`INFO`/`WARNING`/`ERROR`). |
+| `--tail N` | With `log`: last N events (0 = all; default 50). |
 | `--force` | Run a one-shot even while the daemon is running (skips the safety refusal). |
 | `--help`, `-h` | Show usage and exit. |
 
@@ -132,9 +138,12 @@ the cross-machine handoff (useful with `live_handoff: ask`, or to force it now).
 
 Open it from the tray icon (double-click) or *Open control panel*.
 
-- **Status** — the repos table (branch, state, time since last seal, last action) with per-repo
-  buttons. Hovering the **State** cell explains it (why a conflict paused the repo, what a
-  pending handoff is, why a merge/rebase shows *Busy*). Buttons:
+- **Status** — the repos table (branch, state, snapshot age, time since last seal,
+  unsealed snapshots, last action) with per-repo buttons. Hovering the **State** cell
+  explains it (why a conflict paused the repo, what a pending handoff is, why a
+  merge/rebase shows *Busy*); **Unsealed** counts the snapshots the next permanent
+  commit will publish, and marks with ✎ any edits newer than the last snapshot (the
+  CLI `status` shows the same numbers). Buttons:
   - **Pause / Resume** — stop/resume autosync for that repo.
   - **Properties…** — jumps to this repo's section in the **Settings tab** (no
     window: everything edits inline there — see Settings below).

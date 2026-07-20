@@ -302,6 +302,7 @@ sincrogit/
 │  ├─ notify.py          # Windows notifications (toasts)
 │  ├─ convert.py         # in-process readable-text extraction (.pptx via python-pptx)
 │  ├─ doctor.py          # --doctor health check (git/remotes/credentials/AI/daemon)
+│  ├─ views.py           # read-only CLI views: `status` and `log`
 │  ├─ autostart.py       # start-at-login (per-user Run key; §9)
 │  └─ gui/               # tray icon + control panel (Time machine / Settings tabs
 │                        #   inline) + dialogs (add-repo, machines, smart-commit, hunks)
@@ -554,7 +555,12 @@ and stays user-visible. In a source checkout the registered command is
   is created on first run.
 - ✅ Start at log-on: per-user Run key via the Settings checkbox or `--autostart on|off`,
   with doctor reporting and stale-entry self-heal (§9 has the decision).
-- ⏳ Pending: `status` command/tab (the "seal+push now" shortcut is already in the menu).
+- ✅ `status` / `log` CLI views (read-only, daemon-safe): per-repo glance and the
+  panel's event stream in the terminal, with repo/action/level filters.
+- ✅ Distribution decision: **portable single exe** instead of an installer — the folder
+  the exe sits in IS the installation (config found/created there, with EVERY option in
+  the generated template, enforced by an introspective test). The only machine-global
+  trace is the optional start-at-login Run entry, which self-heals on relocation.
 - ✅ `sincrogit doctor` health check (git, config, each repo's branch/remote,
   read reachability + push credentials, pandoc, AI backends, daemon) — `--doctor`,
   with its own test suite (`tests/test_doctor.py`).

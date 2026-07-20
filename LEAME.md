@@ -134,7 +134,9 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
 - ✅ **Menú** de bandeja: abrir panel, pausar/reanudar, sincronizar ahora, sellar
   ahora, salir.
 - ✅ **Panel de control** con pestañas:
-  - *Status*: tabla de repos (rama, estado, tiempo desde el último sellado, última
+  - *Status*: tabla de repos (rama, estado, edad del snapshot, tiempo desde el último
+    sellado, snapshots sin sellar — con marcador ✎ si hay ediciones esperando la
+    siguiente captura — última
     acción) con una **barra de acciones para el repo seleccionado** (Pausar/Reanudar,
     Properties…, Commit…, Seal+Push, Fetch+Pull, Apply handoff — con indicador
     "working…" mientras una corre — y un botón "How to fix…" cuando un conflicto pausa
@@ -198,7 +200,10 @@ Por orden de prioridad:
    desactivar desde Administrador de tareas → Aplicaciones de arranque), `--doctor`
    informa de su estado, y la bandeja auto-repara una entrada que apunte a un programa
    que ya no existe — ver [DISENO.md §9](DISENO.md).
-3. **Comando `sincrogit status`** (el menú de bandeja ya cubre las acciones comunes).
+3. **Comando `sincrogit status`** — **hecho**, junto con su hermano `sincrogit log`:
+   un vistazo por repo (rama, edades de snapshot/commit, trabajo sin sellar) y el log
+   de eventos del panel en la terminal (`--repo`, `--action`, `--level`, `--tail`).
+   Ambos son de solo lectura y seguros con el demonio corriendo.
 
 ### TODO — mensajes IA (la tanda inspirada en aicommit2)
 
@@ -738,6 +743,15 @@ corriendo desde *otra* ruta se deja en paz.
   luego en `%APPDATA%\SincroGit\`. En el primer arranque sin ninguna, crea una por
   defecto junto al exe (o en `%APPDATA%\SincroGit\` si esa carpeta no es escribible) y
   abre la pestaña Configuración. `sincrogit.log` se escribe junto a la config.
+
+**La distribución es portable a propósito** (la alternativa deliberada a un instalador):
+copias el exe único a una carpeta y esa carpeta es la instalación — la config se busca
+**ahí primero**, y la que se genera en el primer arranque lista **todas las opciones**
+con su valor por defecto y un comentario (un test introspecciona los dataclasses, así
+que una opción nueva no puede publicarse sin aparecer en la plantilla). Mover la carpeta
+mueve el montaje entero; la única huella global en la máquina es la entrada Run opcional
+del arranque al login, que se auto-repara hacia la nueva ubicación en el siguiente
+lanzamiento.
 
 Notas: es un build `--onefile --noconsole` (~55 MB); el primer arranque se descomprime
 en un temporal (~1–2 s). Para redirigir salida o automatizar, prefiere `python -m sincrogit`.

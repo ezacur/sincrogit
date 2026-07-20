@@ -216,7 +216,14 @@ class ControlPanel(QMainWindow):
                          name="sincrogit-panel-history", daemon=True).start()
 
     # =============================================================== STATUS
-    _COLS = ["Repo", "Branch", "State", "Since last seal", "Last action"]
+    _COLS = ["Repo", "Branch", "State", "Snapshot", "Since last seal",
+             "Unsealed", "Last action"]
+
+    _UNSEALED_TIP = ("Snapshots captured since the last permanent commit — the "
+                     "work the next seal will publish. ✎ = edits newer than the "
+                     "last snapshot (the next capture is pending).")
+    _SNAPSHOT_TIP = ("Age of the last time-machine capture in THIS session "
+                     "(the daemon snapshots every few minutes while you work).")
 
     def _build_status_tab(self) -> QWidget:
         w = QWidget()
@@ -457,8 +464,14 @@ class ControlPanel(QMainWindow):
                 tip = _handoff_tooltip(r)
             else:
                 tip = self._STATE_TIP.get(s, "")
+            unsealed = r.get("unsealed")
+            un_txt = "—" if unsealed is None else str(unsealed)
+            if r.get("pending_edits"):
+                un_txt += " ✎"
             cells = [r["name"], r["branch"] or "—", state,
-                     _humanize_since(r["last_seal"]), r["last_action"] or "—"]
+                     _humanize_since(r.get("last_snapshot")),
+                     _humanize_since(r["last_seal"]), un_txt,
+                     r["last_action"] or "—"]
             for col, text in enumerate(cells):
                 item = self.tbl_repos.item(i, col)
                 if item is None:
@@ -472,6 +485,10 @@ class ControlPanel(QMainWindow):
                         # Clear the role: an invalid QColor() would paint black,
                         # wrong under a non-default/dark palette.
                         item.setData(Qt.ForegroundRole, None)
+                elif col == 3:
+                    item.setToolTip(self._SNAPSHOT_TIP)
+                elif col == 5:
+                    item.setToolTip(self._UNSEALED_TIP)
         self._sync_action_bar()
 
     def _toggle_repo_pause(self, name):

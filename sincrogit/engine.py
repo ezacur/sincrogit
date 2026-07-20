@@ -101,6 +101,10 @@ class RepoState:
         # For the control panel (wall-clock time, not monotonic):
         self.branch = None
         self.last_snapshot_wall = None
+        # Snapshots taken since the last seal (what the next seal will publish).
+        # Seeded from git at setup, then maintained INCREMENTALLY — status()
+        # reads it on the GUI thread and must never run git.
+        self.unsealed_count = 0
         self.last_action = ""
         self.last_action_ts = 0.0
 
@@ -379,6 +383,7 @@ class Engine:
             return False  # e.g. a .docx resave whose markdown didn't change
         repo.commit_shadow(branch, tree, tip)
         st.autosnap_pending = True  # the live mirror is now stale
+        st.unsealed_count += 1
         return True
 
     def _uncaptured(self, st: "RepoState") -> list:
@@ -566,6 +571,8 @@ class Engine:
                 "pending_handoff_epoch": (st.pending_handoff or {}).get("epoch"),
                 "last_snapshot": st.last_snapshot_wall,
                 "last_seal": st.last_seal_epoch if st.has_sealed else None,
+                "unsealed": st.unsealed_count,
+                "pending_edits": st.read_dirty()[0],
                 "last_action": st.last_action,
                 "last_action_ts": st.last_action_ts,
                 "push": st.cfg.push,
@@ -644,6 +651,8 @@ class Engine:
         st.last_seal_epoch = float(sealed) if sealed else time.time()
         st.has_sealed = sealed is not None
         st.user = repo.sincro_user()
+        st.unsealed_count = repo.commits_ahead(
+            rc.branch, repo.shadow_ref(rc.branch)) or 0
 
         with self._states_lock:
             self.states.append(st)
@@ -881,6 +890,7 @@ class Engine:
             st.last_seal_epoch = time.time()  # a real seal resets the 6 h clock
             st.has_sealed = True
             st.autosnap_pending = True
+            st.unsealed_count = 0
             self._leave_sealed.add(st.cfg.name)
             self._mark_action(st, "leave-seal")
             self._emit(st.cfg.name, "leave-seal", title)
@@ -1262,6 +1272,7 @@ class Engine:
         st.last_seal_epoch = now_epoch
         st.has_sealed = True
         st.autosnap_pending = True
+        st.unsealed_count = 0
         self._mark_action(st, "seal")
         self._emit(st.cfg.name, "seal", title)
         st.repo.gc_auto()
@@ -1308,6 +1319,7 @@ class Engine:
         st.last_seal_epoch = now_epoch
         st.has_sealed = True
         st.autosnap_pending = True  # the mirror should now track the sealed tip
+        st.unsealed_count = 0
         self._mark_action(st, "seal")
         self._emit(st.cfg.name, "seal", title)
 
@@ -1705,6 +1717,10 @@ class Engine:
                     return False, ("you saved an edit while it was being applied; "
                                    "nothing was touched (the edit is snapshotted) "
                                    "— try again")
+                # Branch and shadow both moved to the peer's state: re-derive
+                # the unsealed counter from git while we hold the lock.
+                st.unsealed_count = repo.commits_ahead(
+                    st.active_branch, repo.shadow_ref(st.active_branch)) or 0
         except GitError as e:
             return False, str(e)
         return True, f"applied '{peer['host']}'"
@@ -1742,6 +1758,10 @@ class Engine:
         if ok and not dirty_conflict:
             self._mark_action(st, "pull")
             self._emit(cfg.name, "pull", f"integrated {behind} commit(s) from the remote")
+            # The branch (and possibly the rebased shadow) moved: re-derive the
+            # unsealed counter from git — we're on a network worker, git is fine.
+            st.unsealed_count = repo.commits_ahead(
+                st.active_branch, repo.shadow_ref(st.active_branch)) or 0
             # A never-sealed repo may have just pulled sealed commits: reflect it
             # in the panel ("since last seal") and base the seal clock on the real
             # one (the extra git call only happens until the first seal is seen).

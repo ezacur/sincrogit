@@ -10,6 +10,8 @@ Launch model:
   --commit REPO [-m MSG|-y] -> manual commit of REPO (edit the proposed message, then seal+push)
   --apply-handoff REPO      -> apply your other machine's pending live work to REPO
   --autostart on|off        -> register/unregister start-at-login (per-user Run key)
+  status | --status         -> one glance at every repo (read-only, daemon-safe)
+  log | --log               -> print the event log (filter: --repo/--action/--level, --tail)
 
 With no arguments the GUI launches; if an instance is already running, the new
 launch just asks the running one to show its panel and exits. Any argument is
@@ -375,6 +377,10 @@ def _cli_conflict(args) -> str | None:
         actions.append("--doctor")
     if args.autostart is not None:
         actions.append("--autostart")
+    if args.status:
+        actions.append("--status")
+    if args.log:
+        actions.append("--log")
     # --snapshot-once/--seal-once/--sync-once DELIBERATELY combine (one batch pass),
     # so they count as a single action category here.
     once = [n for n, v in (("--snapshot-once", args.snapshot_once),
@@ -391,6 +397,10 @@ def _cli_conflict(args) -> str | None:
         return "--message/--yes only apply with --commit"
     if args.message is not None and args.yes:
         return "--message and --yes are mutually exclusive (one gives the message, the other accepts the AI's)"
+    if args.repo is not None and not (args.log or args.status):
+        return "--repo only applies with --status/--log"
+    if any(v is not None for v in (args.action, args.level, args.tail)) and not args.log:
+        return "--action/--level/--tail only apply with --log"
     return None
 
 
@@ -404,6 +414,13 @@ def main(argv=None) -> int:
     # Any argument -> command-line invocation. Make output visible if we're a
     # windowed (--noconsole) frozen exe launched from a terminal.
     attach_parent_console()
+
+    # Word-command sugar: `sincrogit status` / `sincrogit log` read better than
+    # flags for the two everyday views. First token only — everything after it
+    # stays ordinary flags (`sincrogit log --repo x --level WARNING`).
+    _WORDS = {"status": "--status", "log": "--log"}
+    if argv and argv[0] in _WORDS:
+        argv = [_WORDS[argv[0]], *argv[1:]]
 
     parser = argparse.ArgumentParser(
         prog="sincrogit",
@@ -444,6 +461,24 @@ def main(argv=None) -> int:
                         help="Register (on) or unregister (off) start-at-login for "
                              "the current user (Windows Run key) and exit. The GUI "
                              "checkbox in Settings does the same.")
+    parser.add_argument("--status", action="store_true",
+                        help="One glance at every repo: branch, last snapshot/commit, "
+                             "unsealed work. Read-only — safe alongside the daemon. "
+                             "(Word form: `sincrogit status`.)")
+    parser.add_argument("--log", action="store_true",
+                        help="Print the structured event log (the panel's Log tab, in "
+                             "the terminal). Read-only — safe alongside the daemon. "
+                             "(Word form: `sincrogit log`.)")
+    parser.add_argument("--repo", metavar="NAME",
+                        help="With --status/--log: only this repo (--log keeps global "
+                             "events too, like the panel's filter).")
+    parser.add_argument("--action", metavar="A[,B,...]",
+                        help="With --log: only these action types "
+                             "(e.g. seal,leave-seal,push).")
+    parser.add_argument("--level", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="With --log: minimum severity to show.")
+    parser.add_argument("--tail", type=int, metavar="N",
+                        help="With --log: last N events (0 = all; default 50).")
     args = parser.parse_args(argv)
 
     conflict = _cli_conflict(args)
@@ -488,6 +523,19 @@ def main(argv=None) -> int:
         print(msg if ok else f"Failed: {msg}",
               file=sys.stdout if ok else sys.stderr)
         return 0 if ok else 1
+
+    # `status` and `log` are read-only views (git reads / events.jsonl reads),
+    # so — like --doctor — they run happily alongside the daemon and skip the
+    # one-shot refusal below.
+    if args.status:
+        from .views import run_status
+        return run_status(config, repo_name=args.repo)
+
+    if args.log:
+        from .views import run_log
+        return run_log(config, repo=args.repo, actions=args.action,
+                       level=args.level,
+                       tail=50 if args.tail is None else max(0, args.tail))
 
     # One-shots run their own Engine on the same repos: against a live daemon the
     # two processes would race git (amend vs. amend, TOCTOU over index.lock).
