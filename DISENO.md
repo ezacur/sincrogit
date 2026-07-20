@@ -306,6 +306,7 @@ sincrogit/
 │  ├─ notify.py          # notificaciones Windows (toasts)
 │  ├─ convert.py         # extracción in-process de texto legible (.pptx vía python-pptx)
 │  ├─ doctor.py          # chequeo de salud --doctor (git/remotos/credenciales/IA/demonio)
+│  ├─ autostart.py       # arranque al iniciar sesión (clave Run por usuario; §9)
 │  └─ gui/               # bandeja PyQt5 + panel (pestañas Time machine / Settings
 │                        #   inline) + diálogos (add-repo, máquinas, smart-commit, hunks)
 ├─ tests/               # batería pytest (repos git desechables + Qt offscreen); `pytest`
@@ -374,20 +375,26 @@ repos:
 
 | Opción | Cómo | Pros | Contras |
 |--------|------|------|---------|
-| **Tarea programada "al iniciar sesión"** ⭐ | Task Scheduler → trigger *At log on*, acción `pythonw.exe -m sincrogit --tray`, ventana oculta, reinicio automático | Corre **en tu sesión de usuario** → tiene acceso a tus **claves SSH / Credential Manager** para el push. Resiliente. | Solo corre con sesión iniciada (suficiente: solo editas logueado). |
-| **`pythonw.exe` en carpeta Inicio** | Acceso directo en `shell:startup` | Lo más simple | Menos control de reinicio/logs. |
+| **Clave `Run` por usuario** ⭐ | `HKCU\...\CurrentVersion\Run` → `"SincroGit.exe" --tray -c "config.yaml"` | Corre **en tu sesión de usuario** → ve tus **claves SSH / Credential Manager**. Sin elevación, `winreg` de stdlib, idempotente, y Windows la lista en **Administrador de tareas → Aplicaciones de arranque** (el usuario puede apagarla ahí). | Solo corre con sesión iniciada (suficiente: solo editas logueado). |
+| **Tarea programada "al iniciar sesión"** | Task Scheduler → trigger *At log on*, ventana oculta, reinicio automático | Misma historia de sesión/credenciales; añade arranque diferido + política de reinicio. | Crear una tarea at-logon suele pedir elevación; menos descubrible que la lista de Aplicaciones de arranque. |
+| **Acceso directo en carpeta Inicio** | `.lnk` en `shell:startup` | Simple, visible como fichero | Crear un `.lnk` programáticamente requiere COM; nada que la clave Run no haga. |
 | **Servicio Windows real** (NSSM o `pywin32`) | NSSM envuelve el script como servicio | Arranca sin login | ⚠️ Corre como *LocalSystem* → **no ve tus claves SSH / credenciales de usuario** → el **push falla**. Habría que configurar credenciales a nivel de máquina. |
 
-**Recomendación: Tarea programada "al iniciar sesión" con `pythonw.exe`** (sin consola). Es lo que mejor encaja porque:
-- Solo necesitas que corra mientras trabajas (logueado).
-- Hereda tus credenciales de git → el push funciona sin configurar nada raro.
-- Task Scheduler da reinicio automático y arranque diferido.
+**Decisión (como está construido): la clave `Run` por usuario** (`autostart.py`). La
+tarea programada fue el boceto original, pero sus dos extras no aportan nada aquí — el
+mutex de instancia única ya deduplica lanzamientos dobles, y el engine tolera arrancar
+antes de que haya red (el pull reintenta en sus intervalos) — mientras que la clave Run
+no necesita elevación y queda visible para el usuario. En un checkout de código el
+comando registrado es `pythonw.exe -m sincrogit --tray` (sin ventana de consola);
+congelado, es el propio exe.
 
-`pythonw.exe` (en vez de `python.exe`) evita que aparezca una ventana de consola.
-
-> **Estado:** este empaquetado es la pieza de la Fase 3 aún pendiente (§12). Hoy lanzas
-> SincroGit tú mismo (doble clic / `--tray`) o con un acceso directo en `shell:startup`;
-> lo de arriba es el plan para automatizarlo.
+> **Estado: entregado.** La casilla de Settings ("Start SincroGit when I sign in to
+> Windows") y `--autostart on|off` escriben ambas la clave; a propósito NO forma parte
+> de `config.yaml` (es por máquina — el comando incrusta las rutas del exe y la config
+> de esta máquina, y el YAML puede viajar entre máquinas). `--doctor` informa del
+> estado, incluida una entrada **muerta** (el destino ya no existe); la bandeja
+> auto-repara ese caso al arrancar re-registrándose a sí misma — pero nunca toca una
+> entrada viva que apunte a otro sitio.
 
 ---
 
@@ -558,8 +565,9 @@ repos:
   Ver §11.)*
 - ✅ Resolución de config: junto al .exe → `%APPDATA%\SincroGit\` → cwd; en el primer
   arranque se crea una por defecto.
-- ⏳ Pendiente: tarea programada al iniciar sesión que auto-arranque `SincroGit.exe` —
-  sin ella, la promesa de "cero disciplina" depende de acordarse de lanzar la herramienta.
+- ✅ Arranque al iniciar sesión: clave Run por usuario vía la casilla de Settings o
+  `--autostart on|off`, con informe en doctor y auto-reparación de entradas muertas
+  (la decisión está en §9).
 - ⏳ Pendiente: comando/pestaña `status` (el atajo "sellar+push ahora" ya está en el menú).
 - ✅ Chequeo de salud `sincrogit doctor` (git, config, rama/remoto de cada repo,
   accesibilidad de lectura + credenciales de push, pandoc, backends de IA, demonio) —
@@ -625,8 +633,8 @@ repos:
 - ✅ **Proveedor de nube: Gemini** (`gemini-2.5-flash-lite`), API key en variable de entorno.
 - ✅ Filtro: **solo texto < 1 MB**; binarios/grandes a mano.
 - ✅ **Python**; git vía subprocess; `watchdog`; **PyQt5** para la UI de bandeja.
-- ✅ Background: **Tarea programada al iniciar sesión** con `pythonw.exe`. *(Decisión
-  tomada; implementarla es el punto pendiente de la Fase 3 — §9, §12.)*
+- ✅ Background: **arranque al iniciar sesión**. *(La decisión original fue una tarea
+  programada; al construirlo se cambió a la clave Run por usuario — razones en §9.)*
 - ✅ Rama de trabajo: **`main`** (confirmar por repo).
 - ✅ **Sellado cada 6 h** (timeline permanente grueso); un sellado manual (*Seal now* / `--seal-once` / Smart Commit) para el handoff por la vía limpia.
 - ✅ **Pull periódico cada 10 min** (`fetch` + pull solo si el remoto tiene commits nuevos), además del pull de arranque.

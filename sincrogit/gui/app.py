@@ -22,6 +22,7 @@ import yaml
 from PyQt5.QtCore import QAbstractNativeEventFilter, QObject, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from .. import autostart
 from ..config import append_repo, atomic_write_text, load_config
 from ..engine import Engine
 from ..events import EventLog
@@ -180,6 +181,16 @@ class TrayApp:
 
         self.panel = ControlPanel(self)
         self._build_tray()
+
+        # Start-at-login self-heal: an entry left pointing at an exe that no
+        # longer exists (dist\ moved, old install removed) would silently
+        # launch nothing at logon — re-register THIS invocation. Only the
+        # stale case; a live entry (even a different install) is respected.
+        if autostart.heal(self.config_path):
+            self._on_engine_event(
+                "", "info",
+                "start-at-login pointed at a missing program; re-registered "
+                "this one", "WARNING")
 
         # Refresh of the icon/tooltip state.
         self._timer = QTimer()
@@ -771,6 +782,18 @@ class TrayApp:
             return reset_repo_overrides(self.config_path, name)
         except (OSError, yaml.YAMLError) as e:
             return False, str(e)
+
+    # ---- start at login (registry, per machine — NOT part of config.yaml) ----
+    def autostart_enabled(self):
+        """(enabled, why_not): why_not is None when the toggle is usable, else
+        the reason it's disabled (non-Windows)."""
+        if not autostart.supported():
+            return False, "Start at login is only available on Windows."
+        return autostart.is_enabled(), None
+
+    def set_autostart(self, enabled: bool):
+        """(ok, msg). Applies immediately — no restart involved."""
+        return autostart.set_autostart(enabled, self.config_path)
 
     # ---- file history / restore ----
     def repo_list(self):

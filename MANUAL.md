@@ -46,6 +46,14 @@ same repos' snapshots would race each other's git work. A second tray launch jus
 running panel to the front and exits 0; a second `--headless` refuses to start (exit
 code 2).
 
+**Start at login (Windows):** tick *Start SincroGit when I sign in to Windows* in the
+Settings tab (applied the moment you Save; no restart), or run `--autostart on`. It
+registers the current program + config in the per-user Run key — no admin needed, and
+Windows also lists it under Task Manager → Startup apps, where you can toggle it like any
+other app. It is a per-machine setting (not stored in `config.yaml`), `--doctor` reports
+its state, and if the entry is ever left pointing at a program that no longer exists (a
+moved install), the next tray launch re-registers itself.
+
 ---
 
 ## 3. CLI command reference
@@ -72,7 +80,8 @@ exits. Every one-shot needs a config (auto-discovered, or `--config PATH`).
 | `--pick N` | With `--history`: restore version N non-interactively. |
 | `--autosnaps` | Fetch + list the per-machine autosnap recovery points for every repo. |
 | `--apply-handoff REPO` | Apply your other machine's pending live work to REPO. |
-| `--doctor` | Health check: git, config, each repo's branch/remote/credentials (dry-run push), pandoc, AI backends, daemon. Exit 0 = healthy. |
+| `--doctor` | Health check: git, config, each repo's branch/remote/credentials (dry-run push), pandoc, AI backends, daemon, auto-start. Exit 0 = healthy. |
+| `--autostart on\|off` | Register / unregister start-at-login for the current user (Windows Run key), then exit. Safe alongside a running daemon. |
 | `--force` | Run a one-shot even while the daemon is running (skips the safety refusal). |
 | `--help`, `-h` | Show usage and exit. |
 

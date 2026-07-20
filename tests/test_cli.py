@@ -13,7 +13,7 @@ from sincrogit.__main__ import _cli_conflict, main
 def _args(**kw):
     """An argparse.Namespace with every CLI flag at its default, overridden by kw."""
     d = dict(tray=False, headless=False, history=None, autosnaps=False,
-             commit=None, apply_handoff=None, doctor=False,
+             commit=None, apply_handoff=None, doctor=False, autostart=None,
              snapshot_once=False, seal_once=False, sync_once=False,
              pick=None, message=None, yes=False)
     d.update(kw)
@@ -69,3 +69,9 @@ def test_main_rejects_conflict_with_exit_2(capsys):
     rc = main(["--pick", "3"])  # orphan --pick, no --history
     assert rc == 2
     assert "--pick" in capsys.readouterr().err
+
+
+def test_autostart_is_an_action_like_any_other():
+    assert _cli_conflict(_args(autostart="on")) is None
+    msg = _cli_conflict(_args(autostart="on", doctor=True))
+    assert msg and "--autostart" in msg and "--doctor" in msg

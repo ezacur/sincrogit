@@ -149,3 +149,37 @@ def test_revisiting_a_repo_rebuilds_the_pane_fresh(qapp):
     t.select_repo("beta")             # same row as before
     assert t._pane is not first       # rebuilt, not the stale leftover
     assert t._pane.ed_branch.text() == "develop"
+
+
+def test_autostart_checkbox_reflects_and_applies(qapp, monkeypatch):
+    """The start-at-login toggle mirrors the registry (via the controller) on
+    load and applies IMMEDIATELY on Save — it never touches config.yaml."""
+    _mute_boxes(monkeypatch)
+
+    class AutoCtl(Ctl):
+        def __init__(self, text):
+            super().__init__(text)
+            self.autostart = True
+            self.applied = None
+
+        def autostart_enabled(self):
+            return self.autostart, None
+
+        def set_autostart(self, enabled):
+            self.applied = enabled
+            return True, "ok"
+
+    ctl = AutoCtl("defaults: {}\n")
+    t = stab.SettingsTab(ctl)
+    assert t.ck_autostart.isChecked() and t.ck_autostart.isEnabled()
+    t.ck_autostart.setChecked(False)
+    t._save(restart=False)
+    assert ctl.applied is False
+    assert "autostart" not in (ctl.saved or "")     # registry, not YAML
+
+
+def test_autostart_checkbox_disabled_without_support(qapp):
+    """Duck-typing: a controller without the autostart API (tests, non-Windows)
+    just gets a disabled checkbox — saving skips the registry entirely."""
+    t = stab.SettingsTab(Ctl("defaults: {}\n"))
+    assert not t.ck_autostart.isEnabled()

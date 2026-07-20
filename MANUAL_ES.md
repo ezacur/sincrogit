@@ -47,6 +47,15 @@ demonios fotografiando los mismos repos competirían por git. Un segundo lanzami
 de la bandeja simplemente trae el panel en marcha al frente y sale con 0; un segundo
 `--headless` rehúsa arrancar (código de salida 2).
 
+**Arranque al iniciar sesión (Windows):** marca *Start SincroGit when I sign in to
+Windows* en la pestaña Settings (se aplica al guardar; sin reiniciar), o ejecuta
+`--autostart on`. Registra el programa + config actuales en la clave Run por usuario —
+sin admin, y Windows también lo lista en Administrador de tareas → Aplicaciones de
+arranque, donde puedes activarlo/desactivarlo como cualquier otra app. Es un ajuste por
+máquina (no se guarda en `config.yaml`), `--doctor` informa de su estado, y si la entrada
+queda apuntando a un programa que ya no existe (una instalación movida), el siguiente
+arranque de la bandeja se re-registra a sí mismo.
+
 ---
 
 ## 3. Referencia de comandos CLI
@@ -73,7 +82,8 @@ terminal y sale. Todo disparo necesita una config (autodetectada, o `--config PA
 | `--pick N` | Con `--history`: restaurar la versión N sin interacción. |
 | `--autosnaps` | Bajar + listar los puntos de recuperación autosnap (por máquina) de cada repo. |
 | `--apply-handoff REPO` | Aplicar a REPO el trabajo vivo pendiente de tu otra máquina. |
-| `--doctor` | Chequeo de salud: git, config, rama/remoto/credenciales de cada repo (push --dry-run), pandoc, backends de IA, demonio. Exit 0 = sano. |
+| `--doctor` | Chequeo de salud: git, config, rama/remoto/credenciales de cada repo (push --dry-run), pandoc, backends de IA, demonio, auto-arranque. Exit 0 = sano. |
+| `--autostart on\|off` | Registrar / quitar el arranque al iniciar sesión del usuario actual (clave Run de Windows) y salir. Seguro con el demonio corriendo. |
 | `--force` | Ejecutar un disparo único aunque el demonio esté corriendo (salta el rechazo de seguridad). |
 | `--help`, `-h` | Mostrar el uso y salir. |
 

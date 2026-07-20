@@ -187,6 +187,13 @@ class SettingsTab(QWidget):
         # ----------------------------------------------------------- app/misc
         g4 = QGroupBox("Appearance && system")
         f4 = QFormLayout(g4)
+        self.ck_autostart = QCheckBox("Start SincroGit when I sign in to Windows")
+        self.ck_autostart.setToolTip(
+            "Registers this SincroGit (exe + this config) in the per-user Run "
+            "key — no admin needed, and you can also toggle it in Task Manager's "
+            "Startup apps. Applied the moment you Save; not stored in "
+            "config.yaml (it's a property of this machine).")
+        f4.addRow(self.ck_autostart)
         self.cb_theme = _combo(_THEMES)
         f4.addRow("Theme", self.cb_theme)
         self.ed_pandoc = QLineEdit()
@@ -360,6 +367,18 @@ class SettingsTab(QWidget):
         lvl = str(logc.get("level", "INFO")).upper()
         self.cb_log.setCurrentText(lvl if lvl in _LOG_LEVELS else "INFO")
 
+        # Start at login lives in the REGISTRY, not the YAML (per machine).
+        # Duck-typed like the rest: controllers without it (tests) disable it.
+        probe = getattr(self.c, "autostart_enabled", None)
+        if probe is None:
+            self.ck_autostart.setEnabled(False)
+        else:
+            enabled, why_not = probe()
+            self.ck_autostart.setChecked(enabled)
+            self.ck_autostart.setEnabled(why_not is None)
+            if why_not:
+                self.ck_autostart.setToolTip(why_not)
+
     # ------------------------------------------------------------------ save
     def _save(self, restart: bool):
         raw = self._raw()
@@ -400,6 +419,19 @@ class SettingsTab(QWidget):
         if not ok:
             QMessageBox.critical(self, "Settings", f"Could not save: {msg}")
             return
+
+        # Start at login goes to the registry, and takes effect NOW (it is not
+        # config; no restart involved). A registry failure must not eat the
+        # YAML save that already happened — report it and carry on.
+        setter = getattr(self.c, "set_autostart", None)
+        if setter is not None and self.ck_autostart.isEnabled():
+            ok_reg, msg_reg = setter(self.ck_autostart.isChecked())
+            if not ok_reg:
+                QMessageBox.warning(
+                    self, "Settings",
+                    f"Settings saved, but start-at-login could not be updated: "
+                    f"{msg_reg}")
+
         if restart:
             self.c.restart()
         else:

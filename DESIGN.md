@@ -302,6 +302,7 @@ sincrogit/
 │  ├─ notify.py          # Windows notifications (toasts)
 │  ├─ convert.py         # in-process readable-text extraction (.pptx via python-pptx)
 │  ├─ doctor.py          # --doctor health check (git/remotes/credentials/AI/daemon)
+│  ├─ autostart.py       # start-at-login (per-user Run key; §9)
 │  └─ gui/               # tray icon + control panel (Time machine / Settings tabs
 │                        #   inline) + dialogs (add-repo, machines, smart-commit, hunks)
 ├─ tests/               # pytest suite (throwaway git repos + offscreen Qt); `pytest`
@@ -370,20 +371,24 @@ repos:
 
 | Option | How | Pros | Cons |
 |--------|-----|------|------|
-| **Scheduled task "at log on"** ⭐ | Task Scheduler → trigger *At log on*, action `pythonw.exe -m sincrogit --tray`, hidden window, automatic restart | Runs **in your user session** → has access to your **SSH keys / Credential Manager** for the push. Resilient. | Only runs while logged in (enough: you only edit while logged in). |
-| **`pythonw.exe` in the Startup folder** | Shortcut in `shell:startup` | Simplest | Less control over restart/logs. |
+| **Per-user `Run` registry key** ⭐ | `HKCU\...\CurrentVersion\Run` → `"SincroGit.exe" --tray -c "config.yaml"` | Runs **in your user session** → sees your **SSH keys / Credential Manager**. No elevation, stdlib `winreg`, idempotent, and Windows lists it in **Task Manager → Startup apps** (user-toggleable). | Only runs while logged in (enough: you only edit while logged in). |
+| **Scheduled task "at log on"** | Task Scheduler → trigger *At log on*, hidden window, automatic restart | Same session/credentials story; adds delayed start + restart policy. | Creating an at-logon task often needs elevation; less discoverable than the Startup-apps list. |
+| **Shortcut in the Startup folder** | `.lnk` in `shell:startup` | Simple, visible as a file | Creating a `.lnk` programmatically needs COM; nothing the Run key doesn't do. |
 | **Real Windows service** (NSSM or `pywin32`) | NSSM wraps the script as a service | Starts without login | ⚠️ Runs as *LocalSystem* → **doesn't see your SSH keys / user credentials** → the **push fails**. You'd have to configure machine-level credentials. |
 
-**Recommendation: scheduled task "at log on" with `pythonw.exe`** (no console). It fits best because:
-- You only need it to run while you work (logged in).
-- It inherits your git credentials → the push works without configuring anything weird.
-- Task Scheduler provides automatic restart and delayed start.
+**Decision (as built): the per-user `Run` key** (`autostart.py`). The scheduled task
+was the original sketch, but its two extras buy nothing here — the single-instance
+mutex already dedupes double launches, and the engine tolerates starting before the
+network is up (pull retries on its intervals) — while the Run key needs no elevation
+and stays user-visible. In a source checkout the registered command is
+`pythonw.exe -m sincrogit --tray` (no console window); frozen, it's the exe itself.
 
-`pythonw.exe` (instead of `python.exe`) avoids a console window appearing.
-
-> **Status:** this packaging is the one Phase-3 piece still pending (§12). Today you
-> launch SincroGit yourself (double-click / `--tray`) or drop a shortcut in
-> `shell:startup`; everything above is the plan for automating that.
+> **Status: shipped.** The Settings checkbox ("Start SincroGit when I sign in to
+> Windows") and `--autostart on|off` both write the key; it is deliberately NOT part
+> of `config.yaml` (per-machine — the command embeds this machine's exe and config
+> paths, and the YAML may travel between machines). `--doctor` reports the state,
+> including a **stale** entry (target gone); the tray self-heals that case at startup
+> by re-registering itself — but never touches a live entry pointing elsewhere.
 
 ---
 
@@ -547,8 +552,8 @@ repos:
   CLI one-shots; the port remains as the activation/ping channel. See §11.)*
 - ✅ Config resolution: next to the .exe → `%APPDATA%\SincroGit\` → cwd; a default
   is created on first run.
-- ⏳ Pending: scheduled task at log on to auto-start `SincroGit.exe` — without it, the
-  "zero discipline" promise depends on remembering to launch the tool.
+- ✅ Start at log-on: per-user Run key via the Settings checkbox or `--autostart on|off`,
+  with doctor reporting and stale-entry self-heal (§9 has the decision).
 - ⏳ Pending: `status` command/tab (the "seal+push now" shortcut is already in the menu).
 - ✅ `sincrogit doctor` health check (git, config, each repo's branch/remote,
   read reachability + push credentials, pandoc, AI backends, daemon) — `--doctor`,
@@ -609,8 +614,8 @@ repos:
 - ✅ **Cloud provider: Gemini** (`gemini-2.5-flash-lite`), API key in an environment variable.
 - ✅ Filter: **text < 1 MB only**; binaries/large files by hand.
 - ✅ **Python**; git via subprocess; `watchdog`; **PyQt5** for the tray UI.
-- ✅ Background: **scheduled task at log on** with `pythonw.exe`. *(Decision made;
-  implementing it is the pending Phase-3 item — §9, §12.)*
+- ✅ Background: **start at log-on**. *(The original decision was a scheduled task;
+  building it changed that to the per-user Run key — reasons in §9.)*
 - ✅ Working branch: **`main`** (confirm per repo).
 - ✅ **Seal every 6 h** (coarse permanent timeline); a manual seal (*Seal now* / `--seal-once` / Smart Commit) for handoff via the clean path.
 - ✅ **Periodic pull every 10 min** (`fetch` + pull only if the remote has new commits), besides the startup pull.

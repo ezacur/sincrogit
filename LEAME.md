@@ -191,11 +191,13 @@ Por orden de prioridad:
    credenciales verificadas, pandoc, backends de IA, demonio). Sigue pendiente: crear un
    remoto privado nuevo (GitHub/GitLab) desde el propio diálogo, para quien aún no tiene
    uno.
-2. **Arranque automático al iniciar sesión** (la pieza de la Fase 3 que falta). La
-   promesa de "cero disciplina" se rompe si hay que acordarse de lanzar la red de
-   seguridad: un aviso en el primer arranque (o un paso del instalador) debería
-   registrar la tarea programada de Windows (`SincroGit.exe --tray` /
-   `pythonw.exe -m sincrogit --tray` al iniciar sesión — ver [DISENO.md §9](DISENO.md)).
+2. **Arranque automático al iniciar sesión** — **hecho**. Settings tiene la casilla
+   "Start SincroGit when I sign in to Windows" (se aplica en el momento de guardar), y
+   el espejo CLI es `--autostart on` / `--autostart off`. Registra el exe + config
+   actuales en la **clave Run por usuario** (sin admin; también se puede activar/
+   desactivar desde Administrador de tareas → Aplicaciones de arranque), `--doctor`
+   informa de su estado, y la bandeja auto-repara una entrada que apunte a un programa
+   que ya no existe — ver [DISENO.md §9](DISENO.md).
 3. **Comando `sincrogit status`** (el menú de bandeja ya cubre las acciones comunes).
 
 ### TODO — mensajes IA (la tanda inspirada en aicommit2)

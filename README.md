@@ -183,11 +183,12 @@ In priority order:
    repos (git present, remote reachable, credentials verified, pandoc, AI backends,
    daemon). Still planned: creating a brand-new private remote (GitHub/GitLab) from inside
    the dialog, for users who don't have one yet.
-2. **Start at log-on, automatically** (the missing Phase-3 piece). The "zero discipline"
-   promise breaks if you have to remember to launch the safety net: a first-run prompt
-   (or installer step) should register the Windows scheduled task
-   (`SincroGit.exe --tray` / `pythonw.exe -m sincrogit --tray` at log-on — see
-   [DESIGN.md §9](DESIGN.md)).
+2. **Start at log-on, automatically** — **done**. Settings has a
+   "Start SincroGit when I sign in to Windows" checkbox (applied the moment you Save),
+   and the CLI mirror is `--autostart on` / `--autostart off`. It registers the current
+   exe + config in the **per-user Run key** (no admin; also toggleable from Task
+   Manager → Startup apps), `--doctor` reports its state, and the tray self-heals an
+   entry left pointing at a program that no longer exists — see [DESIGN.md §9](DESIGN.md).
 3. **`sincrogit status` command** (the tray menu already covers the common actions).
 
 ### TODO — AI messages (the aicommit2-inspired batch)

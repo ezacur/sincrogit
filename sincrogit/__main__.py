@@ -9,6 +9,7 @@ Launch model:
   --autosnaps               -> fetch & list autosnap recovery points (per machine)
   --commit REPO [-m MSG|-y] -> manual commit of REPO (edit the proposed message, then seal+push)
   --apply-handoff REPO      -> apply your other machine's pending live work to REPO
+  --autostart on|off        -> register/unregister start-at-login (per-user Run key)
 
 With no arguments the GUI launches; if an instance is already running, the new
 launch just asks the running one to show its panel and exits. Any argument is
@@ -372,6 +373,8 @@ def _cli_conflict(args) -> str | None:
         actions.append("--apply-handoff")
     if args.doctor:
         actions.append("--doctor")
+    if args.autostart is not None:
+        actions.append("--autostart")
     # --snapshot-once/--seal-once/--sync-once DELIBERATELY combine (one batch pass),
     # so they count as a single action category here.
     once = [n for n, v in (("--snapshot-once", args.snapshot_once),
@@ -437,6 +440,10 @@ def main(argv=None) -> int:
     parser.add_argument("--doctor", action="store_true",
                         help="Health check: git, config, each repo's branch/remote/"
                              "credentials, pandoc, AI backends, daemon. Exit 0 = healthy.")
+    parser.add_argument("--autostart", choices=["on", "off"],
+                        help="Register (on) or unregister (off) start-at-login for "
+                             "the current user (Windows Run key) and exit. The GUI "
+                             "checkbox in Settings does the same.")
     args = parser.parse_args(argv)
 
     conflict = _cli_conflict(args)
@@ -470,6 +477,17 @@ def main(argv=None) -> int:
         # so it's safe alongside a running daemon — no _daemon_running guard.
         from .doctor import run_doctor
         return run_doctor(config)
+
+    if args.autostart is not None:
+        # Registry-only: safe alongside a running daemon. The config was loaded
+        # above on purpose — the registered command embeds cfg_path, and
+        # registering a broken config for every future logon deserves the
+        # up-front error instead.
+        from . import autostart
+        ok, msg = autostart.set_autostart(args.autostart == "on", cfg_path)
+        print(msg if ok else f"Failed: {msg}",
+              file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
 
     # One-shots run their own Engine on the same repos: against a live daemon the
     # two processes would race git (amend vs. amend, TOCTOU over index.lock).

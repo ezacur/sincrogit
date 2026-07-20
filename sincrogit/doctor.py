@@ -173,6 +173,23 @@ def run_doctor(config) -> int:
             "running" if running
             else "not running — snapshots only happen while SincroGit is open")
 
+    from . import autostart
+    if autostart.supported():
+        if autostart.is_stale():
+            # A dead entry is worse than none: logon silently launches nothing.
+            rep.add(WARN, "auto-start",
+                    f"registered but the program is gone "
+                    f"({autostart.target_of(autostart.get_autostart() or '')}) — "
+                    f"re-enable it in Settings (or launch the tray once: it "
+                    f"self-heals)")
+        elif autostart.is_enabled():
+            rep.add(OK, "auto-start", "starts at login (per-user Run key)")
+        else:
+            # Deliberately OK, not WARN: running it by hand is a valid choice.
+            rep.add(OK, "auto-start",
+                    "off — enable 'Start SincroGit when I sign in' in Settings "
+                    "(or --autostart on)")
+
     print()
     print("Everything looks healthy." if rep.failed == 0
           else f"{rep.failed} check(s) FAILED — fix them and re-run --doctor.")
