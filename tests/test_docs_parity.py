@@ -64,3 +64,25 @@ def test_unknown_config_key_is_flagged(tmp_path):
            "defaults:\n  no_such_key: 1\nai:\n  mode: none\n")
     problems = cdp.check_config_example(str(tmp_path))
     assert any("no_such_key" in p for p in problems)
+
+
+def test_repo_docs_mention_only_live_ui():
+    """Every UI label the real docs point at exists in sincrogit/gui/*.py."""
+    assert cdp.check_ui_names(_ROOT) == []
+
+
+def test_retired_ui_mention_is_flagged(tmp_path):
+    """A doc pointing at a button that no longer exists in the GUI source must
+    be flagged — bold labels aren't code-spans, so the fact check can't see
+    them (exactly how 'File history…' survived a redesign in one language)."""
+    gui = tmp_path / "sincrogit" / "gui"
+    gui.mkdir(parents=True)
+    (gui / "panel.py").write_text(
+        'btn = QPushButton("Time machine…")\n', encoding="utf-8")
+    for name in ("README.md", "DESIGN.md", "MANUAL.md", "GUIDE.md"):
+        _write(tmp_path, name, "## A\nOpen **Time machine…** from Status.\n")
+    for name in ("LEAME.md", "DISENO.md", "MANUAL_ES.md", "GUIA.md"):
+        _write(tmp_path, name, "## A\nAbre **File history…** desde Estado.\n")
+    problems = cdp.check_ui_names(str(tmp_path))
+    assert problems and all("File history…" in p for p in problems)
+    assert not any("Time machine…" in p for p in problems)  # live label passes
