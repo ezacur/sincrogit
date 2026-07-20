@@ -711,20 +711,34 @@ class TrayApp:
 
     # ---- per-repo configuration (Properties dialog) ----
     def repo_config_view(self, name):
-        """(entry, effective) for the Properties dialog: `entry` is the repo's RAW
-        config entry (explicit keys only), `effective` the values the engine runs
-        with (entry merged over defaults). ({}, {}) if the repo isn't found.
+        """(entry, effective, defaults) for the Properties dialog: `entry` is
+        the repo's RAW config entry (explicit keys only), `effective` the
+        values the engine runs with (entry merged over defaults), `defaults`
+        what a repo WITHOUT overrides would get — the global `defaults:`
+        section resolved through RepoConfig, so sentinels normalize and every
+        field carries a value. ({}, {}, {}) if the repo isn't found.
 
-        `effective` is whatever the engine reports — a plain dict of every
-        RepoConfig field (dataclasses.asdict), so a new field shows up here
-        automatically. No mirror list of field names to keep in sync."""
-        from ..config import find_repo_entry
+        All three are plain dicts of RepoConfig fields (dataclasses.asdict /
+        introspection), so a new field shows up here automatically — no mirror
+        list of field names to keep in sync."""
+        import dataclasses
+
+        from ..config import _INHERITABLE, RepoConfig, find_repo_entry
         try:
             entry = find_repo_entry(self.config_path, name) or {}
         except (OSError, yaml.YAMLError):
             entry = {}
         effective = self.engine.repo_config_view(name)
-        return entry, (effective or {})
+        defaults = {}
+        try:
+            data = yaml.safe_load(self.config_text()) or {}
+            d = data.get("defaults") or {} if isinstance(data, dict) else {}
+            rc = RepoConfig(path="", name="", **{
+                k: v for k, v in d.items() if k in _INHERITABLE})
+            defaults = dataclasses.asdict(rc)
+        except Exception:  # noqa: BLE001 — no defaults just means no hints
+            pass
+        return entry, (effective or {}), defaults
 
     def update_repo_config(self, name, changes):
         """Persist per-repo overrides to the config file. (ok, msg). Applies on
@@ -741,6 +755,15 @@ class TrayApp:
         from ..config import remove_repo
         try:
             return remove_repo(self.config_path, name)
+        except (OSError, yaml.YAMLError) as e:
+            return False, str(e)
+
+    def reset_repo_config(self, name):
+        """Drop every inheritable override from the repo's entry — back to pure
+        inheritance of the global defaults. (ok, msg). Applies on restart."""
+        from ..config import reset_repo_overrides
+        try:
+            return reset_repo_overrides(self.config_path, name)
         except (OSError, yaml.YAMLError) as e:
             return False, str(e)
 

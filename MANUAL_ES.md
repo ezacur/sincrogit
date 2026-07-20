@@ -129,10 +129,14 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
   un conflicto pausó el repo, qué es un relevo pendiente, por qué un merge/rebase muestra
   *Busy*). Botones:
   - **Pause / Resume** — parar/reanudar el autosync de ese repo.
-  - **Properties…** — la configuración de ese repo como formulario (rama, remoto, ritmos,
-    sync, modo de relevo, filtros de ficheros) en vez de YAML. Solo se escriben los campos
-    que cambies; el resto sigue heredando los defaults. Incluye **Remove repo…** (solo de la
-    config — el repo git del disco no se toca). Se aplica al reiniciar.
+  - **Properties…** — TODA la configuración por repo como formulario (rama, remoto,
+    ritmos — incluidos el leave seal y el debounce —, sync, modo de relevo, timeout de
+    red, filtros de ficheros y topes de tamaño, avisos) en vez de YAML. Junto a cada
+    campo, una pista dice de dónde viene el valor: *default (X)* si se hereda de la
+    pestaña Settings, u *override — default: X* si este repo lo fija. Solo se escriben
+    los campos que cambies; el resto sigue heredando. **Use defaults…** quita todos los
+    overrides de golpe (rama/remoto se conservan), y **Remove repo…** elimina la entrada
+    (solo de la config — el repo git del disco no se toca). Se aplica al reiniciar.
   - **Commit…** — Smart Commit (diálogo con mensaje propuesto por IA).
   - **Seal+Push** — sellar ya los snapshots pendientes en un commit real y pushear.
   - **Fetch+Pull** — traer y rebasar del remoto ahora.

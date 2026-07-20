@@ -127,10 +127,14 @@ Open it from the tray icon (double-click) or *Open control panel*.
   buttons. Hovering the **State** cell explains it (why a conflict paused the repo, what a
   pending handoff is, why a merge/rebase shows *Busy*). Buttons:
   - **Pause / Resume** — stop/resume autosync for that repo.
-  - **Properties…** — this repo's settings as a form (branch, remote, rhythms, sync,
-    handoff mode, file filters) instead of YAML. Only the fields you change are written;
-    the rest keep inheriting the defaults. Also has **Remove repo…** (config only — the
-    git repo on disk is untouched). Applies on restart.
+  - **Properties…** — EVERY per-repo setting as a form (branch, remote, rhythms —
+    including the leave seal and the debounce —, sync, handoff mode, network timeout,
+    file filters and size caps, notices) instead of YAML. Next to each field a hint
+    says where the value comes from: *default (X)* when inherited from the Settings
+    tab, or *override — default: X* when this repo pins it. Only the fields you change
+    are written; the rest keep inheriting. **Use defaults…** drops every override at
+    once (branch/remote kept), and **Remove repo…** removes the entry (config only —
+    the git repo on disk is untouched). Applies on restart.
   - **Commit…** — Smart Commit (AI-proposed message dialog).
   - **Seal+Push** — seal the pending snapshots into a real commit now and push.
   - **Fetch+Pull** — fetch and rebase from the remote now.

@@ -68,22 +68,40 @@ def test_machines_fetch_async(qapp, qspin):
         d.close()
 
 
+_DEFAULTS = {
+    "branch": "main", "remote": "origin", "snapshot_interval_sec": 300,
+    "debounce_sec": 25, "seal_interval_min": 360, "seal_on_leave_min": 20,
+    "push": True, "pull": True, "pull_interval_min": 10,
+    "autosnap": True, "autosnap_interval_min": 30, "live_handoff": "auto",
+    "git_timeout_sec": 60, "track_current_branch": False,
+    "max_file_bytes": 1_048_576, "max_include_bytes": 26_214_400,
+    "extra_excludes": ["**/node_modules/**"], "extra_includes": [],
+    "suggest_excludes": True, "suggest_commit": True,
+}
+
+
 class PropsCtl:
-    def __init__(self):
+    theme = {"is_dark": False}
+
+    def __init__(self, entry=None):
         self.saved = None
+        self.reset_called = False
+        # `push: False` is this repo's one OVERRIDE (the defaults say True).
+        self.entry = entry if entry is not None else {
+            "path": "C:/tmp/alpha", "branch": "main", "push": False}
 
     def repo_config_view(self, name):
-        entry = {"path": "C:/tmp/alpha", "branch": "main"}
-        eff = {"branch": "main", "remote": "origin", "snapshot_interval_sec": 300,
-               "seal_interval_min": 360, "push": True, "pull": True,
-               "pull_interval_min": 10, "autosnap": True, "autosnap_interval_min": 30,
-               "live_handoff": "auto", "track_current_branch": False,
-               "extra_excludes": ["**/node_modules/**"], "extra_includes": []}
-        return entry, eff
+        eff = dict(_DEFAULTS)
+        eff.update({k: v for k, v in self.entry.items() if k in _DEFAULTS})
+        return dict(self.entry), eff, dict(_DEFAULTS)
 
     def update_repo_config(self, name, changes):
         self.saved = (name, changes)
         return True, "saved"
+
+    def reset_repo_config(self, name):
+        self.reset_called = True
+        return True, "reset 1 override(s): push"
 
     def remove_repo_config(self, name):
         return True, "removed"
@@ -119,3 +137,59 @@ def test_only_changed_keys_are_written(props):
     assert set(changes) == {"branch", "seal_interval_min"}
     assert changes["branch"] == "develop"
     assert math.isinf(changes["seal_interval_min"])
+
+
+def test_every_inheritable_option_has_a_form_field(props):
+    """The dialog must cover EVERY per-repo option: each inheritable RepoConfig
+    key appears in the values it can save (introspected — a new config field
+    without a form field fails here)."""
+    from sincrogit.config import _INHERITABLE
+    _, d, _ = props
+    assert set(_INHERITABLE) <= set(d._values().keys())
+
+
+def test_hints_show_provenance_and_defaults(props):
+    """Next to each field: 'override — default: X' when the repo pins it,
+    'default (X)' when it inherits — the default value visible either way."""
+    _, d, _ = props
+    assert d._hints["push"].text() == "override — default: on"
+    assert d._hints["snapshot_interval_sec"].text() == "default (300)"
+    assert d._hints["seal_on_leave_min"].text() == "default (20)"
+    assert d._hints["max_file_bytes"].text() == "default (1024 KB)"
+    assert d._hints["extra_excludes"].text() == "default (1 pattern(s))"
+
+
+def test_new_fields_round_trip_only_changes(props):
+    ctl, d, _ = props
+    d.sp_debounce.setValue(5)                 # agent-repo profile
+    d.ck_leave.setChecked(False)              # disable the leave seal here
+    d.sp_maxfile.setValue(2048)               # 2 MB cap
+    d._save(restart=False)
+    name, changes = ctl.saved
+    assert set(changes) == {"debounce_sec", "seal_on_leave_min", "max_file_bytes"}
+    assert changes["debounce_sec"] == 5
+    assert math.isinf(changes["seal_on_leave_min"])
+    assert changes["max_file_bytes"] == 2048 * 1024
+
+
+def test_use_defaults_drops_overrides(props, monkeypatch):
+    ctl, d, infos = props
+    assert d.btn_reset.isEnabled()            # 'push' is overridden
+    monkeypatch.setattr(rp.QMessageBox, "question",
+                        staticmethod(lambda *a, **k: rp.QMessageBox.Yes))
+    d._reset_overrides()
+    assert ctl.reset_called
+    assert any("reset 1 override" in i for i in infos)
+
+
+def test_use_defaults_disabled_without_overrides(qapp, monkeypatch):
+    infos = []
+    monkeypatch.setattr(rp.QMessageBox, "information",
+                        staticmethod(lambda *a, **k: infos.append(a[2])))
+    ctl = PropsCtl(entry={"path": "C:/tmp/alpha", "branch": "main"})
+    d = rp.RepoPropertiesDialog(ctl, "t")
+    try:
+        assert not d.btn_reset.isEnabled()    # nothing to reset
+    finally:
+        d.close()
+        d.deleteLater()

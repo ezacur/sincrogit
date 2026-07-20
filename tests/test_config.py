@@ -117,3 +117,24 @@ def test_load_rejects_string_pattern_list(tmp_path):
             tmp_path,
             'defaults:\n  extra_excludes: "**/build/**"\n'
             "repos:\n  - path: C:/tmp/x\n"))
+
+
+def test_reset_repo_overrides(tmp_path):
+    """Dropping a repo's overrides returns it to pure inheritance: identity
+    keys survive, inheritable keys go, the other repo is untouched, and the
+    file still parses (with its comments)."""
+    import pytest
+    path = _cfg(tmp_path)
+    ok, msg = cfgmod.reset_repo_overrides(path, "custom-beta")  # has push: false
+    assert ok and "push" in msg
+    loaded = load_config(path)
+    beta = next(r for r in loaded.repos if r.name == "custom-beta")
+    assert beta.push is True                     # back to the default
+    assert beta.branch == "main"                 # identity kept... (no branch key: default)
+    alpha = next(r for r in loaded.repos if r.name == "alpha")
+    assert alpha.branch == "main"                # the OTHER repo untouched
+    assert "# Top comment MUST survive edits." in open(path, encoding="utf-8").read()
+    ok, msg = cfgmod.reset_repo_overrides(path, "custom-beta")
+    assert ok and "no overrides" in msg          # idempotent
+    ok, _ = cfgmod.reset_repo_overrides(path, "nope")
+    assert not ok

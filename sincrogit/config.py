@@ -502,6 +502,35 @@ def update_repo(config_path: str, name: str, changes: dict) -> tuple:
     return True, "saved"
 
 
+def reset_repo_overrides(config_path: str, name: str) -> tuple:
+    """Delete every INHERITABLE override from ONE repo's entry, returning it to
+    pure inheritance of the global defaults. Identity keys (path, name, remote,
+    branch) are kept — they aren't inheritable. Returns (ok, msg); the msg says
+    how many overrides were dropped. Comment preservation: same trade as
+    append_repo."""
+    with open(config_path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    data = yaml.safe_load(text) or {}
+    repos = list(data.get("repos") or [])
+    idx = next((i for i, e in enumerate(repos)
+                if isinstance(e, dict) and _entry_name(e) == name), None)
+    if idx is None:
+        return False, f"repo '{name}' not found in the config file"
+    entry = dict(repos[idx])
+    dropped = [k for k in entry if k in _INHERITABLE]
+    if not dropped:
+        return True, "no overrides to reset"
+    for k in dropped:
+        del entry[k]
+    try:
+        _validate_entry(entry, data.get("defaults") or {})
+    except (ValueError, TypeError) as e:
+        return False, str(e)
+    repos[idx] = entry
+    _write_repos_section(config_path, text, data, repos)
+    return True, f"reset {len(dropped)} override(s): {', '.join(sorted(dropped))}"
+
+
 def remove_repo(config_path: str, name: str) -> tuple:
     """Remove ONE repo's entry from the config file. Returns (ok, msg). The git
     repository on disk is not touched. Comment preservation: same trade as
