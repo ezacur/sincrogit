@@ -557,6 +557,10 @@ and stays user-visible. In a source checkout the registered command is
   with doctor reporting and stale-entry self-heal (§9 has the decision).
 - ✅ `status` / `log` CLI views (read-only, daemon-safe): per-repo glance and the
   panel's event stream in the terminal, with repo/action/level filters.
+- ✅ Cross-machine settings inheritance: a repo publishes its per-repo options to a
+  single-writer side ref `refs/sincro/config/<user>` on every autosnap (no-op when
+  unchanged); adding the repo on another of your machines OFFERS to inherit them (a
+  one-time copy at add, not a live sync). Same identity model as autosnap/handoff.
 - ✅ Distribution decision: **portable single exe** instead of an installer — the folder
   the exe sits in IS the installation (config found/created there, with EVERY option in
   the generated template, enforced by an introspective test). The only machine-global

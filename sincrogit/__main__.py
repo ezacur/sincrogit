@@ -332,8 +332,8 @@ def _acquire_headless_instance(get_engine=None):
     return True, lock
 
 
-def _run_headless(config, logger, engine_ref=None) -> int:
-    engine = Engine(config)
+def _run_headless(config, logger, engine_ref=None, config_path=None) -> int:
+    engine = Engine(config, config_path=config_path)
     if engine_ref is not None:
         engine_ref["engine"] = engine  # expose to the activation listener (flushquit)
 
@@ -596,7 +596,7 @@ def main(argv=None) -> int:
             )
             return 2
         try:
-            return _run_headless(config, logger, engine_ref)
+            return _run_headless(config, logger, engine_ref, config_path=cfg_path)
         finally:
             if lock is not None:
                 try:

@@ -571,6 +571,10 @@ congelado, es el propio exe.
   (la decisión está en §9).
 - ✅ Vistas CLI `status` / `log` (solo lectura, seguras con el demonio): el vistazo por
   repo y el flujo de eventos del panel en la terminal, con filtros de repo/acción/nivel.
+- ✅ Herencia de ajustes entre máquinas: un repo publica sus opciones por repo en un ref
+  lateral de único escritor `refs/sincro/config/<user>` en cada autosnap (no-op si no
+  cambió); al añadir el repo en otra de tus máquinas se OFRECE heredarlas (copia de una
+  sola vez al añadir, no sincronización viva). Mismo modelo de identidad que autosnap/relevo.
 - ✅ Decisión de distribución: **exe único portable** en vez de instalador — la carpeta
   donde está el exe ES la instalación (la config se busca/crea ahí, con TODAS las
   opciones en la plantilla generada, garantizado por un test introspectivo). La única

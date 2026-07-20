@@ -175,7 +175,8 @@ class TrayApp:
         logging.getLogger("sincrogit").addHandler(
             _LogBridgeHandler(self._on_engine_event))
 
-        self.engine = Engine(self.config, emit_event=self._on_engine_event)
+        self.engine = Engine(self.config, emit_event=self._on_engine_event,
+                             config_path=self.config_path)
         self._engine_thread = None
         self._last_state = None
 
@@ -629,11 +630,33 @@ class TrayApp:
             self.bridge.refresh_tray.emit()  # queued to the GUI thread
         threading.Thread(target=worker, name=f"sincrogit-handoff-{name}", daemon=True).start()
 
-    def add_repo(self, path, branch="main", push=True, pull=True, normalize_eol=True):
+    def fetch_repo_settings(self, path, remote="origin"):
+        """The per-repo OPTIONS this user published for `path` from another
+        machine, or None when there are none (no remote, nothing published, or
+        an error). Runs off the GUI thread (the Add-repo dialog calls it on its
+        worker) — it does a network fetch of a single side ref."""
+        from ..gitrepo import GitError, GitRepo
+        from ..config import parse_published_overrides
+        try:
+            repo = GitRepo(os.path.abspath(path))
+            if not repo.remote_url(remote):
+                return None
+            text = repo.fetch_published_config(remote, repo.sincro_user())
+            if not text:
+                return None
+            overrides = parse_published_overrides(text)
+            return overrides or None
+        except (GitError, OSError):
+            return None
+
+    def add_repo(self, path, branch="main", push=True, pull=True,
+                 normalize_eol=True, overrides=None):
         """Validate, persist to the config file, and add the repo live. (ok, msg).
 
         If `normalize_eol` and the repo has no .gitattributes, a '* text=auto' one
-        is created so line endings stay consistent across machines.
+        is created so line endings stay consistent across machines. `overrides`
+        (inherited from another machine's published config) are written as this
+        repo's per-repo option overrides.
         """
         from ..gitrepo import GitError, GitRepo
         path = os.path.abspath(path)
@@ -651,6 +674,11 @@ class TrayApp:
             "push": bool(push),
             "pull": bool(pull),
         }
+        # Inherited options from another machine — filtered to inheritable keys
+        # already, so they can't clobber the identity keys set above.
+        if overrides:
+            from ..config import _INHERITABLE
+            entry.update({k: v for k, v in overrides.items() if k in _INHERITABLE})
         try:
             append_repo(self.config_path, entry)
         except OSError as e:

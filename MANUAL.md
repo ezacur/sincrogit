@@ -162,7 +162,9 @@ Open it from the tray icon (double-click) or *Open control panel*.
     *Fetch latest* to refresh) and **Add repo…** (optionally drops a `* text=auto`
     `.gitattributes`; you can also paste a **remote URL** and **Verify** it —
     reachability plus a dry-run push for write access — before adding, so
-    push/pull/sync work from the start).
+    push/pull/sync work from the start. If you already set this repo's options on
+    **another of your machines**, the dialog offers a checkbox to **inherit those
+    saved settings** — see *Cross-machine settings* below).
   - Right-click a repo row for **Open folder / Time machine / Properties**.
   - A one-line **activity digest** under the action bar: today's snapshot / seal /
     push / pull counts (the Log has the detail; this is the glance).
@@ -213,6 +215,16 @@ Open it from the tray icon (double-click) or *Open control panel*.
   pandoc path, log level. Edits the global defaults; *Save and restart* to apply.
 - **Advanced (YAML)** — the raw `config.yaml` editor, for per-repo overrides and comments.
 
+**Cross-machine settings.** A repo's per-repo options travel WITH the repo. Whenever a
+repo mirrors to the remote (autosnap), SincroGit also publishes its options to a tiny
+per-user side ref (`refs/sincro/config/<you>`) — no secrets, just the intervals, filters
+and toggles you set. When you later add that same repo on **another of your machines**,
+the *Add repo…* dialog fetches those options and offers to inherit them (a checkbox,
+listing them). It's a **one-time** copy at add: changing the options later on one machine
+does NOT re-sync to the others (adjust them there, or re-inherit by removing and
+re-adding). The ref is namespaced by your git identity, so a teammate's preferences and
+yours never collide.
+
 The **tray icon colour** reflects state: green = active, amber = paused, red = conflict
 (needs you), gray = stopped. The tray menu also has Pause/Resume, Sync now, Seal now, Quit.
 
@@ -223,6 +235,7 @@ The **tray icon colour** reflects state: green = active, amber = paused, red = c
 | I want to… | Do this |
 |------------|---------|
 | **Add a repo** | Panel → Status → *Add repo…* (or edit `repos:` in the config and *Save and restart*). |
+| **Reuse a repo's settings on a second machine** | Add it via *Add repo…* — if you configured it elsewhere, tick *Use the settings saved from your other machine*. |
 | **Change ONE repo's settings** | Select it → *Properties…* (branch, rhythms, sync, filters as a form). Or edit its entry in Advanced (YAML). |
 | **Remove a repo from SincroGit** | *Properties…* → *Remove repo…* (config only; the git repo on disk is untouched). |
 | **Get back an earlier version of a file** | Panel → *Time machine* → pin the file (double-click it) → pick a version → *Restore file*. Or `--history FILE`. |

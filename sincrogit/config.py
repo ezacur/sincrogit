@@ -458,6 +458,35 @@ def _write_repos_section(config_path: str, text: str, data: dict, repos: list) -
     atomic_write_text(config_path, out)
 
 
+def inheritable_overrides(entry: dict) -> dict:
+    """The subset of a RAW repo entry that is an inheritable OPTION override —
+    i.e. everything except the identity keys (path/name/branch/remote). This is
+    exactly what one machine publishes for another to inherit."""
+    return {k: entry[k] for k in _INHERITABLE if k in entry}
+
+
+def overrides_to_yaml(overrides: dict) -> str:
+    """Serialize an overrides dict for the published config ref. Values are the
+    RAW entry values (e.g. the 'inf' token, kept verbatim), so the consumer
+    gets back exactly what was written."""
+    return yaml.safe_dump(overrides, sort_keys=True, allow_unicode=True,
+                          default_flow_style=False)
+
+
+def parse_published_overrides(text: str) -> dict:
+    """Parse a published config YAML into inheritable overrides, DEFENSIVELY:
+    the text came off a remote (a shared repo, a hand-edited ref) so anything
+    that isn't a known inheritable key is dropped, and malformed YAML yields an
+    empty dict rather than raising."""
+    try:
+        data = yaml.safe_load(text) if text else None
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if k in _INHERITABLE}
+
+
 def append_repo(config_path: str, repo_entry: dict) -> None:
     """Append a repo to the config file, preserving existing comments/formatting
     above the repos section (see _write_repos_section)."""

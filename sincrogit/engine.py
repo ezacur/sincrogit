@@ -168,8 +168,13 @@ class Engine:
     # worker mid-push. The skipped repo's last autosnap is the backstop.
     FLUSH_LOCK_TIMEOUT = 5.0
 
-    def __init__(self, config, emit_event=None):
+    def __init__(self, config, emit_event=None, config_path=None):
         self.config = config
+        # Path to the config file this Config was loaded from, when known. Only
+        # used to read a repo's EXPLICIT overrides for publishing to the config
+        # side ref (cross-machine inheritance); None (tests, in-memory Config)
+        # simply skips publishing.
+        self.config_path = config_path
         self.states: list[RepoState] = []
         self.watch = None
         self._watch_ready = False
@@ -1419,9 +1424,30 @@ class Engine:
             st.autosnap_pending = False
             self._mark_action(st, "autosnap")
             self._emit(cfg.name, "autosnap", f"mirror pushed -> {cfg.remote}/{ref}")
+            # Piggyback the config publish on the same network moment: cheap
+            # (a no-op push when unchanged) and it keeps the side ref your other
+            # machines inherit from in step with your latest options.
+            self._publish_repo_config(st)
         else:
             # Keep pending=True so the next interval retries.
             self._emit(cfg.name, "autosnap", f"mirror push failed (will retry): {msg}", "WARNING")
+
+    def _publish_repo_config(self, st: RepoState):
+        """Best-effort: mirror this repo's EXPLICIT options to the config side
+        ref so the same user's other machines can inherit them at add time.
+        Never fails the autosnap — a publish error is logged and retried on the
+        next one. Assumes op_lock (runs in the autosnap worker)."""
+        if not self.config_path:
+            return  # in-memory Config (tests): nothing to read overrides from
+        try:
+            from .config import (find_repo_entry, inheritable_overrides,
+                                  overrides_to_yaml)
+            entry = find_repo_entry(self.config_path, st.cfg.name)
+            yaml_text = overrides_to_yaml(inheritable_overrides(entry or {}))
+            st.repo.publish_repo_config(st.cfg.remote, st.user, yaml_text,
+                                        timeout=st.cfg.git_timeout_sec)
+        except (GitError, OSError, ValueError) as e:
+            log.warning("[%s] could not publish repo config: %s", st.cfg.name, e)
 
     # --------------------------------------------------------------- maintenance
     def _maybe_gc(self, st: RepoState, now_mono: float):

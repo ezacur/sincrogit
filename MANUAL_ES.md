@@ -166,7 +166,9 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
     latest* para refrescar) y **Add repo…** (opcionalmente deja un `.gitattributes`
     `* text=auto`; también puedes pegar una **URL de remoto** y **Verify**-icarla
     —accesibilidad más un push --dry-run para el acceso de escritura— antes de añadir, para
-    que push/pull/sync funcionen desde el principio).
+    que push/pull/sync funcionen desde el principio. Si ya configuraste este repo en
+    **otra de tus máquinas**, el diálogo ofrece una casilla para **heredar esos ajustes
+    guardados** — ver *Ajustes entre máquinas* abajo).
   - Clic derecho en una fila: **Open folder / Time machine / Properties**.
   - Una línea de **resumen de actividad** bajo la barra de acciones: los snapshots /
     seals / pushes / pulls de hoy (el detalle está en el Log; esto es el vistazo).
@@ -219,6 +221,16 @@ disparador manual del relevo entre máquinas (útil con `live_handoff: ask`, o p
   nivel de log. Edita los defaults globales; *Save and restart* para aplicar.
 - **Advanced (YAML)** — el editor del `config.yaml` crudo, para overrides por repo y comentarios.
 
+**Ajustes entre máquinas.** Las opciones por repo viajan CON el repo. Cada vez que un repo
+se espeja al remoto (autosnap), SincroGit publica también sus opciones en un pequeño ref
+lateral por usuario (`refs/sincro/config/<tú>`) — sin secretos, solo los intervalos,
+filtros y toggles que pusiste. Cuando más tarde añades ese mismo repo en **otra de tus
+máquinas**, el diálogo *Add repo…* baja esas opciones y ofrece heredarlas (una casilla,
+listándolas). Es una copia **de una sola vez** al añadir: cambiar las opciones después en
+una máquina NO se re-sincroniza a las otras (ajústalas allí, o vuelve a heredarlas
+quitando y re-añadiendo). El ref lleva tu identidad de git, así que las preferencias de un
+compañero y las tuyas nunca chocan.
+
 El **color del icono de bandeja** refleja el estado: verde = activo, ámbar = pausado, rojo =
 conflicto (te necesita), gris = parado. El menú de bandeja tiene además Pause/Resume, Sync now,
 Seal now, Quit.
@@ -230,6 +242,7 @@ Seal now, Quit.
 | Quiero… | Haz esto |
 |---------|----------|
 | **Añadir un repo** | Panel → Status → *Add repo…* (o edita `repos:` en la config y *Save and restart*). |
+| **Reusar los ajustes de un repo en una segunda máquina** | Añádelo con *Add repo…* — si lo configuraste en otra, marca *Use the settings saved from your other machine*. |
 | **Cambiar la config de UN repo** | Selecciónalo → *Properties…* (rama, ritmos, sync, filtros como formulario). O edita su entrada en Advanced (YAML). |
 | **Quitar un repo de SincroGit** | *Properties…* → *Remove repo…* (solo la config; el repo git del disco no se toca). |
 | **Recuperar una versión anterior de un fichero** | Panel → *Time machine* → fija el fichero (doble clic) → elige versión → *Restore file*. O `--history FILE`. |

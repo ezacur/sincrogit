@@ -40,6 +40,7 @@ class AddRepoDialog(QDialog):
     _branch_ready = pyqtSignal(int, object)  # gen, branch|None
     _remote_detected = pyqtSignal(int, object)   # gen, url|None
     _remote_verified = pyqtSignal(bool, str)     # ok, message
+    _settings_ready = pyqtSignal(int, object)    # gen, overrides|None
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -50,6 +51,7 @@ class AddRepoDialog(QDialog):
         # the user changed the path is discarded, not written into the field.
         self._branch_gen = 0
         self._remote_ok = False  # a verify passed for the URL currently shown
+        self._inherited = None   # options published by another of your machines
 
         v = QVBoxLayout(self)
 
@@ -106,6 +108,14 @@ class AddRepoDialog(QDialog):
         self.lbl_remote.setVisible(False)
         v.addWidget(self.lbl_remote)
 
+        # Cross-machine inheritance: if THIS user published options for this repo
+        # from another machine (a side ref), offer to adopt them here. Hidden
+        # until the async detection finds some.
+        self.ck_inherit = QCheckBox("Use the settings saved from your other machine")
+        self.ck_inherit.setChecked(True)
+        self.ck_inherit.setVisible(False)
+        v.addWidget(self.ck_inherit)
+
         self.cb_norm = QCheckBox("Normalize line endings (add .gitattributes if missing)")
         self.cb_norm.setChecked(True)
         self.cb_norm.setToolTip(
@@ -137,6 +147,7 @@ class AddRepoDialog(QDialog):
         self._branch_ready.connect(self._on_branch_ready)
         self._remote_detected.connect(self._on_remote_detected)
         self._remote_verified.connect(self._on_remote_verified)
+        self._settings_ready.connect(self._on_settings_ready)
 
     def _browse(self):
         chosen = QFileDialog.getExistingDirectory(self, "Choose a git repository")
@@ -170,9 +181,20 @@ class AddRepoDialog(QDialog):
             remote = self.c.detect_remote(path)
         except Exception:  # noqa: BLE001 — treated as "no remote"
             remote = None
+        # Saved settings from another machine (network fetch of one side ref;
+        # returns None fast when there's no remote). Optional on the controller
+        # so older/duck-typed controllers simply skip the offer.
+        settings = None
+        fetch = getattr(self.c, "fetch_repo_settings", None)
+        if fetch is not None:
+            try:
+                settings = fetch(path)
+            except Exception:  # noqa: BLE001 — just means "no offer"
+                settings = None
         try:
             self._branch_ready.emit(gen, branch)
             self._remote_detected.emit(gen, remote)
+            self._settings_ready.emit(gen, settings)
         except RuntimeError:
             pass  # dialog closed while detecting
 
@@ -198,6 +220,24 @@ class AddRepoDialog(QDialog):
         else:
             self._hint(f"Couldn't detect the repo's branch — check that "
                        f"'{self.ed_branch.text().strip() or 'main'}' is right.")
+
+    def _on_settings_ready(self, gen, overrides):
+        if gen != self._branch_gen:
+            return  # the path changed after this detection was kicked off
+        self._inherited = overrides or None
+        if not self._inherited:
+            self.ck_inherit.setVisible(False)
+            return
+        n = len(self._inherited)
+        self.ck_inherit.setText(
+            f"Use the {n} setting{'s' if n != 1 else ''} saved from your other machine")
+        self.ck_inherit.setToolTip(
+            "This repo has options you set on another machine (inherited via the "
+            "remote):\n  " + "\n  ".join(f"{k}: {v}" for k, v in
+                                         sorted(self._inherited.items())) +
+            "\n\nUnchecked, the repo just inherits this machine's global defaults.")
+        self.ck_inherit.setChecked(True)
+        self.ck_inherit.setVisible(True)
 
     def _hint(self, text: str):
         self.lbl_hint.setText(text)
@@ -260,15 +300,19 @@ class AddRepoDialog(QDialog):
         # user click Add twice.
         self.btn_add.setEnabled(False)
         self.busy.start("Adding the repo…")
+        overrides = (self._inherited if (self._inherited
+                     and self.ck_inherit.isChecked()) else None)
         threading.Thread(
             target=self._do_add,
             args=(path, self.ed_branch.text().strip() or "main",
                   self.cb_push.isChecked(), self.cb_pull.isChecked(),
-                  self.cb_norm.isChecked(), self.ed_remote.text().strip()),
+                  self.cb_norm.isChecked(), self.ed_remote.text().strip(),
+                  overrides),
             name="sincrogit-add-repo", daemon=True,
         ).start()
 
-    def _do_add(self, path, branch, push, pull, normalize_eol, remote_url):
+    def _do_add(self, path, branch, push, pull, normalize_eol, remote_url,
+                overrides=None):
         try:
             # A URL typed but never verified is still configured on the repo
             # here (idempotent), so 'Add' without clicking Verify does the right
@@ -280,7 +324,8 @@ class AddRepoDialog(QDialog):
                     self._added.emit(False, f"Remote not configured: {msg}")
                     return
             ok, msg = self.c.add_repo(path, branch=branch, push=push, pull=pull,
-                                      normalize_eol=normalize_eol)
+                                      normalize_eol=normalize_eol,
+                                      overrides=overrides)
         except Exception as e:  # noqa: BLE001 — surfaced in the dialog
             ok, msg = False, str(e)
         try:

@@ -1017,6 +1017,61 @@ class GitRepo:
                         check=False)
         return {b.strip() for b in res.stdout.splitlines() if b.strip()}
 
+    # ----------------------------------------------- published repo config (ref)
+    # One file in the config side ref's tree. Namespaced by user (same identity
+    # model as autosnap): a machine publishes its per-repo options here so the
+    # SAME person's OTHER machines can inherit them when they add the repo.
+    CONFIG_FILE = "sincro-repo.yaml"
+
+    @staticmethod
+    def config_ref(user: str) -> str:
+        return f"refs/sincro/config/{user}"
+
+    def read_published_config(self, user: str) -> str | None:
+        """The published options YAML from the LOCAL config ref (this machine's
+        own, or one just fetched). None when the ref/file is absent."""
+        ref = self.config_ref(user)
+        res = self._run(["cat-file", "-p", f"{ref}:{self.CONFIG_FILE}"], check=False)
+        return res.stdout if res.returncode == 0 else None
+
+    def publish_repo_config(self, remote: str, user: str, yaml_text: str,
+                            timeout: float | None = None) -> tuple:
+        """Publish this repo's per-repo options to the single-writer side ref
+        refs/sincro/config/<user>. No-op (no push) when the content is
+        unchanged, so it can be called on every autosnap for free. The ref is
+        force-pushed (single writer per user) and never touches the branch.
+        Returns (ok, msg)."""
+        if (self.read_published_config(user) or "") == (yaml_text or ""):
+            return True, "config unchanged"
+        # Side refs get no reflog unless asked (same reason ensure_shadow does it).
+        self._run(["config", "core.logAllRefUpdates", "always"], check=False)
+        blob = self._run(["hash-object", "-w", "--stdin"],
+                         stdin_data=yaml_text).stdout.strip()
+        # -z (NUL-terminated): the text pipe would otherwise translate the
+        # entry's trailing '\n' to '\r\n' on Windows and the stray '\r' would
+        # end up glued to the filename (same reason shadow_stage feeds NUL).
+        tree = self._run(["mktree", "-z"],
+                         stdin_data=f"100644 blob {blob}\t{self.CONFIG_FILE}\0").stdout.strip()
+        commit = self._run(["commit-tree", tree, "-m", "sincro: repo config"]).stdout.strip()
+        ref = self.config_ref(user)
+        self._run(["update-ref", ref, commit])
+        res = self._run(["push", "--force", remote, f"{commit}:{ref}"],
+                        check=False, timeout=timeout)
+        return res.returncode == 0, (res.stderr.strip() or res.stdout.strip())
+
+    def fetch_published_config(self, remote: str, user: str,
+                               timeout: float | None = None) -> str | None:
+        """Fetch `user`'s published config ref from `remote` into the local ref
+        and return its YAML — or None when the remote has none (fetch of a
+        missing ref fails, which we treat as 'nothing published'). Used when
+        ADDING the repo on another machine, to offer its saved options."""
+        ref = self.config_ref(user)
+        res = self._run(["fetch", "--quiet", remote, f"+{ref}:{ref}"],
+                        check=False, timeout=timeout)
+        if res.returncode != 0:
+            return None
+        return self.read_published_config(user)
+
     # Minimum mirror age before a stale autosnap ref may be pruned. Generous so a
     # freshly re-cloned repo (disaster recovery) never prunes states for branches
     # it simply hasn't recreated yet.
