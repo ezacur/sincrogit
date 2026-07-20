@@ -227,7 +227,7 @@ client in the panel):
 
 ### TODO — technical (for developers)
 
-- **Automated test suite — EXISTS** (`tests/`, pytest, ~90 tests, ~1 min): the restore
+- **Automated test suite — EXISTS** (`tests/`, pytest, ~1 min): the restore
   refusals and the rename-safe restore, the selective restore / timeline / export /
   history search, config-file surgery, `--doctor`, the long-busy warning and state
   precedence, diff rendering, the GUI dialogs offscreen — **and the multi-machine paths
@@ -235,8 +235,8 @@ client in the panel):
   verdicts), handoff fast-forward (auto + ask + re-validation), the uncaptured-content
   refusal, handoff across a rename, both rebase-conflict shapes (abort + pause), the
   rejected-push reconcile loop, seal/push idempotence, and autosnap-ref pruning. Run it
-  with `pip install -e .[dev]` then `pytest`. **Still missing**: CI to run it all on
-  every push.
+  with `pip install -e .[dev]` then `pytest` — and **CI runs it all on every push**
+  (`.github/workflows/ci.yml`, windows-latest: the only platform the product supports).
 
 ## Installation
 

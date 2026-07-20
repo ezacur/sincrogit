@@ -143,6 +143,12 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
     repos se añaden en caliente, sin reiniciar; **Properties…** edita la configuración
     de un repo como formulario (solo se escriben los campos cambiados — el resto sigue
     heredando los defaults) y permite quitarlo de la config.
+  - *Time machine*: por repo, un raíl agrupado por día con **cada snapshot, sellado y
+    espejo fetcheado**, con un conmutador de comparación — *what changed then* (los
+    ficheros y diffs de cada estado frente a su padre) o *vs today* (qué cambiaría una
+    restauración, con restore selectivo y de repo entero) — y un **pin de fichero** que
+    convierte el raíl en el historial de versiones de ese fichero (búsqueda entre
+    versiones, restore por fichero, restore por bloques).
   - *Log*: eventos **filtrables por repo, acción, nivel y texto** (lo más nuevo arriba, en vivo).
   - *Settings*: formulario amable sobre los defaults globales (purista, relevo, IA, tema…).
   - *Advanced (YAML)*: editor del `config.yaml` crudo (guardar / guardar y reiniciar).
@@ -230,7 +236,7 @@ cliente git en el panel):
 
 ### TODO — técnico (para desarrolladores)
 
-- **Batería de tests automatizados — YA EXISTE** (`tests/`, pytest, ~90 tests, ~1 min):
+- **Batería de tests automatizados — YA EXISTE** (`tests/`, pytest, ~1 min):
   los rechazos de restauración y el restore seguro ante renames, el restore selectivo /
   línea temporal / exportar / búsqueda en el historial, la cirugía del fichero de config,
   `--doctor`, el aviso de ocupado largo y la precedencia de estados, el renderizado de
@@ -240,8 +246,8 @@ cliente git en el panel):
   contenido no capturable, el relevo a través de un rename, las dos formas de conflicto
   de rebase (aborto + pausa), el bucle de reconciliación tras un push rechazado, la
   idempotencia de sellado/push y la poda de refs autosnap. Se ejecuta con
-  `pip install -e .[dev]` y `pytest`. **Sigue faltando**: una CI que lo ejecute en cada
-  push.
+  `pip install -e .[dev]` y `pytest` — y **una CI lo ejecuta todo en cada push**
+  (`.github/workflows/ci.yml`, windows-latest: la única plataforma que el producto soporta).
 
 ## Instalación
 
@@ -366,8 +372,8 @@ python -m sincrogit -c config.yaml --autosnaps
 ```
 
 En la app de bandeja, lo mismo está en el panel de control:
-**Estado → "File history…"** (explorar, ver un diff de cualquier versión y restaurar
-un fichero o el repo entero).
+la pestaña **Time machine** (fija el fichero: explorar, ver un diff de cualquier versión
+y restaurar un fichero o el repo entero).
 
 Restaurar está a su vez protegido: las ediciones pendientes se fotografían primero en el
 WIP (así nada guardado desde el último snapshot puede perderse), y el estado restaurado
@@ -412,7 +418,7 @@ cada 6h: el árbol acumulado de snapshots se convierte en UN commit sellado en l
 ```
 
 - **Deshacer un error reciente**: los snapshots son commits reales del ref lateral
-  (resolución ≈5 min) — explóralos/restáuralos desde File history / Time machine.
+  (resolución ≈5 min) — explóralos/restáuralos desde la pestaña Time machine.
 - **Volver a ayer**: `git checkout`/`restore` desde el commit sellado correspondiente.
 - **Fallo total de disco**: recupera en otra máquina desde el ref `autosnap` (≤30 min).
 
@@ -594,7 +600,7 @@ integración**:
   real es el debounce) a cambio de una cadena de snapshots más larga. Ver
   [Afinar un repo "en caliente"](#afinar-un-repo-en-caliente).
 - **Rollback de cualquier cosa que hiciera.** ¿Una mala edición del agente de hace una
-  hora? *File history* → restaura el fichero (o el repo entero) a justo antes.
+  hora? *Time machine* → restaura el fichero (o el repo entero) a justo antes.
 - **Separación limpia de tu trabajo.** Usa el **modo purista** (`seal_interval_min: inf`):
   el historial permanente queda 100 % tuyo (tus Smart Commits), mientras el WIP + autosnap
   registran en silencio todo lo que el agente hace entre medias. O quédate en pragmático y
