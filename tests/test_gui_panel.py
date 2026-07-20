@@ -222,3 +222,18 @@ def test_log_append_prepends_to_model_when_visible(panel, qspin):
     p.append_event(ev)
     assert p._log_model.rowCount() == before + 1
     assert p._log_model.index(0, 4).data() == "fresh event"
+
+
+def test_first_event_does_not_pin_the_repo_filter(panel):
+    """The repo dropdown is born with '(all)' seeded: on an EMPTY combo the
+    first addItem (e.g. the engine's startup line, arriving before the Log tab
+    is ever visited) used to move the index -1 -> 0 and silently pin the
+    filter to whichever repo spoke first, hiding every other repo's events."""
+    _, p = panel
+    assert p.cb_repo.currentText() == "(all)"
+    p.append_event(types.SimpleNamespace(ts=time.time(), repo="alpha",
+                                         action="startup", level="INFO",
+                                         message="first repo to speak"))
+    assert p.cb_repo.currentText() == "(all)"
+    p.refresh_log()  # the Log tab visit must keep it too
+    assert p.cb_repo.currentText() == "(all)"

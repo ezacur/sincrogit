@@ -887,8 +887,12 @@ class TimeMachineTab(QWidget):
 
         def work():
             try:
+                # "delete" is the ONE verb with nothing to load at `sha` (the
+                # file was added after it; a restore would remove it). Every
+                # other verb — "recreate" above all — has content there, and
+                # showing it is the point: it's what the restore brings back.
                 new = (self.c.file_text_at(name, path, sha)
-                       if verb != "recreate" or pinned else None)
+                       if verb != "delete" or pinned else None)
                 if content_only:
                     html = None if new is None else (
                         "<pre style=\"font-family:Consolas,monospace;"

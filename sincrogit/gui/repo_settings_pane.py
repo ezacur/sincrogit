@@ -382,6 +382,16 @@ class RepoSettingsPane(QWidget):
                 f"in the Advanced (YAML) tab.",
             )
             return
+        # The pane lives on after a save (no window closes), so its baseline
+        # must move with the file. Otherwise a change-then-revert second Save
+        # compares against the ORIGINAL values, says "Nothing changed" and
+        # leaves the unwanted override on disk; the provenance hints and the
+        # reset button would keep describing the pre-save state too.
+        self._initial = current
+        self._entry = {**self._entry, **changes}
+        self._update_hints()
+        self.btn_reset.setEnabled(
+            self._found and any(k in self._hints for k in self._entry))
         if restart:
             self.c.restart()
         else:

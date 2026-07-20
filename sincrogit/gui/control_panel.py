@@ -624,6 +624,10 @@ class ControlPanel(QMainWindow):
         filt = QHBoxLayout()
         filt.addWidget(QLabel("Repo:"))
         self.cb_repo = QComboBox()
+        # Seeded BEFORE connecting: on an empty combo the first addItem (from
+        # append_event, e.g. the engine's startup line) would move the index
+        # -1 -> 0 and silently pin the filter to whichever repo spoke first.
+        self.cb_repo.addItem("(all)")
         self.cb_repo.currentIndexChanged.connect(self.refresh_log)
         filt.addWidget(self.cb_repo)
 

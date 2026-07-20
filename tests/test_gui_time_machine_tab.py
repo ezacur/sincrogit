@@ -339,3 +339,22 @@ def test_rail_delegate_caches_fonts(qapp):
     fm_bold, fm = d._fm_bold, d._fm
     d._ensure_fonts(QFont("Arial", 20))   # already built -> must NOT rebuild
     assert d._fm_bold is fm_bold and d._fm is fm
+
+
+def test_today_mode_recreate_shows_the_content_a_restore_brings_back(tab, qspin):
+    """A file DELETED since the snapshot carries the 'recreate' verb: it EXISTS
+    at `sha` (the restore recreates it). The load guard used to be inverted —
+    skipping exactly this verb and painting '(binary or unavailable)', so the
+    user decided the restore blind."""
+    ctl, t, _ = tab
+    ctl.restore_repo_preview = lambda name, sha: (True, {
+        "changes": [("recreate", "gone.txt"), ("delete", "added-later.txt")],
+        "risky": []})
+    assert qspin(lambda: t.lst.count() > 0)
+    t.rb_today.setChecked(True)
+    assert qspin(lambda: t.tbl_files.rowCount() == 2)
+    row = next(i for i in range(2)
+               if t.tbl_files.item(i, 2).text() == "gone.txt")
+    t.tbl_files.selectRow(row)
+    assert qspin(lambda: "current file" in t.diff.toPlainText())
+    assert "unavailable" not in t.diff.toPlainText()

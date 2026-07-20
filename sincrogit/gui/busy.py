@@ -16,7 +16,6 @@ Everything here runs on the GUI thread — callers flip it from their queued
 signal handlers, never from the worker itself.
 """
 
-from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QWidget
 
 

@@ -239,15 +239,21 @@ class SettingsTab(QWidget):
     # ------------------------------------------------------ repo master list
     def showEvent(self, e):
         super().showEvent(e)
-        self._sync_repos()  # repos can be added live
+        # Re-entering the tab is a fresh "visit": the shown repo's pane must
+        # re-read entry/effective/defaults (edits from Advanced YAML or a
+        # restart happened while we weren't looking). _sync_repos only rebuilds
+        # when the repo LIST changed, so force the re-pick otherwise.
+        if not self._sync_repos() and self.lst.currentRow() > 0:
+            self._on_pick(self.lst.currentRow())
 
-    def _sync_repos(self):
+    def _sync_repos(self) -> bool:
+        """Refresh the master list; True if it changed (and re-picked)."""
         lister = getattr(self.c, "repo_list", None)
         names = [n for n, _p in lister()] if lister else []
         want = ["Global defaults"] + names
         have = [self.lst.item(i).text() for i in range(self.lst.count())]
         if want == have:
-            return
+            return False
         cur = self.lst.currentItem().text() if self.lst.currentItem() else ""
         self.lst.blockSignals(True)
         self.lst.clear()
@@ -255,6 +261,7 @@ class SettingsTab(QWidget):
         self.lst.setCurrentRow(want.index(cur) if cur in want else 0)
         self.lst.blockSignals(False)
         self._on_pick(self.lst.currentRow())
+        return True
 
     def _on_pick(self, row):
         if row <= 0:
@@ -280,7 +287,12 @@ class SettingsTab(QWidget):
         self._sync_repos()
         for i in range(self.lst.count()):
             if self.lst.item(i).text() == name:
-                self.lst.setCurrentRow(i)
+                if self.lst.currentRow() == i:
+                    # setCurrentRow on the already-current row emits nothing —
+                    # rebuild explicitly so the pane isn't a stale leftover.
+                    self._on_pick(i)
+                else:
+                    self.lst.setCurrentRow(i)
                 return
 
     def _history_mode_changed(self):

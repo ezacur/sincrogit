@@ -527,12 +527,17 @@ class TrayApp:
             self.pause_all()
 
     def _run_async(self, fn, label):
-        """Runs a network action on a thread so as not to freeze the GUI."""
+        """Runs a network action on a thread so as not to freeze the GUI.
+
+        Outcomes go through _on_engine_event, NEVER event_log.add directly:
+        add() only writes the store, so the line would skip the Qt bridge and
+        never reach the Log — and the panel's in-flight marker (which disables
+        the action buttons) is only cleared by an arriving event."""
         def worker():
             try:
                 fn()
             except Exception as e:  # noqa: BLE001
-                self.event_log.add("", "error", f"{label} failed: {e}", "ERROR")
+                self._on_engine_event("", "error", f"{label} failed: {e}", "ERROR")
         threading.Thread(target=worker, name=f"sincrogit-{label}", daemon=True).start()
 
     def sync_now(self):
@@ -581,9 +586,9 @@ class TrayApp:
         def work():
             ok, msg = self.engine.seal_repo_now(name)
             if not ok:
-                self.event_log.add(name, "seal", f"not sealed: {msg}", "WARNING")
+                self._on_engine_event(name, "seal", f"not sealed: {msg}", "WARNING")
             elif msg != "sealed":
-                self.event_log.add(name, "seal", msg, "INFO")  # "nothing to seal"
+                self._on_engine_event(name, "seal", msg, "INFO")  # "nothing to seal"
         self._run_async(work, f"seal:{name}")
 
     def propose_seal_message(self, name):
@@ -598,8 +603,8 @@ class TrayApp:
     def pull_repo_now(self, name):
         def work():
             ok, msg = self.engine.pull_repo_now(name)
-            self.event_log.add(name, "pull", msg if ok else f"not pulled: {msg}",
-                               "INFO" if ok else "WARNING")
+            self._on_engine_event(name, "pull", msg if ok else f"not pulled: {msg}",
+                                  "INFO" if ok else "WARNING")
         self._run_async(work, f"pull:{name}")
 
     def apply_handoff(self, name):
@@ -609,7 +614,7 @@ class TrayApp:
         def worker():
             ok, msg = self.engine.apply_handoff(name)
             if not ok:
-                self.event_log.add(name, "handoff", f"apply failed: {msg}", "WARNING")
+                self._on_engine_event(name, "handoff", f"apply failed: {msg}", "WARNING")
             self.bridge.refresh_tray.emit()  # queued to the GUI thread
         threading.Thread(target=worker, name=f"sincrogit-handoff-{name}", daemon=True).start()
 

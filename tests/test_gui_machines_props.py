@@ -193,3 +193,21 @@ def test_use_defaults_disabled_without_overrides(qapp, monkeypatch):
     finally:
         d.close()
         d.deleteLater()
+
+
+def test_save_moves_the_baseline(props):
+    """The pane lives on after Save (no window closes): a change-then-revert
+    SECOND save must write the revert. Diffing against the ORIGINAL values
+    said 'Nothing changed' and silently left the unwanted override on disk."""
+    ctl, d, infos = props
+    original = d.sp_pull.value()
+    d.sp_pull.setValue(original + 5)
+    d._save(restart=False)
+    assert ctl.saved and ctl.saved[1] == {"pull_interval_min": original + 5}
+    # The pane's own state moved with the file: hint + reset button live now.
+    assert d._hints["pull_interval_min"].text().startswith("override")
+    assert d.btn_reset.isEnabled()
+    d.sp_pull.setValue(original)          # second thoughts: put it back
+    d._save(restart=False)
+    assert ctl.saved[1] == {"pull_interval_min": original}   # actually WRITTEN
+    assert not any("Nothing changed" in i for i in infos)

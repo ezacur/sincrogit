@@ -127,3 +127,25 @@ def test_controllers_without_repos_get_the_global_page_alone(qapp):
     t = stab.SettingsTab(Ctl("defaults: {}\n"))    # no repo_list on this duck
     assert [t.lst.item(i).text() for i in range(t.lst.count())] == ["Global defaults"]
     assert t.stack.currentIndex() == 0
+
+
+def test_revisiting_a_repo_rebuilds_the_pane_fresh(qapp):
+    """_build_pane's contract is 'a FRESH pane per visit': jumping to the SAME
+    repo again must re-read entry/effective — setCurrentRow on the current row
+    emits nothing, so the stale pane (pre Advanced-YAML edit) survived."""
+    class Live(FullCtl):
+        branch = "main"
+
+        def repo_config_view(self, name):
+            return ({"path": f"C:/tmp/{name}", "branch": self.branch},
+                    {"branch": self.branch}, {})
+
+    ctl = Live("defaults: {}\n")
+    t = stab.SettingsTab(ctl)
+    t.select_repo("beta")
+    first = t._pane
+    assert first.ed_branch.text() == "main"
+    ctl.branch = "develop"            # edited in Advanced (YAML) meanwhile
+    t.select_repo("beta")             # same row as before
+    assert t._pane is not first       # rebuilt, not the stale leftover
+    assert t._pane.ed_branch.text() == "develop"
