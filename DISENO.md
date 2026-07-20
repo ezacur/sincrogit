@@ -306,8 +306,8 @@ sincrogit/
 │  ├─ notify.py          # notificaciones Windows (toasts)
 │  ├─ convert.py         # extracción in-process de texto legible (.pptx vía python-pptx)
 │  ├─ doctor.py          # chequeo de salud --doctor (git/remotos/credenciales/IA/demonio)
-│  └─ gui/               # bandeja PyQt5 + panel + diálogos (add-repo, historial,
-│                        #   explorador time-machine, máquinas, smart-commit, propiedades)
+│  └─ gui/               # bandeja PyQt5 + panel (pestañas Time machine / Settings
+│                        #   inline) + diálogos (add-repo, máquinas, smart-commit, hunks)
 ├─ tests/               # batería pytest (repos git desechables + Qt offscreen); `pytest`
 ├─ config.example.yaml
 ├─ pyproject.toml

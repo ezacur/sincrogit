@@ -41,7 +41,8 @@ SincroGit brilla si usas más de un ordenador (y eres de los que cierran la tapa
 portátil sin hacer `push`).
 
 **Por la mañana, en el sobremesa:**
-1. Te sientas. SincroGit arranca solo y **baja en silencio** lo último que sincronizaste.
+1. Te sientas y lanzas SincroGit (el auto-arranque al login está en el roadmap — de
+   momento, un acceso directo en la carpeta Inicio). **Baja en silencio** lo último que sincronizaste.
 2. Programas tres horas. Ni rastro de la consola.
 3. Te llaman a comer. Te levantas y te vas **sin tocar nada**.
 

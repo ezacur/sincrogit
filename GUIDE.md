@@ -39,7 +39,8 @@ SincroGit shines if you use more than one computer (and you're the type who clos
 laptop lid without `push`ing).
 
 **In the morning, on the desktop:**
-1. You sit down. SincroGit starts on its own and **quietly pulls** whatever you last synced.
+1. You sit down and launch SincroGit (auto-start at login is on the roadmap — for now,
+   drop a shortcut in your Startup folder). It **quietly pulls** whatever you last synced.
 2. You code for three hours. No sign of the console.
 3. Lunch break. You get up and leave **without touching anything**.
 

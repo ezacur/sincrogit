@@ -302,8 +302,8 @@ sincrogit/
 │  ├─ notify.py          # Windows notifications (toasts)
 │  ├─ convert.py         # in-process readable-text extraction (.pptx via python-pptx)
 │  ├─ doctor.py          # --doctor health check (git/remotes/credentials/AI/daemon)
-│  └─ gui/               # tray icon + control panel + dialogs (add-repo, history,
-│                        #   time-machine explorer, machines, smart-commit, properties)
+│  └─ gui/               # tray icon + control panel (Time machine / Settings tabs
+│                        #   inline) + dialogs (add-repo, machines, smart-commit, hunks)
 ├─ tests/               # pytest suite (throwaway git repos + offscreen Qt); `pytest`
 ├─ config.example.yaml
 ├─ pyproject.toml
