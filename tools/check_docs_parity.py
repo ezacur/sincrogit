@@ -16,6 +16,12 @@ differ — but three things are meant to mirror exactly, and each gets a check:
 3. CONFIG EXAMPLE: every key in config.example.yaml must exist in config.py's
    dataclasses (introspected, not hardcoded), so the example can't teach a
    key the loader ignores.
+4. UI NAMES: every button/menu/tab label the docs mention must still exist in
+   the GUI source. The convention makes this checkable: labels that open
+   something end with the ellipsis character ("Add repo…", "Properties…") in
+   BOTH the code and the docs' emphasized/quoted mentions — so a doc pointing
+   at retired UI ("File history…" survived a whole redesign in one language)
+   is caught by harvesting sincrogit/gui/*.py and demanding every mention exists.
 
 A mismatch means one side changed alone — the kind of drift the review
 flagged. Run it in CI (see .github/workflows/ci.yml).
@@ -164,6 +170,61 @@ def _fact_drift(en_facts: Counter, es_facts: Counter, en: str, es: str) -> list:
     return problems
 
 
+# Emphasized/quoted doc mentions ending in the ellipsis CHARACTER — the house
+# convention for UI labels that open something. Prose ellipses aren't
+# emphasized, so this extracts labels with essentially no false positives.
+_UI_MENTION = (
+    re.compile(r"\*\*([^*\n]+?…)\*\*"),
+    re.compile(r"(?<!\*)\*([^*\n]+?…)\*(?!\*)"),
+    re.compile(r"[\"“]([^\"”\n]+?…)[\"”]"),
+)
+
+
+def _gui_source(root: str) -> str:
+    """Every sincrogit/gui/*.py concatenated: UI labels are plain string
+    literals in there, so 'the label exists' is a substring test — tolerant of
+    f-strings and of labels assembled near (not inside) a widget call."""
+    import glob
+    parts = []
+    for p in sorted(glob.glob(os.path.join(root, "sincrogit", "gui", "*.py"))):
+        with open(p, "r", encoding="utf-8") as fh:
+            parts.append(fh.read())
+    return "\n".join(parts)
+
+
+def ui_mentions(path: str) -> set:
+    """UI labels this doc points the user at (see _UI_MENTION)."""
+    out = set()
+    for line in _body_lines(path):
+        for pat in _UI_MENTION:
+            for m in pat.finditer(line):
+                label = m.group(1).strip().strip('"“”').strip()
+                if label and len(label) <= 40:
+                    out.add(label)
+    return out
+
+
+def check_ui_names(root: str) -> list:
+    """Every UI label the docs mention must still exist in the GUI source —
+    catches prose that keeps pointing at a retired button/dialog/tab, which
+    the heading and code-span checks are blind to (labels are bold text)."""
+    src = _gui_source(root)
+    if not src:
+        return ["no GUI sources found under sincrogit/gui/"]
+    problems = []
+    for pair in PAIRS:
+        for name in pair:
+            path = os.path.join(root, name)
+            if not os.path.exists(path):
+                continue  # the pair check already reports missing files
+            for label in sorted(ui_mentions(path)):
+                if label not in src:
+                    problems.append(
+                        f"{name}: mentions UI '{label}' — not found in any "
+                        f"sincrogit/gui/*.py (retired or renamed?)")
+    return problems
+
+
 def check_config_example(root: str) -> list:
     """Every key in config.example.yaml must be one the loader actually knows
     (introspected from config.py's dataclasses). Catches the example teaching
@@ -236,6 +297,14 @@ def main() -> int:
             print(f"[DRIFT] {p}")
     else:
         print("[ OK  ] config.example.yaml <-> config.py")
+
+    problems = check_ui_names(root)
+    if problems:
+        any_bad = True
+        for p in problems:
+            print(f"[DRIFT] {p}")
+    else:
+        print("[ OK  ] docs' UI mentions <-> sincrogit/gui/")
 
     if any_bad:
         print("\nDocs are out of sync. Mirror the section structure and the "
