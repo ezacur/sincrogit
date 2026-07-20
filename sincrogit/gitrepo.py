@@ -588,6 +588,45 @@ class GitRepo:
             args.append(old)
         self._run(args)
 
+    def graft_uncaptured(self, base_tree: str, tree: str) -> str:
+        """Return `tree` (the shadow tree about to be sealed) with every entry
+        of `base_tree` (HEAD's tree) that is MISSING from it grafted back in —
+        provided the file still exists in the worktree.
+
+        The shadow chain is filtered on purpose (no binaries, no oversize
+        files), so content the user committed BY HAND lives in HEAD's tree but
+        never in the shadow's. Sealing the raw shadow tree over HEAD would
+        record every such file as *deleted* — the exact opposite of the
+        'a manual `git add photo.jpg` and done' promise. The worktree check
+        keeps real deletions honest: a file the user removed from disk (whether
+        we captured it or not) still drops out of the seal."""
+        if not base_tree or base_tree == tree:
+            return tree
+        out = self._run(["diff-tree", "-r", "-z", "--no-renames",
+                         "--diff-filter=D", base_tree, tree]).stdout
+        toks = out.split("\0")
+        lines = []
+        for meta, path in zip(toks[::2], toks[1::2]):
+            if not meta.startswith(":") or not path:
+                continue
+            mode, _new_mode, sha = meta[1:].split(" ")[:3]
+            if os.path.lexists(os.path.join(self.path, path)):
+                lines.append(f"{mode} {sha}\t{path}")
+        if not lines:
+            return tree
+        # Throwaway index: never the user's, never the shadow's.
+        env = {"GIT_INDEX_FILE": os.path.join(self._git_dir(), "sincro-graft-index")}
+        try:
+            self._run(["read-tree", tree], extra_env=env)
+            self._run(["update-index", "-z", "--index-info"],
+                      stdin_data="\0".join(lines) + "\0", extra_env=env)
+            return self._run(["write-tree"], extra_env=env).stdout.strip()
+        finally:
+            try:
+                os.remove(env["GIT_INDEX_FILE"])
+            except OSError:
+                pass
+
     def seal_from_shadow(self, branch: str, tree: str, *messages: str) -> str:
         """The REAL commit: `tree` (the latest snapshot) committed on top of
         HEAD with the seal message; the branch advances and the user's index is

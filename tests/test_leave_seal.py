@@ -5,6 +5,7 @@ got there first, flat OFF in purist mode, and fired early with the
 deterministic message when the machine is about to suspend."""
 
 import math
+import os
 import time
 
 from sincrogit.config import RepoConfig
@@ -117,6 +118,55 @@ def test_staged_changes_are_never_absorbed(make_repo, make_engine):
     assert _spin_until(lambda: "t" in eng._leave_sealed)
     assert git(repo, "log", "-1", "--format=%s") == "feat: base"
     assert any(a == "leave-seal" and "staged" in m for _r, a, _l, m in events)
+
+
+def test_timer_leave_seal_pushes_to_the_remote(tmp_path, make_engine):
+    """The timer path runs INSIDE the repo's network worker: the push must be
+    a direct call — a nested _dispatch_network self-discards on net_busy, and
+    the push (the whole point of sealing before going home) was silently
+    dropped until the next sync."""
+    origin = str(tmp_path / "origin.git")
+    os.makedirs(origin)
+    git(origin, "init", "--bare", "-b", "main")
+    repo = str(tmp_path / "clone")
+    git(str(tmp_path), "clone", "-q", origin, repo)
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "T")
+    write(repo, "a.txt", "v1\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "feat: base")
+    git(repo, "push", "-q", "origin", "main")
+
+    eng, _ = make_engine(repo, push=True)
+    write(repo, "a.txt", "v2 — going home\n")
+    _arm_in_the_past(eng, 21 * 60)
+    eng.tick()
+    assert _spin_until(lambda: git(origin, "log", "-1", "--format=%s")
+                       .startswith("sincro: [leave] "))
+
+
+def test_global_pause_blocks_the_suspend_path(make_repo, make_engine):
+    """Paused means touch NOTHING — the pre-suspend shortcut included."""
+    repo = make_repo()
+    eng, _ = make_engine(repo)
+    write(repo, "a.txt", "edited\n")
+    eng.arm_leave_seal()
+    eng.pause()
+    eng.leave_seal_now_if_armed()
+    assert git(repo, "log", "-1", "--format=%s") == "feat: base"
+
+
+def test_disarm_mid_flight_aborts_the_worker(make_repo, make_engine):
+    """The user came back between the dispatch and the worker taking the lock:
+    the worker revalidates the armed state and aborts."""
+    repo = make_repo()
+    eng, _ = make_engine(repo)
+    st = eng.states[0]
+    write(repo, "a.txt", "edited\n")
+    eng.arm_leave_seal()
+    eng.disarm_leave_seal()
+    eng._do_leave_seal(st)  # the body an already-queued worker would run
+    assert git(repo, "log", "-1", "--format=%s") == "feat: base"
 
 
 def test_config_sentinels_and_default(tmp_path):

@@ -114,8 +114,10 @@ class EventLog:
         # Read whichever of the two files exist: right after a rotation the
         # current file is gone (os.replace moved it to .1) and ALL history lives
         # in the backup, so guarding on the current file alone would drop it.
+        if not self._jsonl_path:
+            return self.recent()  # in-memory only, as the docstring promises
         paths = [p for p in (self._jsonl_path + ".1", self._jsonl_path)
-                 if self._jsonl_path and os.path.exists(p)]
+                 if os.path.exists(p)]
         if not paths:
             return self.recent()
         out = []

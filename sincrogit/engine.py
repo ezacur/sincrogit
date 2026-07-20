@@ -159,6 +159,11 @@ class Engine:
     # merge — or the transient index.lock of any git command — never trips it.
     BUSY_WARN_SEC = 600
 
+    # How long flush_now waits for ONE repo's op_lock before skipping it: the
+    # session-end budget (~20 s for ALL repos) must never be eaten by a single
+    # worker mid-push. The skipped repo's last autosnap is the backstop.
+    FLUSH_LOCK_TIMEOUT = 5.0
+
     def __init__(self, config, emit_event=None):
         self.config = config
         self.states: list[RepoState] = []
@@ -769,10 +774,12 @@ class Engine:
     def leave_seal_now_if_armed(self, wait_timeout: float = 8.0):
         """The machine is about to SUSPEND with a leave-seal armed: the timer
         cannot tick while asleep, so fire it NOW (bounded — Windows grants a
-        couple of seconds; the local commit lands, the push is dispatched and
+        couple of seconds; the local commit lands, the push is attempted and
         retried on wake if the network dies first)."""
         if self._leave_epoch is None:
             return
+        if self._paused.is_set():
+            return  # the global pause means "touch nothing" — suspend included
 
         def worker():
             for st in self._states_snapshot():
@@ -832,8 +839,9 @@ class Engine:
         idle, so no snapshot is waiting on this repo."""
         if not st.op_lock.acquire(blocking=False):
             return  # a worker holds the repo; stays pending, retried next tick
-        push_due = False
         try:
+            if self._leave_epoch is None:
+                return  # disarmed while this was queued (user came back): abort
             repo, branch = st.repo, st.active_branch
             if repo.is_busy():
                 self._leave_sealed.add(st.cfg.name)
@@ -850,6 +858,7 @@ class Engine:
             tree = repo.sync_shadow_index(branch)
             head = repo.head_sha()
             base_tree = repo.tree_of(head) if head else repo._empty_tree()
+            tree = repo.graft_uncaptured(base_tree, tree)
             if repo.trees_match(base_tree, tree):
                 # The 6 h seal (or the user's own commit) got there first:
                 # nothing to publish, and — per the design — NO clock moves.
@@ -876,11 +885,16 @@ class Engine:
             self._mark_action(st, "leave-seal")
             self._emit(st.cfg.name, "leave-seal", title)
             repo.gc_auto()
-            push_due = st.cfg.push and repo.has_remote(st.cfg.remote)
+            # Push DIRECTLY, like the regular seal does — never via
+            # _dispatch_network: on the timer path we are already inside this
+            # repo's network worker (net_busy is ours), so a nested dispatch
+            # returns False and the push would be dropped in silence. That was
+            # the whole feature lost whenever the machine slept before the
+            # next sync picked up the slack.
+            if st.cfg.push and repo.has_remote(st.cfg.remote):
+                self._do_push(st)
         finally:
             st.op_lock.release()
-        if push_due:
-            self._dispatch_network(st, "push", lambda: self._do_push(st))
 
     def flush_now(self, wait: bool = False, wait_timeout: float = 180.0):
         """Force a snapshot + autosnap push of every (on-branch) repo NOW, ignoring
@@ -903,7 +917,15 @@ class Engine:
                     ok, _ = self._branch_ok(st)  # sets active_branch; yields off-branch/detached
                     if not ok:
                         continue
-                    with st.op_lock:
+                    # BOUNDED acquire, never blocking: a network worker can hold
+                    # this repo's lock for up to git_timeout_sec — waiting on it
+                    # here would eat the session-end handler's whole budget and
+                    # leave the REMAINING repos unflushed when Windows kills us.
+                    # Skip the busy one; its last autosnap is the backstop.
+                    if not st.op_lock.acquire(timeout=self.FLUSH_LOCK_TIMEOUT):
+                        log.warning("[%s] busy during flush; skipped", st.cfg.name)
+                        continue
+                    try:
                         if st.repo.is_busy():
                             continue
                         if self._do_snapshot(st):
@@ -920,6 +942,8 @@ class Engine:
                             st.last_autosnap_mono = time.monotonic()
                             if not st.autosnap_pending:  # cleared only on a SUCCESSFUL push
                                 did += 1
+                    finally:
+                        st.op_lock.release()
                 except GitError as e:
                     log.error("[%s] flush failed: %s", st.cfg.name, e)
             # Only claim a flush when something actually moved (a no-op flush on
@@ -1201,6 +1225,10 @@ class Engine:
         tree = repo.sync_shadow_index(branch)
         head = repo.head_sha()
         base_tree = repo.tree_of(head) if head else repo._empty_tree()
+        # Manually committed uncapturable files (binaries, oversize) live in
+        # HEAD's tree but never in the shadow's — graft them back so the seal
+        # doesn't record them as deleted (and doesn't fire JUST because of them).
+        tree = repo.graft_uncaptured(base_tree, tree)
         if repo.trees_match(base_tree, tree):
             log.debug("[%s] nothing to seal", st.cfg.name)
             st.last_seal_epoch = now_epoch
@@ -1224,6 +1252,7 @@ class Engine:
         tree = repo.sync_shadow_index(branch)
         head = repo.head_sha()
         base_tree = repo.tree_of(head) if head else repo._empty_tree()
+        tree = repo.graft_uncaptured(base_tree, tree)
         if repo.trees_match(base_tree, tree):
             log.debug("[%s] nothing to seal", st.cfg.name)
             st.last_seal_epoch = now_epoch
@@ -1263,6 +1292,7 @@ class Engine:
         tree = repo.sync_shadow_index(branch)
         head = repo.head_sha()
         base_tree = repo.tree_of(head) if head else repo._empty_tree()
+        tree = repo.graft_uncaptured(base_tree, tree)
         if repo.trees_match(base_tree, tree):
             log.debug("[%s] nothing to seal", st.cfg.name)  # DEBUG: avoids noise over idle days
             st.last_seal_epoch = now_epoch  # reschedule the clock
@@ -1323,7 +1353,13 @@ class Engine:
         try:
             ai_msg = generate_commit_message(self.config.ai, stat, text)
             if ai_msg and ai_msg[0]:
-                return ai_msg
+                title, body = ai_msg
+                # The 'sincro:' prefix is a PROMISE (README §skeptic: every
+                # automatic commit carries it), so it can't rest on the model
+                # obeying its prompt — enforce it here, like the leave seal does.
+                if not title.startswith("sincro:"):
+                    title = f"sincro: {title}"
+                return title, body
         except Exception as e:  # noqa: BLE001 — never block the seal because of the AI
             log.warning("[%s] AI failed, using fallback: %s", st.cfg.name, e)
         return title, body
@@ -1720,10 +1756,10 @@ class Engine:
         # instead of making the user dig through the Log.
         if dirty_conflict:
             st.conflict_msg = (
-                f"The remote's commits were integrated, but re-applying your "
-                f"uncommitted edits conflicted: conflict markers were left in "
-                f"the affected file(s). Resolve them (your exact pre-pull state "
-                f"is in the time machine), then press Resume."
+                "The remote's commits were integrated, but re-applying your "
+                "uncommitted edits conflicted: conflict markers were left in "
+                "the affected file(s). Resolve them (your exact pre-pull state "
+                "is in the time machine), then press Resume."
             )
             detail = "pull left conflict markers; repo PAUSED"
         else:

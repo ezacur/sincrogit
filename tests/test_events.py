@@ -50,6 +50,14 @@ def test_load_all_skips_corrupt_lines(tmp_path):
     assert [e.message for e in events] == ["good1", "good2"]
 
 
+def test_load_all_without_a_jsonl_path():
+    """Memory-only log (tests, dry runs): load_all falls back to the buffer
+    instead of TypeError-ing on `None + ".1"`."""
+    log = EventLog(None)
+    log.add("r", "seal", "hello")
+    assert [e.message for e in log.load_all()] == ["hello"]
+
+
 def test_repos_seen_sorted_unique():
     """repos_seen returns the distinct non-empty repo names, sorted."""
     log = EventLog()

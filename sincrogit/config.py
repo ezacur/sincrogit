@@ -102,7 +102,10 @@ def _require_pattern_list(name: str, value) -> list:
 
 def _norm_handoff(value) -> str:
     """Normalize live_handoff to 'auto' | 'ask' | 'off'. Accepts booleans
-    (true->auto, false->off) and the obvious word spellings."""
+    (true->auto, false->off) and the obvious word spellings. Anything ELSE is
+    an error, not a silent 'auto': a typo like `live_handoff: aks` would
+    otherwise flip the machine into applying remote trees on its own — the
+    one mode the user explicitly did NOT pick."""
     if value is True:
         return "auto"
     if value is False or value is None:
@@ -112,7 +115,10 @@ def _norm_handoff(value) -> str:
         return "ask"
     if s in ("off", "false", "none", "no", "0", "disabled", "never"):
         return "off"
-    return "auto"  # true/auto/on/yes/anything else -> auto
+    if s in ("auto", "on", "yes", "true", "1", "always"):
+        return "auto"
+    raise ValueError(
+        f"config: 'live_handoff' must be auto/ask/off (or true/false), got {value!r}")
 
 # Keys a repo can inherit from `defaults` or override.
 _INHERITABLE = [

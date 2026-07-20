@@ -123,7 +123,6 @@ def test_reset_repo_overrides(tmp_path):
     """Dropping a repo's overrides returns it to pure inheritance: identity
     keys survive, inheritable keys go, the other repo is untouched, and the
     file still parses (with its comments)."""
-    import pytest
     path = _cfg(tmp_path)
     ok, msg = cfgmod.reset_repo_overrides(path, "custom-beta")  # has push: false
     assert ok and "push" in msg
@@ -138,3 +137,22 @@ def test_reset_repo_overrides(tmp_path):
     assert ok and "no overrides" in msg          # idempotent
     ok, _ = cfgmod.reset_repo_overrides(path, "nope")
     assert not ok
+
+
+def test_live_handoff_typo_is_an_error(tmp_path):
+    """A typo like 'aks' used to fail OPEN to 'auto' — flipping the machine
+    into applying remote trees on its own, the one mode the user did NOT pick."""
+    import pytest
+
+    from sincrogit.config import RepoConfig
+    with pytest.raises(ValueError, match="live_handoff"):
+        RepoConfig(path=str(tmp_path), name="t", live_handoff="aks")
+
+
+def test_live_handoff_accepted_spellings(tmp_path):
+    from sincrogit.config import RepoConfig
+    for raw, want in [(True, "auto"), (False, "off"), (None, "off"),
+                      ("on", "auto"), ("always", "auto"), ("prompt", "ask"),
+                      ("confirm", "ask"), ("never", "off"), ("0", "off")]:
+        rc = RepoConfig(path=str(tmp_path), name="t", live_handoff=raw)
+        assert rc.live_handoff == want, (raw, rc.live_handoff)
