@@ -59,6 +59,7 @@ from .smart_commit_dialog import SmartCommitDialog
 from .time_machine_tab import TimeMachineTab
 from .timeline_v2_tab import TimelineV2Tab
 from .timeline_v3_tab import TimelineV3Tab
+from .timeline_v4_tab import TimelineV4Tab
 
 _LEVEL_COLOR = {
     "DEBUG": QColor("#8a929c"),    # muted: high-volume detail (filtered files, ...)
@@ -201,6 +202,8 @@ class ControlPanel(QMainWindow):
         self.tabs.addTab(self.timeline_v2, "Timeline v2")
         self.timeline_v3 = TimelineV3Tab(self.c)
         self.tabs.addTab(self.timeline_v3, "Timeline v3")
+        self.timeline_v4 = TimelineV4Tab(self.c)
+        self.tabs.addTab(self.timeline_v4, "Timeline v4")
         self.tabs.addTab(self._build_log_tab(), "Log")
         self.settings = SettingsTab(self.c)
         self.tabs.addTab(self.settings, "Settings")
@@ -813,6 +816,7 @@ class ControlPanel(QMainWindow):
         self.timeline.notice_event(ev)
         self.timeline_v2.notice_event(ev)
         self.timeline_v3.notice_event(ev)
+        self.timeline_v4.notice_event(ev)
         # A seal/pull/push/sync event for a repo marks its manual action as done:
         # clear the in-flight marker so the action bar re-enables its buttons.
         if ev.repo in self._inflight and ev.action in ("seal", "push", "pull", "sync"):

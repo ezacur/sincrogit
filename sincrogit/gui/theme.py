@@ -192,9 +192,37 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus,
 QPlainTextEdit:focus, QTextEdit:focus {{
     border: 1px solid {p['accent']};
 }}
+/* A closed combo must NOT read as a push button (they used to share the same
+   fill/border/radius with no visible arrow — Ernesto: "los botones y los
+   popup listbox se ven iguales"). The tell is a recessed arrow WELL with a
+   separator and an explicit triangle: "this opens a list", not "this acts". */
+QComboBox {{
+    padding: 4px 30px 4px 8px;   /* room for the arrow well */
+}}
 QComboBox::drop-down {{
     border: none;
+    border-left: 1px solid {p['border']};
     width: 22px;
+    background: {p['sunken']};
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+}}
+QComboBox::down-arrow {{
+    /* a QSS-drawn triangle (no image asset): zero-size box, colored top border */
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {p['muted']};
+}}
+QComboBox:hover::down-arrow {{
+    border-top-color: {p['accent']};
+}}
+/* Buttons that open a menu spell it out with a ▾ in their text instead of
+   Qt's tiny default indicator (invisible under a custom stylesheet). */
+QPushButton::menu-indicator {{
+    image: none;
+    width: 0;
 }}
 QSpinBox::up-button, QSpinBox::down-button {{
     border: none;
