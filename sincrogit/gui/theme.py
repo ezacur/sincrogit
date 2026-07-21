@@ -178,6 +178,34 @@ QPushButton[cssClass="danger"]:hover {{
     background: {p['danger']};
     color: {p['on_accent']};
 }}
+QToolButton {{
+    background: {p['surface']};
+    color: {p['text']};
+    border: 1px solid {p['border']};
+    border-radius: 6px;
+    padding: 5px 12px;
+}}
+QToolButton:hover {{
+    border-color: {p['accent']};
+    color: {p['accent']};
+}}
+/* Segmented switch (a joined pair of exclusive toggles — mode selectors that
+   must not read as two independent buttons). */
+QToolButton[cssClass="seg"]:checked {{
+    background: {p['accent']};
+    color: {p['on_accent']};
+    border-color: {p['accent']};
+    font-weight: 600;
+}}
+QToolButton[segPos="first"] {{
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}}
+QToolButton[segPos="last"] {{
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    margin-left: -1px;
+}}
 
 /* --------------------------------------------------------------- inputs */
 QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTextEdit {{
