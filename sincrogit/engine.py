@@ -627,14 +627,22 @@ class Engine:
         # a .docx never runs `pandoc --version`. See GitRepo._ensure_pandoc.
         provider = self._pandoc_cmd if self._repo_versions_docx(rc) else None
         repo = GitRepo(rc.path, pandoc_provider=provider)
+        # Power-cut self-healing, part 1 — BEFORE the is_git_repo gate: a crash
+        # can zero out .git/config (right size, NUL content), and then the repo
+        # reads as "not a git repository" and would be silently skipped forever.
+        # Happened for real (2026-07-21): a crash mid-boot zeroed it in every
+        # watched repo at once.
+        for msg in repo.repair_zeroed_config(rc.branch, rc.remote):
+            self._emit(rc.name, "repair", msg, "WARNING")
+
         if not repo.is_git_repo():
             log.error("Not a git repo (skipping): %s", rc.path)
             return
 
-        # Power-cut self-healing: a crash can zero out .git/HEAD or the branch's
-        # ref file (right size, NUL content) leaving the repo "broken" while the
-        # reflog — append-only — still knows the last state. Repair before any
-        # git work so the repo comes back by itself instead of yielding forever.
+        # Power-cut self-healing, part 2: the same crash can zero .git/HEAD or
+        # the branch's ref file, leaving the repo "broken" while the reflog —
+        # append-only — still knows the last state. Repair before any git work
+        # so the repo comes back by itself instead of yielding forever.
         for msg in repo.repair_corrupt_refs(rc.branch):
             self._emit(rc.name, "repair", msg, "WARNING")
 

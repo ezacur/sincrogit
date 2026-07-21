@@ -385,6 +385,83 @@ class GitRepo:
                     return new
         return None
 
+    def repair_zeroed_config(self, branch: str, remote: str = "origin") -> list:
+        """Self-heal a `.git/config` a power cut zeroed out (same NTFS failure
+        repair_corrupt_refs handles for HEAD/refs: right size, NUL content —
+        seen for real on 2026-07-21, when a crash mid-boot zeroed it in every
+        watched repo at once and each one turned into "not a git repository").
+
+        Detection is strict: a healthy text config NEVER contains NUL bytes,
+        so any NUL means the write was lost. The rebuilt file carries what a
+        repo needs to function — the standard [core] block, the origin URL
+        recovered from FETCH_HEAD (append-only-ish and typically intact), and
+        the branch tracking. Anything exotic the old config had (per-repo
+        user, extra branch entries) can't be recovered from zeros; the corrupt
+        original is kept next to it as config.corrupt.bak. Returns the repair
+        descriptions ([] = config was fine). Best-effort: never raises."""
+        repairs = []
+        try:
+            # rev-parse needs a PARSEABLE config, so _git_dir() may be useless
+            # here — go straight to the standard layout.
+            gd = os.path.join(self.path, ".git")
+            cfg = os.path.join(gd, "config")
+            if not os.path.isdir(gd) or not os.path.isfile(cfg):
+                return []
+            with open(cfg, "rb") as fh:
+                raw = fh.read()
+            if b"\0" not in raw:
+                return []  # healthy (or at least text): don't second-guess it
+            url = self._url_from_fetch_head(gd)
+            lines = [
+                "[core]",
+                "\trepositoryformatversion = 0",
+                "\tfilemode = false",
+                "\tbare = false",
+                "\tlogAllRefUpdates = always",
+            ]
+            if url:
+                lines += [
+                    f'[remote "{remote}"]',
+                    f"\turl = {url}",
+                    f"\tfetch = +refs/heads/*:refs/remotes/{remote}/*",
+                    f'[branch "{branch}"]',
+                    f"\tremote = {remote}",
+                    f"\tmerge = refs/heads/{branch}",
+                ]
+            with open(cfg + ".corrupt.bak", "wb") as fh:
+                fh.write(raw)
+            tmp = cfg + ".repair"
+            with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("\n".join(lines) + "\n")
+            os.replace(tmp, cfg)
+            repairs.append(
+                ".git/config was zeroed (power cut?); rebuilt it"
+                + (f" with remote '{remote}' = {url}" if url else
+                   " WITHOUT a remote (FETCH_HEAD had none to recover — re-add "
+                   "it in Add repo / git remote add)")
+                + " — the corrupt original is kept as config.corrupt.bak")
+        except Exception as e:  # noqa: BLE001 — healing must never block startup
+            log.warning("config auto-repair skipped: %s", e)
+        return repairs
+
+    @staticmethod
+    def _url_from_fetch_head(gitdir: str) -> str | None:
+        """The remote URL of the newest FETCH_HEAD entry ('... of <url>'), or
+        None. FETCH_HEAD is rewritten on every fetch, so on a repo that syncs
+        it is fresh — and it survived the very crash that zeroed the config."""
+        try:
+            with open(os.path.join(gitdir, "FETCH_HEAD"), "r",
+                      encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip().strip("\0")
+                    if " of " in line:
+                        url = line.rsplit(" of ", 1)[1].strip()
+                        if url.startswith(("http://", "https://", "git@", "ssh://")):
+                            return url
+        except OSError:
+            pass
+        return None
+
     # ------------------------------------------------------------ mutations
     def ensure_gitattributes(self, lines=("* text=auto",)) -> list:
         """Ensure each given line is present in .gitattributes (append the missing
@@ -498,6 +575,17 @@ class GitRepo:
                         extra_env={"GIT_OPTIONAL_LOCKS": "0"})
         return res.returncode == 1
 
+    def _ensure_reflog_enabled(self) -> None:
+        """core.logAllRefUpdates = always — written ONLY when not already set.
+        `git config` rewrites the WHOLE .git/config, and a crash mid-write
+        zeroes the file (see repair_zeroed_config); an unconditional write on
+        every startup put that tiny window in front of every boot. Reading
+        first makes the steady state write nothing."""
+        cur = self._run(["config", "--get", "core.logAllRefUpdates"],
+                        check=False).stdout.strip()
+        if cur.lower() != "always":
+            self._run(["config", "core.logAllRefUpdates", "always"], check=False)
+
     def ensure_shadow(self, branch: str) -> bool:
         """Make sure the shadow ref exists (anchored at HEAD — or at an empty
         root snapshot in a repo with no commits) and that git RECORDS its
@@ -505,7 +593,7 @@ class GitRepo:
         time machine's memory and the crash-repair source. True if created."""
         # Local to this clone, invisible, idempotent. Without it update-ref
         # writes no reflog for refs outside refs/heads/.
-        self._run(["config", "core.logAllRefUpdates", "always"], check=False)
+        self._ensure_reflog_enabled()
         if self.shadow_tip(branch):
             return False
         head = self.head_sha()
@@ -594,7 +682,7 @@ class GitRepo:
         if not self.head_is_wip():
             return False
         wip = self.head_sha()
-        self._run(["config", "core.logAllRefUpdates", "always"], check=False)
+        self._ensure_reflog_enabled()
         self._run(["update-ref", "-m", "sincro: migrate",
                    self.shadow_ref(branch), wip])
         if self.head_has_parent():
@@ -1044,7 +1132,7 @@ class GitRepo:
         if (self.read_published_config(user) or "") == (yaml_text or ""):
             return True, "config unchanged"
         # Side refs get no reflog unless asked (same reason ensure_shadow does it).
-        self._run(["config", "core.logAllRefUpdates", "always"], check=False)
+        self._ensure_reflog_enabled()
         blob = self._run(["hash-object", "-w", "--stdin"],
                          stdin_data=yaml_text).stdout.strip()
         # -z (NUL-terminated): the text pipe would otherwise translate the
