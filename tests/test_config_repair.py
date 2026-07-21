@@ -108,3 +108,27 @@ def test_reflog_setting_writes_config_only_once(make_repo):
         r.ensure_shadow("main")
     assert os.path.getmtime(cfg) == stamp
     assert open(cfg, "rb").read() == content
+
+
+def test_zeroed_tracking_ref_is_removed_or_restored(make_repo, tmp_path):
+    """The remote-tracking ref is the same tiny-file class. git itself cannot
+    delete a ref it can't resolve, so the repair does — it's only a cache, and
+    the next fetch rebuilds it."""
+    bare = str(tmp_path / "origin.git")
+    git(str(tmp_path), "init", "--bare", "-b", "main", bare)
+    repo = make_repo()
+    git(repo, "remote", "add", "origin", bare)
+    git(repo, "push", "-q", "-u", "origin", "main")
+
+    loose = os.path.join(repo, ".git", "refs", "remotes", "origin", "main")
+    assert os.path.exists(loose)
+    with open(loose, "wb") as fh:
+        fh.write(b"\0" * 41)
+    r = GitRepo(repo)
+    repairs = r.repair_corrupt_refs("main")
+    assert any("refs/remotes/origin/main" in m for m in repairs)
+    # Either restored from its reflog or removed — in both cases the ref no
+    # longer BLOCKS git, and a fetch brings it back in sync.
+    git(repo, "fetch", "origin")
+    assert git(repo, "rev-parse", "refs/remotes/origin/main") == \
+        git(repo, "rev-parse", "main")

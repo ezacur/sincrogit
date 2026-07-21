@@ -639,11 +639,12 @@ class Engine:
             log.error("Not a git repo (skipping): %s", rc.path)
             return
 
-        # Power-cut self-healing, part 2: the same crash can zero .git/HEAD or
-        # the branch's ref file, leaving the repo "broken" while the reflog —
-        # append-only — still knows the last state. Repair before any git work
-        # so the repo comes back by itself instead of yielding forever.
-        for msg in repo.repair_corrupt_refs(rc.branch):
+        # Power-cut self-healing, part 2: the same crash can zero .git/HEAD,
+        # the branch's ref file or the remote-tracking ref, leaving the repo
+        # "broken" while the reflog — append-only — still knows the last
+        # state. Repair before any git work so the repo comes back by itself
+        # instead of yielding forever.
+        for msg in repo.repair_corrupt_refs(rc.branch, rc.remote):
             self._emit(rc.name, "repair", msg, "WARNING")
 
         ff = FileFilter(rc.max_file_bytes, rc.extra_excludes,

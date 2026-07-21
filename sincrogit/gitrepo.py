@@ -297,7 +297,7 @@ class GitRepo:
     # --------------------------------------------------- crash self-healing
     _SHA_RE = re.compile(r"[0-9a-f]{40}")
 
-    def repair_corrupt_refs(self, branch: str) -> list:
+    def repair_corrupt_refs(self, branch: str, remote: str = "origin") -> list:
         """Self-heal the tiny ref files a power cut can zero out.
 
         NTFS metadata often survives a crash while the last small write is lost:
@@ -341,6 +341,24 @@ class GitRepo:
                 target = head_txt[len("ref: refs/heads/"):].strip() or branch
             for ref in (f"refs/heads/{target}", self.shadow_ref(target)):
                 self._repair_one_ref(gd, ref, repairs)
+
+            # The remote-tracking ref is the same tiny-file class (zeroed for
+            # real in the 2026-07-21 incident — every later push then failed
+            # with "cannot lock ref", and git itself refuses to delete a ref it
+            # can't resolve). Unlike a branch it's only a CACHE of the remote,
+            # so when its reflog can't restore it, plain deletion is correct:
+            # the next fetch rewrites it.
+            tracking = f"refs/remotes/{remote}/{target}"
+            before = len(repairs)
+            self._repair_one_ref(gd, tracking, repairs)
+            if len(repairs) == before:
+                loose = os.path.join(gd, *tracking.split("/"))
+                if os.path.exists(loose) and self._run(
+                        ["rev-parse", "--verify", "--quiet", tracking],
+                        check=False).returncode != 0:
+                    os.remove(loose)
+                    repairs.append(f"{tracking} was corrupt; removed "
+                                   f"(the next fetch rebuilds it)")
         except Exception as e:  # noqa: BLE001 — healing must never block startup
             log.warning("ref auto-repair skipped: %s", e)
         return repairs
