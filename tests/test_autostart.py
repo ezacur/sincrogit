@@ -79,3 +79,19 @@ def test_heal_respects_a_live_entry(runkey, tmp_path):
 def test_disabled_entry_never_heals(runkey, tmp_path):
     assert not auto.heal(str(tmp_path / "config.yaml"))
     assert not auto.is_enabled()
+
+
+def test_source_checkout_with_dead_package_is_stale(runkey, tmp_path, monkeypatch):
+    """A source-checkout entry ("<python> -m sincrogit …") whose interpreter
+    survives but can no longer import the package (checkout deleted after an
+    editable install) is stale — even though target_of(cmd) still exists."""
+    import winreg
+    cfg = str(tmp_path / "config.yaml")
+    cmd = f'"{sys.executable}" -m sincrogit --tray -c "{cfg}"'
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, TEST_KEY) as key:
+        winreg.SetValueEx(key, auto.VALUE_NAME, 0, winreg.REG_SZ, cmd)
+    # The interpreter exists, so staleness hinges purely on the import probe.
+    monkeypatch.setattr(auto, "_interpreter_can_import", lambda exe: True)
+    assert not auto.is_stale()
+    monkeypatch.setattr(auto, "_interpreter_can_import", lambda exe: False)
+    assert auto.is_stale()

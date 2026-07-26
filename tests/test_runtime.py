@@ -106,10 +106,18 @@ def test_ping_existing_instance_no_action():
     assert verdict is None
 
 
-def test_request_flush_quit():
-    """request_flush_quit -> True and the server verdict is 'flushquit'."""
-    result, verdict = _run_protocol(runtime.request_flush_quit)
-    assert result is True
+def test_flushquit_raw_bytes_get_acked_and_flushquit_verdict():
+    """build.ps1 sends the flushquit command as raw bytes (there is no Python
+    client helper), so cover the SERVER side directly: a valid flushquit payload
+    is ACKed and yields the 'flushquit' verdict."""
+    def _flushquit(port):
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as c:
+            c.sendall(b"SINCROGIT:flushquit")
+            c.settimeout(3)
+            return c.recv(64)
+
+    reply, verdict = _run_protocol(_flushquit)
+    assert reply.startswith(b"SINCROGIT:ok")
     assert verdict == "flushquit"
 
 

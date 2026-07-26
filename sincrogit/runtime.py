@@ -269,22 +269,6 @@ def ping_existing_instance(port: int = _LOCK_PORT) -> bool:
         return False
 
 
-def request_flush_quit(port: int = _LOCK_PORT) -> bool:
-    """Ask the running daemon to flush every repo (snapshot + autosnap push) and
-    exit cleanly. Returns True if a real SincroGit ACKed the command (the caller
-    should then WAIT for the process to disappear — the flush takes a moment);
-    False if nothing answered (no daemon, or one too old to know the command —
-    the caller falls back to a forced kill). build.ps1's rebuild cycle uses this."""
-    try:
-        with socket.create_connection((_LOCK_HOST, port), timeout=2) as c:
-            c.sendall(_HANDSHAKE_FLUSHQUIT)
-            c.settimeout(5)
-            reply = c.recv(64)
-        return reply.startswith(_HANDSHAKE_ACK)
-    except OSError:
-        return False
-
-
 def serve_activation(conn):
     """Handle one inbound connection on the lock socket (server side).
 

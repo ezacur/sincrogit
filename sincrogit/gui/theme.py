@@ -75,10 +75,6 @@ def palette(mode: str = "auto") -> dict:
     return _LIGHT
 
 
-def is_dark(mode: str = "auto") -> bool:
-    return palette(mode) is _DARK
-
-
 def stylesheet(mode: str = "auto") -> str:
     p = palette(mode)
     return f"""

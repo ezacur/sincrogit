@@ -45,20 +45,28 @@ def _repo_row(rc) -> tuple:
     try:
         if not repo.is_git_repo():
             return ("NOT A GIT REPO", "-", "-", "-", "-", False)
-        current = repo.current_branch()
+        current = repo.current_branch()      # None on an unborn branch (no commits)
         branch = current if rc.track_current_branch else rc.branch
         state = "ok"
         if repo.is_busy():
             state = "STALE LOCK" if repo.stale_lock() else "BUSY (merge?)"
+        elif current is None:
+            state = "no commits yet"
         elif not rc.track_current_branch and current != rc.branch:
             state = f"OFF-BRANCH (on '{current}')"
+        # The branch cell must never be None — a bare f-string format of None
+        # raises TypeError and would crash the whole table (an unborn repo in
+        # track mode has current=None, so `branch` is None too).
+        disp = current or (rc.branch if not rc.track_current_branch else "—")
+        if not branch:
+            return (state, disp, "never", "never", "-", False)
         shadow = repo.shadow_ref(branch)
         tip = repo.shadow_tip(branch)
         snap_age = _ago(repo.ref_time(shadow)) if tip else "never"
         commit_age = _ago(repo.ref_time(branch))
         unsealed = repo.commits_ahead(branch, shadow) if tip else None
         dirty = repo.worktree_differs_from(shadow) if tip else False
-        return (state, current, snap_age, commit_age,
+        return (state, disp, snap_age, commit_age,
                 "-" if unsealed is None else str(unsealed), dirty)
     except GitError as e:
         return (f"ERROR: {e}", "-", "-", "-", "-", False)
