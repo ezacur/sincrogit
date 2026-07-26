@@ -74,7 +74,8 @@ jobs:
             file: sincrogit.log
           repos: []
           "@ | Set-Content -Encoding utf8 smoke.config.yaml
-          $out = & "dist\SincroGit\SincroGit.exe" --config smoke.config.yaml status 2>&1 | Out-String
+          # Word form must be argv[0] (it remaps to --status), so `status` leads.
+          $out = & "dist\SincroGit\SincroGit.exe" status --config smoke.config.yaml 2>&1 | Out-String
           $code = $LASTEXITCODE
           Write-Host $out
           if ($code -ne 0) { Write-Error "smoke: 'status' exited $code (bundle broken?)"; exit 1 }
