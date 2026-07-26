@@ -40,6 +40,24 @@ def test_parse_is_defensive():
     assert parse_published_overrides("") == {}
 
 
+def test_safe_published_overrides_drops_bad_values():
+    """A remote-controlled ref can carry malformed values; each is validated on
+    its own so the bad ones are dropped and the good ones survive — nothing that
+    would fail the config load ever reaches config.yaml."""
+    from sincrogit.config import safe_published_overrides
+    clean, dropped = safe_published_overrides({
+        "seal_interval_min": "inf",       # valid (purist token)
+        "max_file_bytes": 1048576,        # valid
+        "snapshot_interval_sec": "abc",   # invalid number
+        "live_handoff": "maybe",          # invalid enum
+        "extra_excludes": "**/x",         # bare string, not a list
+        "path": "/etc/passwd",            # not an inheritable key at all
+    })
+    assert clean == {"seal_interval_min": "inf", "max_file_bytes": 1048576}
+    assert set(dropped) == {"snapshot_interval_sec", "live_handoff",
+                            "extra_excludes", "path"}
+
+
 # --------------------------------------------------------------- ref transport
 @pytest.fixture
 def bare_and_clones(tmp_path):

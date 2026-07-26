@@ -56,6 +56,22 @@ def test_status_repo_filter(make_repo, make_engine, capsys):
     assert run_status(eng.config, repo_name="t") == 0
 
 
+def test_status_repo_without_commits_does_not_crash(tmp_path, capsys):
+    """An unborn repo (git init, no commits yet) has current_branch()==None;
+    the row must not format None into the branch cell and crash the table."""
+    from sincrogit.config import AiConfig, Config, LogConfig, RepoConfig
+    repo = str(tmp_path / "fresh")
+    os.makedirs(repo)
+    git(repo, "init", "-q", "-b", "main")     # unborn: no commits
+    cfg = Config(repos=[RepoConfig(path=repo, name="fresh", branch="main")],
+                 log=LogConfig(file=str(tmp_path / "s.log")),
+                 ai=AiConfig(mode="none"))
+    rc = run_status(cfg)                       # must not raise
+    out = capsys.readouterr().out
+    assert rc == 0                            # empty-but-healthy is not a failure
+    assert "no commits yet" in out
+
+
 def _config_with_events(tmp_path, events):
     """A minimal Config whose events.jsonl (next to the log file) holds `events`."""
     from sincrogit.config import AiConfig, Config, LogConfig
