@@ -487,6 +487,33 @@ def parse_published_overrides(text: str) -> dict:
     return {k: v for k, v in data.items() if k in _INHERITABLE}
 
 
+def safe_published_overrides(overrides: dict) -> tuple:
+    """Keep only the overrides that yield a VALID RepoConfig; return
+    (clean, dropped_keys).
+
+    The published config ref is remote-controlled — it is namespaced only by the
+    author's git-email, so a shared-repo teammate (or a hand-edited / cross-version
+    ref) can put anything there. parse_published_overrides already dropped unknown
+    KEYS; this drops bad VALUES too, so a malformed number, a broken pattern list
+    or a bogus live_handoff can never reach config.yaml — where a single bad value
+    fails the load for EVERY repo. Each key is validated on its own, so one bad
+    value doesn't discard the good ones."""
+    clean, dropped = {}, []
+    for key, value in overrides.items():
+        if key not in _INHERITABLE:
+            dropped.append(key)
+            continue
+        try:
+            # Empty defaults: an override supplies its own value for its key, so
+            # validating {path, key: value} exercises exactly that field.
+            _validate_entry({"path": ".", key: value}, {})
+        except (ValueError, TypeError):
+            dropped.append(key)
+        else:
+            clean[key] = value
+    return clean, dropped
+
+
 def append_repo(config_path: str, repo_entry: dict) -> None:
     """Append a repo to the config file, preserving existing comments/formatting
     above the repos section (see _write_repos_section)."""

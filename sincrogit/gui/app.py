@@ -23,7 +23,7 @@ from PyQt5.QtCore import QAbstractNativeEventFilter, QObject, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .. import autostart
-from ..config import append_repo, atomic_write_text, load_config
+from ..config import _validate_entry, append_repo, atomic_write_text, load_config
 from ..engine import Engine
 from ..events import EventLog
 from ..log import setup_logging
@@ -674,11 +674,27 @@ class TrayApp:
             "push": bool(push),
             "pull": bool(pull),
         }
-        # Inherited options from another machine — filtered to inheritable keys
-        # already, so they can't clobber the identity keys set above.
+        # Inherited options from another machine come off a remote-controlled ref
+        # (namespaced only by git-email), so sanitize the VALUES before they touch
+        # config.yaml — a malformed one would otherwise fail the load for every
+        # repo. push/pull are dropped: the dialog's own checkboxes decide those, an
+        # inherited value must not silently override the user's explicit choice.
         if overrides:
-            from ..config import _INHERITABLE
-            entry.update({k: v for k, v in overrides.items() if k in _INHERITABLE})
+            from ..config import safe_published_overrides
+            clean, dropped = safe_published_overrides(overrides)
+            for k in ("push", "pull"):
+                clean.pop(k, None)
+            entry.update(clean)
+            if dropped:
+                logging.getLogger("sincrogit").warning(
+                    "add_repo: ignored %d unsafe inherited setting(s): %s",
+                    len(dropped), ", ".join(sorted(dropped)))
+        # Never write an entry that wouldn't load (same guard as update_repo):
+        # validate the merged entry first, so a bad value can't brick the config.
+        try:
+            _validate_entry(entry, {})
+        except (ValueError, TypeError) as e:
+            return False, f"Invalid repo settings: {e}"
         try:
             append_repo(self.config_path, entry)
         except OSError as e:

@@ -112,9 +112,18 @@ class AddRepoDialog(QDialog):
         # from another machine (a side ref), offer to adopt them here. Hidden
         # until the async detection finds some.
         self.ck_inherit = QCheckBox("Use the settings saved from your other machine")
-        self.ck_inherit.setChecked(True)
+        # Default OFF: these values come off a remote-controlled ref (a shared repo,
+        # a teammate with push access can write the email-namespaced ref), so
+        # adopting them is a conscious opt-in, not a silent default. The exact
+        # values are shown inline below (not just on hover) so the choice is informed.
+        self.ck_inherit.setChecked(False)
         self.ck_inherit.setVisible(False)
         v.addWidget(self.ck_inherit)
+        self.lbl_inherit = QLabel("")
+        self.lbl_inherit.setProperty("cssClass", "muted")
+        self.lbl_inherit.setWordWrap(True)
+        self.lbl_inherit.setVisible(False)
+        v.addWidget(self.lbl_inherit)
 
         self.cb_norm = QCheckBox("Normalize line endings (add .gitattributes if missing)")
         self.cb_norm.setChecked(True)
@@ -227,16 +236,20 @@ class AddRepoDialog(QDialog):
         self._inherited = overrides or None
         if not self._inherited:
             self.ck_inherit.setVisible(False)
+            self.lbl_inherit.setVisible(False)
             return
         n = len(self._inherited)
+        listed = ", ".join(f"{k}: {v}" for k, v in sorted(self._inherited.items()))
         self.ck_inherit.setText(
             f"Use the {n} setting{'s' if n != 1 else ''} saved from your other machine")
         self.ck_inherit.setToolTip(
-            "This repo has options you set on another machine (inherited via the "
-            "remote):\n  " + "\n  ".join(f"{k}: {v}" for k, v in
-                                         sorted(self._inherited.items())) +
-            "\n\nUnchecked, the repo just inherits this machine's global defaults.")
-        self.ck_inherit.setChecked(True)
+            "These options were set on another of your machines and came in over "
+            "the remote. Unchecked, the repo just inherits this machine's global "
+            "defaults.")
+        self.lbl_inherit.setText("Would apply — " + listed)
+        self.lbl_inherit.setVisible(True)
+        # Off by default: adopting a remote-controlled setting is a conscious choice.
+        self.ck_inherit.setChecked(False)
         self.ck_inherit.setVisible(True)
 
     def _hint(self, text: str):

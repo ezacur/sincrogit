@@ -51,9 +51,11 @@ def test_offer_appears_when_settings_are_published(dlg):
     ctl, d = dlg({"seal_interval_min": "inf", "snapshot_interval_sec": 120})
     assert not d.ck_inherit.isVisible()          # hidden until detection runs
     d._on_settings_ready(d._branch_gen, ctl.saved)
-    assert d.ck_inherit.isVisible() and d.ck_inherit.isChecked()
+    # Visible but OFF by default: a remote-controlled setting is opt-in, not silent.
+    assert d.ck_inherit.isVisible() and not d.ck_inherit.isChecked()
     assert "2 settings" in d.ck_inherit.text()
-    assert "seal_interval_min" in d.ck_inherit.toolTip()
+    # The exact values are surfaced inline (not tooltip-only) so the choice is informed.
+    assert d.lbl_inherit.isVisible() and "seal_interval_min" in d.lbl_inherit.text()
 
 
 def test_no_offer_when_nothing_published(dlg):
