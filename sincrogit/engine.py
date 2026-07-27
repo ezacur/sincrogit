@@ -556,12 +556,16 @@ class Engine:
     def _repo_state(st: RepoState) -> str:
         """Collapse the pause-like flags into ONE canonical state for the UIs.
 
-        Precedence: conflict > busy > off-branch > paused > handoff > active.
-        This is the single source of truth — the GUIs map these keys to
-        labels/colors but must not re-derive the precedence. `busy` outranks
-        `off-branch` because a manual rebase detaches HEAD, setting both — and
-        "a merge/rebase is running" is the truthful one. It comes from the
-        tick's tracking (no git call here), so it can lag by up to MAX_TICK_SEC.
+        Precedence: conflict > busy > off-branch > paused > push-failing >
+        handoff > active. This is the single source of truth — the GUIs map
+        these keys to labels/colors but must not re-derive the precedence.
+        `busy` outranks `off-branch` because a manual rebase detaches HEAD,
+        setting both — and "a merge/rebase is running" is the truthful one.
+        `push-failing` outranks `handoff` because a fault the user must repair
+        beats an offer they can accept whenever (and the handoff survives to be
+        offered again on the next sync, while a dead credential does not fix
+        itself). It comes from the tick's tracking (no git call here), so it can
+        lag by up to MAX_TICK_SEC.
         """
         if st.paused:
             return "conflict"
@@ -571,6 +575,8 @@ class Engine:
             return "off-branch"
         if st.user_paused:
             return "paused"
+        if st.push_fail_streak >= Engine.PUSH_FAIL_ALERT:
+            return "push-failing"
         if st.pending_handoff:
             return "handoff"
         return "active"
@@ -599,6 +605,9 @@ class Engine:
                 "last_action_ts": st.last_action_ts,
                 "push": st.cfg.push,
                 "pull": st.cfg.pull,
+                "push_fail_streak": st.push_fail_streak,
+                "push_fail_msg": st.push_fail_msg,
+                "push_fail_since": st.push_fail_since,
             })
         return {
             "paused": self.is_paused(),
@@ -1416,10 +1425,34 @@ class Engine:
         repo, cfg = st.repo, st.cfg
         ok, msg = repo.push_sealed(cfg.remote, st.active_branch, timeout=cfg.git_timeout_sec)
         if ok:
+            was_failing = st.push_fail_streak >= self.PUSH_FAIL_ALERT
+            st.push_fail_streak = 0
+            st.push_fail_msg = ""
+            st.push_fail_since = None
             self._mark_action(st, "push")
             self._emit(cfg.name, "push", f"push OK -> {cfg.remote}/{st.active_branch}")
+            if was_failing:
+                # Close the loop out loud: the user was told the mirror had
+                # stopped, so they get told when it starts again.
+                self._emit(cfg.name, "push",
+                           f"push recovered — {cfg.remote}/{st.active_branch} is "
+                           f"up to date again")
+            return
+        # A rejected push (remote ahead) is reconciled in the next sync, so one
+        # failure is routine. A streak is a broken promise (see PUSH_FAIL_ALERT).
+        st.push_fail_streak += 1
+        st.push_fail_msg = msg
+        if st.push_fail_since is None:
+            st.push_fail_since = time.time()
+        if st.push_fail_streak == self.PUSH_FAIL_ALERT:
+            # ERROR (not WARNING) on purpose: it is what raises the tray balloon
+            # and turns the icon. Emitted ONCE per streak — the retries that
+            # follow stay at WARNING so a dead remote can't flood the Log.
+            self._emit(cfg.name, "push",
+                       f"push has failed {st.push_fail_streak} times in a row — your "
+                       f"work is safe locally but is NOT reaching {cfg.remote}: {msg}",
+                       "ERROR")
         else:
-            # A rejected push (remote ahead) is reconciled in the next sync.
             self._emit(cfg.name, "push", f"push failed (will retry): {msg}", "WARNING")
 
     # --------------------------------------------------------- autosnap (mirror)

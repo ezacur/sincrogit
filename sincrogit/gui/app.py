@@ -522,6 +522,10 @@ class TrayApp:
             return "paused"
         if any(r["conflict_paused"] for r in st["repos"]):
             return "conflict"
+        # The snapshots keep running, but the off-machine copy has stopped
+        # advancing: the icon must stop saying "all good". See Engine._do_push.
+        if any(r.get("state") == "push-failing" for r in st["repos"]):
+            return "attention"
         return "running"
 
     def pause_all(self):

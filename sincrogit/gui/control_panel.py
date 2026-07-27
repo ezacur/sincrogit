@@ -71,12 +71,13 @@ _LEVEL_COLOR = {
 # The precedence between the underlying flags lives in the engine — this map
 # is presentation only. `None` color = inherit the palette's normal text.
 _STATE_STYLE = {
-    "conflict":   ("Conflict", "#D23F3F"),
-    "off-branch": ("Off-branch", "#8a6d00"),
-    "paused":     ("Paused", "#8a6d00"),
-    "busy":       ("Busy (merge/rebase)", "#8a6d00"),
-    "handoff":    ("Handoff ready", "#1E6FD9"),  # label gets the peer host appended
-    "active":     ("Active", None),
+    "conflict":     ("Conflict", "#D23F3F"),
+    "off-branch":   ("Off-branch", "#8a6d00"),
+    "paused":       ("Paused", "#8a6d00"),
+    "busy":         ("Busy (merge/rebase)", "#8a6d00"),
+    "push-failing": ("Not reaching remote", "#C2410C"),
+    "handoff":      ("Handoff ready", "#1E6FD9"),  # label gets the peer host appended
+    "active":       ("Active", None),
 }
 
 
@@ -106,6 +107,25 @@ def _handoff_tooltip(r: dict) -> str:
         f"Applying fast-forwards your files to that state — loss-free: it's "
         f"re-validated on apply, and your current state stays recoverable "
         f"via File history."
+    )
+
+
+def _push_failing_tooltip(r: dict) -> str:
+    """Explain a push that keeps failing: what is still safe, what is not, and
+    what to check. The reassurance comes FIRST on purpose — the local history is
+    intact, so this must not read as "you lost work"."""
+    since = r.get("push_fail_since")
+    age = f" for {_humanize_since(since)}" if since else ""
+    why = r.get("push_fail_msg") or "(no detail — see the Log)"
+    return (
+        f"Your snapshots and commits are safe on this machine, but the push to "
+        f"'{r.get('name', 'this repo')}'s remote has been failing{age} "
+        f"({r.get('push_fail_streak', 0)} attempts).\n"
+        f"So the off-machine copy is NOT up to date: a disk failure would lose "
+        f"everything since it stopped.\n\n"
+        f"Last error: {why}\n"
+        f"Usual causes: expired/changed git credentials, the remote moved or was "
+        f"deleted, or a protected branch. `sincrogit --doctor` checks push access."
     )
 
 
@@ -471,6 +491,8 @@ class ControlPanel(QMainWindow):
                 state, color = "Paused (all)", "#8a6d00"
             if s == "conflict":
                 tip = r.get("conflict_msg") or "Paused on a rebase conflict — see the Log."
+            elif s == "push-failing":
+                tip = _push_failing_tooltip(r)
             elif s == "handoff":
                 tip = _handoff_tooltip(r)
             else:

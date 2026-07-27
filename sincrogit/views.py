@@ -37,14 +37,15 @@ def _ago(epoch) -> str:
 
 
 def _repo_row(rc) -> tuple:
-    """(state, branch, snapshot_age, commit_age, unsealed, dirty) for one repo.
-    `state` doubles as the error text when the repo can't be inspected."""
+    """(state, branch, snapshot_age, commit_age, unsealed, dirty, unpushed) for
+    one repo. `state` doubles as the error text when the repo can't be inspected.
+    `unpushed` is None when there is no remote-tracking ref to compare against."""
     if not os.path.isdir(rc.path):
-        return ("MISSING PATH", "-", "-", "-", "-", False)
+        return ("MISSING PATH", "-", "-", "-", "-", False, None)
     repo = GitRepo(rc.path)
     try:
         if not repo.is_git_repo():
-            return ("NOT A GIT REPO", "-", "-", "-", "-", False)
+            return ("NOT A GIT REPO", "-", "-", "-", "-", False, None)
         current = repo.current_branch()      # None on an unborn branch (no commits)
         branch = current if rc.track_current_branch else rc.branch
         state = "ok"
@@ -59,17 +60,24 @@ def _repo_row(rc) -> tuple:
         # track mode has current=None, so `branch` is None too).
         disp = current or (rc.branch if not rc.track_current_branch else "—")
         if not branch:
-            return (state, disp, "never", "never", "-", False)
+            return (state, disp, "never", "never", "-", False, None)
         shadow = repo.shadow_ref(branch)
         tip = repo.shadow_tip(branch)
         snap_age = _ago(repo.ref_time(shadow)) if tip else "never"
         commit_age = _ago(repo.ref_time(branch))
         unsealed = repo.commits_ahead(branch, shadow) if tip else None
         dirty = repo.worktree_differs_from(shadow) if tip else False
+        # Commits that exist here but not on the LAST FETCHED remote tip: the
+        # user-visible symptom of a push that keeps failing (the daemon knows the
+        # streak; this read-only view only has the refs). None = no tracking ref
+        # to compare against (no remote, or never fetched), so we say nothing
+        # rather than imply everything is fine.
+        unpushed = (repo.commits_ahead(f"{rc.remote}/{branch}", branch)
+                    if rc.push and repo.has_remote(rc.remote) else None)
         return (state, disp, snap_age, commit_age,
-                "-" if unsealed is None else str(unsealed), dirty)
+                "-" if unsealed is None else str(unsealed), dirty, unpushed)
     except GitError as e:
-        return (f"ERROR: {e}", "-", "-", "-", "-", False)
+        return (f"ERROR: {e}", "-", "-", "-", "-", False, None)
 
 
 def run_status(config, repo_name: str | None = None) -> int:
@@ -93,10 +101,12 @@ def run_status(config, repo_name: str | None = None) -> int:
     print("-" * len(header))
     failed = 0
     for rc in repos:
-        state, branch, snap, commit, unsealed, dirty = _repo_row(rc)
+        state, branch, snap, commit, unsealed, dirty, unpushed = _repo_row(rc)
         if state.startswith(("MISSING", "NOT A GIT", "ERROR")):
             failed += 1
         marks = []
+        if unpushed:
+            marks.append(f"{unpushed} UNPUSHED")
         if not rc.push:
             marks.append("push off")
         if not rc.pull:
