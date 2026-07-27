@@ -13,7 +13,7 @@
 > [README](README.md#configuration); for how SincroGit relates to neighboring tools
 > (jj, GitButler, dura, …) and for the pending-work list, the README's
 > [How it compares](README.md#how-it-compares-with-neighboring-tools) and
-> [TODO](README.md#todo) sections.
+> [What's next](README.md#whats-next) sections.
 
 ---
 

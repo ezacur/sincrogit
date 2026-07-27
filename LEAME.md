@@ -1,23 +1,36 @@
 # ⏳g — SincroGit
 
-SincroGit le da a cualquier repo una **máquina del tiempo** automática y versionada — sin
-que ejecutes `git` jamás. Cada pocos minutos fotografía tus ficheros **guardados**, cada
-~6 h "sella" un commit permanente limpio, y espeja tu último estado al remoto para que tu
-trabajo te siga entre máquinas con esfuerzo casi nulo.
+**Sabes Git. Simplemente no lo ejecutas.** Ibas a commitear antes de cerrar el portátil,
+y no lo hiciste — y al día siguiente tampoco. Semanas después algo se rompe, o
+simplemente quieres la versión de un fichero del martes pasado, y no hay dónde volver.
 
-**Para qué sirve de verdad** (sin vender humo):
+SincroGit es un demonio de bandeja que arregla eso sin pedirte nada. Cada pocos minutos
+registra tus ficheros **guardados** en un ref lateral, cada ~6 h "sella" un commit
+permanente limpio, y espeja tu último estado al remoto para que tu trabajo te siga entre
+máquinas.
 
-- **Una máquina del tiempo para quien (o lo que) no va a commitear a mano.** ¿Rompiste o
-  borraste algo hace horas y te das cuenta ahora? Vuelve a cualquier estado *guardado*
-  anterior — sin disciplina, sin un solo `git add`. Ideal para el desarrollador
-  ocupado/olvidadizo/que está aprendiendo.
+Se construyó para una persona trabajando sola sobre `main` a la que se le da mal la
+ceremonia — y se ha vuelto *más* útil ahora que un agente escribe la mayor parte del
+código: el volumen es mayor, y "devuélvelo a como estaba hace una hora" pasó de
+emergencia a necesidad diaria.
+
+**→ [Ponlo en marcha en cinco minutos](#instalación)** · ¿primera vez? la
+**[GUIA.md](GUIA.md)** en lenguaje llano es por donde empezar (English:
+[GUIDE.md](GUIDE.md)).
+
+Donde de verdad se gana el sueldo:
+
+- **El rastro que si no nunca tendrías.** Vuelve a cualquier estado *guardado* anterior —
+  sin disciplina, sin un solo `git add`. Esta es la razón para instalarlo; todo lo demás
+  es propina.
 - **Repos de prueba y experimentales.** Código que no merece un historial curado pero cuyo
-  *rastro* odiarías perder — spikes, pruebas, desechables. Historial recuperable completo,
-  cero ceremonia. (Posiblemente su punto más fuerte.)
-- **Una red de seguridad para agentes de código (IA).** Un agente editando tu repo es el
-  usuario definitivo de "no va a commitear a mano": muchos ficheros, rápido, revisión a
-  posteriori. SincroGit te da el rastro y el rollback de todo lo que hizo — con **cero
-  integración**, el agente no cambia su forma de trabajar (ver
+  *rastro* odiarías perder — spikes, pruebas, desechables. Cero ceremonia.
+- **Una red de seguridad para agentes de código (IA).** Un agente es el usuario definitivo
+  de "no va a commitear a mano", y sus propios checkpoints son más estrechos de lo que
+  parecen: cubren las ediciones que hizo con sus herramientas de ficheros, en una sesión —
+  no los comandos de shell, no un segundo agente, no lo que cambiaste tú a mano mientras
+  tanto. SincroGit fotografía el árbol por reloj, así que cubre todo eso, con **cero
+  integración** (ver
   [Una red de seguridad para agentes de código](#una-red-de-seguridad-para-agentes-de-código)).
 - **Continuidad multi-máquina de bajo esfuerzo.** Cambias entre el ordenador de la oficina
   y el de casa y tu trabajo te sigue — *con un retardo de minutos, no instantáneo* (ver
@@ -30,8 +43,7 @@ trabajo te siga entre máquinas con esfuerzo casi nulo.
   supervivencia.
 
 > **Cómo manejarlo** (comandos CLI, acciones del panel, recetas): el
-> **[Manual de usuario](MANUAL_ES.md)** (English: [MANUAL.md](MANUAL.md)). ¿No eres experto
-> en Git o quieres el *cuándo/por qué* en lenguaje llano? La **[guía para humanos](GUIA.md)**.
+> **[Manual de usuario](MANUAL_ES.md)** (English: [MANUAL.md](MANUAL.md)).
 > Diseño y decisiones: **[DISENO.md](DISENO.md)**.
 
 ## ¿Ya dominas Git? El minuto del escéptico
@@ -68,9 +80,9 @@ Cómo se implementa cada garantía está documentado en [DISENO.md](DISENO.md) �
 ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
 [Cómo se compara](#cómo-se-compara-con-las-herramientas-vecinas).
 
-## Estado: Fases 1, 2 y 4 completas (Fase 3, despliegue: parcial)
+## Lo que funciona hoy
 
-**Fase 1 (núcleo local):**
+**Núcleo local:**
 
 - ✅ Watcher del sistema de ficheros (`watchdog`) + *debounce*.
 - ✅ **Snapshot** cada 5 min: un commit en un ref lateral privado (`refs/sincro/wip/…`),
@@ -89,7 +101,7 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
 - ✅ Apagado limpio con snapshot local final.
 - ✅ Logging a fichero rotativo + consola.
 
-**Fase 2 (IA + sincronización remota):**
+**IA + sincronización remota:**
 
 - ✅ **Mensajes con IA** al sellar, modo híbrido: Ollama (local) → Gemini (nube) →
   fallback determinista. Nunca bloquea el commit si la IA falla. Los sellados
@@ -126,7 +138,7 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
   build, cachés), SincroGit sugiere una vez —una notificación— añadirla a `extra_excludes`.
   Nunca auto-edita. Interruptor `suggest_excludes`.
 
-**Fase 4 (interfaz de bandeja):**
+**Interfaz de bandeja:**
 
 - ✅ **Icono en la bandeja del sistema** con la marca de la casa (reloj de arena +
   g minúscula). El **color refleja el estado**: verde=activo, ámbar=pausado,
@@ -177,11 +189,12 @@ ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
   la frescura codificada por color — de un vistazo, si tu otra máquina sigue
   respaldándose.
 
-Pendiente (Fase 3): ver el [TODO](#todo) de abajo.
+Lo que falta (sobre todo distribución): ver [Qué viene](#qué-viene) más abajo.
 
-## TODO
+## Qué viene
 
-Por orden de prioridad:
+Por orden de prioridad (los marcados **hecho** se entregaron después de escribir esta
+lista y se conservan como rastro):
 
 1. **Onboarding sin fricción para quien no sabe Git.** El público que más necesita
    SincroGit es el menos preparado para crear un remoto y configurar credenciales — hoy
@@ -205,7 +218,7 @@ Por orden de prioridad:
    de eventos del panel en la terminal (`--repo`, `--action`, `--level`, `--tail`).
    Ambos son de solo lectura y seguros con el demonio corriendo.
 
-### TODO — mensajes IA (la tanda inspirada en aicommit2)
+### Siguiente — mensajes IA (la tanda inspirada en aicommit2)
 
 Adoptado tras estudiar [aicommit2](https://github.com/tak-bro/aicommit2), manteniendo
 intactos los tres contratos de SincroGit: el commit/sellado nunca se bloquea por un fallo
@@ -223,7 +236,7 @@ de la IA, privacidad por defecto (`cloud_send_content`) y cero dependencias nuev
   Ollama) mientras el resto puede usar la nube — coherente con los overrides por repo
   existentes.
 
-### TODO — la tanda inspirada en lazygit
+### Siguiente — la tanda inspirada en lazygit
 
 De estudiar [lazygit](https://github.com/jesseduffield/lazygit) — el cockpit natural
 para usar *junto a* SincroGit (complemento, no donante: a propósito no reconstruimos un
@@ -242,7 +255,7 @@ cliente git en el panel):
   repo con otras herramientas git" — no rewordear el WIP, reglas con GitButler — ya
   existe: [MANUAL §9](MANUAL_ES.md#9-compartir-el-repo-con-otras-herramientas-git).)*
 
-### TODO — técnico (para desarrolladores)
+### Siguiente — técnico (para desarrolladores)
 
 - **Batería de tests automatizados — YA EXISTE** (`tests/`, pytest, ~1 min):
   los rechazos de restauración y el restore seguro ante renames, el restore selectivo /

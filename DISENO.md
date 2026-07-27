@@ -13,7 +13,7 @@
 > de configuración, el [LEAME](LEAME.md#configuración); para la relación de SincroGit con
 > las herramientas vecinas (jj, GitButler, dura, …) y la lista de trabajo pendiente, las
 > secciones [Cómo se compara](LEAME.md#cómo-se-compara-con-las-herramientas-vecinas) y
-> [TODO](LEAME.md#todo) del LEAME.
+> [Qué viene](LEAME.md#qué-viene) del LEAME.
 
 ---
 
