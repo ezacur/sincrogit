@@ -185,7 +185,8 @@ class Engine:
     # worker mid-push. The skipped repo's last autosnap is the backstop.
     FLUSH_LOCK_TIMEOUT = 5.0
 
-    def __init__(self, config, emit_event=None, config_path=None):
+    def __init__(self, config, emit_event=None, config_path=None,
+                 read_events=None):
         self.config = config
         # Path to the config file this Config was loaded from, when known. Only
         # used to read a repo's EXPLICIT overrides for publishing to the config
@@ -208,6 +209,12 @@ class Engine:
         # Optional callback (repo, action, message, level) for the structured
         # log / GUI. If None, only the text logger is used.
         self._emit_event = emit_event
+        # Optional reader of the structured log (the GUI's EventLog.recent),
+        # for absence_digest — the engine WRITES events through _emit_event but
+        # has never owned the store, and "what happened while you were away"
+        # is exactly the question only the store can answer. Without it the
+        # digest still reports the git side (per-repo timelines).
+        self._read_events = read_events
         # This machine's name for the per-host autosnap ref (computed once).
         self._autosnap_host = autosnap_host()
         # LEAVE SEAL: wall-clock time the machine was LOCKED (None = disarmed),
@@ -810,6 +817,13 @@ class Engine:
         self._leave_epoch = time.time()
         self._leave_sealed = set()
         self._wake.set()  # let _wait_seconds see the new deadline
+
+    def absence_since(self) -> float | None:
+        """Epoch this absence started (the lock that armed the leave seal), or
+        None when we don't know of one. Exposed because the "what happened
+        while you were away" digest needs it BEFORE disarm_leave_seal clears
+        it, and the GUI must not reach into a private attribute for that."""
+        return self._leave_epoch
 
     def disarm_leave_seal(self):
         """You're back (unlock/resume): the absence is over, cancel the
@@ -2094,6 +2108,86 @@ class Engine:
             remote_exists = repo.remote_branch_exists(cfg.remote, st.active_branch)
             ok = self._pull_after_fetch(st, remote_exists)
         return (ok, "pulled" if ok else "conflict; repo paused")
+
+    # -------------------------------------------------------------- marks
+    # A mark is a snapshot the USER named, so it must capture what is on disk
+    # NOW — not whatever the last automatic snapshot happened to catch. Hence
+    # _shadow_snapshot first, always, before the ref is written.
+    MARK_LABEL_MAX = 200  # a mark is a title, not a paragraph (bounds ref msg + balloon)
+
+    def mark_now(self, repo_name: str, label: str) -> tuple:
+        """Snapshot `repo_name` right now and name that state `label` — a
+        milestone that outlives the ~30-day snapshot window and every later
+        seal. Returns (ok, msg)."""
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return False, "repo not found"
+        label = (label or "").strip()[:self.MARK_LABEL_MAX]
+        if not label:
+            return False, "a mark needs a name"
+        err = self._check_operable(st)  # off-branch: we'd mark the wrong branch
+        if err:
+            return False, err
+        with st.op_lock:  # don't race the snapshot/seal cycle
+            if st.repo.is_busy():
+                return False, "repo busy (merge/rebase in progress)"
+            try:
+                self._shadow_snapshot(st)
+                st.repo.create_mark(st.active_branch, label)
+            except GitError as e:
+                return False, str(e)
+        self._mark_action(st, "mark")
+        self._emit(repo_name, "mark", f"marked this moment as '{label}'")
+        return True, f"marked '{label}'"
+
+    def mark_all_now(self, label: str) -> list:
+        """Mark every configured repo with the same label — what `sincrogit
+        mark "…"` without --repo does, and the tray's own action. Returns
+        [(name, ok, msg)] so the caller can report per repo instead of
+        collapsing a partial failure into one vague line."""
+        return [(st.cfg.name, *self.mark_now(st.cfg.name, label))
+                for st in self._states_snapshot()]
+
+    def list_marks(self, repo_name: str) -> list:
+        """This repo's marks, newest first: {ref, label, sha, epoch, files}.
+
+        `files` is how many paths differ from the CURRENT state — the number
+        that answers "how far back is this?", which is what the panel needs
+        next to a mark. It costs one tree diff per mark; marks are
+        hand-made milestones (a handful), and this runs off the GUI thread.
+        No snapshot is taken: a listing must never write to the repo, so the
+        comparison is against the last snapshot, not the live worktree.
+        """
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return []
+        try:
+            marks = st.repo.list_marks(st.active_branch)
+            tip = st.repo.shadow_tip(st.active_branch)
+            for m in marks:
+                try:
+                    m["files"] = (len(st.repo.diff_trees_name_status(m["sha"], tip))
+                                  if tip else 0)
+                except GitError:
+                    m["files"] = None  # unknown beats a wrong number
+        except GitError as e:
+            log.error("[%s] listing marks failed: %s", repo_name, e)
+            return []
+        return marks
+
+    def forget_mark(self, repo_name: str, ref: str) -> tuple:
+        """Delete one mark's ref. The STATE stays wherever the snapshot chain
+        still holds it — this drops the name, not the history."""
+        st = self.repo_state_by_name(repo_name)
+        if not st:
+            return False, "repo not found"
+        try:
+            if not st.repo.delete_mark(ref):
+                return False, "that is not a mark"
+        except GitError as e:
+            return False, str(e)
+        self._emit(repo_name, "mark", f"forgot the mark {ref.rsplit('/', 1)[-1]}")
+        return True, "forgotten"
 
     # ------------------------------------------------- history / restore
     def repo_state_by_name(self, name: str):
