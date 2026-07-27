@@ -150,6 +150,9 @@ class _Bridge(QObject):
     # It crosses here because the listener runs on its own thread and the mark
     # must be dispatched like any other GUI-initiated action.
     mark_requested = pyqtSignal(object)
+    # The "while you were away" digest, computed on a worker (it walks every
+    # repo's timeline) and delivered to the GUI thread to be shown.
+    digest_ready = pyqtSignal(object)
     teardown_done = pyqtSignal()  # the engine thread joined; finish quit/restart (GUI)
     # Self-update, two steps so the GUI thread never waits on the network:
     # (status, release|error) after the check, then (path|None, error) after the
@@ -181,6 +184,8 @@ class TrayApp:
         self.bridge.quit_requested.connect(self.quit)  # flushquit -> clean exit (GUI thread)
         self.bridge.refresh_tray.connect(self._refresh_tray)
         self.bridge.mark_requested.connect(self._on_mark_requested)
+        self.bridge.digest_ready.connect(self._on_digest_ready)
+        self._last_digest = None     # the last absence digest (the panel reads it)
         self.bridge.teardown_done.connect(self._on_teardown_done)
         self.bridge.update_checked.connect(self._on_update_checked)
         self.bridge.update_fetched.connect(self._on_update_fetched)
@@ -196,7 +201,12 @@ class TrayApp:
             _LogBridgeHandler(self._on_engine_event))
 
         self.engine = Engine(self.config, emit_event=self._on_engine_event,
-                             config_path=self.config_path)
+                             config_path=self.config_path,
+                             # The engine writes events through the callback
+                             # above but has never owned the store; the digest
+                             # needs to READ it (the in-memory tail is plenty
+                             # for an absence — see digest_since for the rest).
+                             read_events=self.event_log.recent)
         self._engine_thread = None
         self._last_state = None
 
@@ -293,14 +303,51 @@ class TrayApp:
 
     def _on_machine_arrive(self, reason):
         # You're back: a pending leave seal is off — BEFORE the debounce, which
-        # may swallow this call (resume usually precedes unlock).
+        # may swallow this call (resume usually precedes unlock). The absence's
+        # start epoch has to be read BEFORE disarming clears it — and reading it
+        # here is also what dedupes the digest for free: the second of the
+        # resume/unlock pair finds it already cleared and reports nothing.
+        since = self.engine.absence_since()
         self.engine.disarm_leave_seal()
+        if since:
+            self._report_absence(since)
         # Debounce: resume usually precedes unlock — don't sync twice in a row.
         if time.monotonic() - self._last_arrive_mono < 10:
             return
         self._last_arrive_mono = time.monotonic()
         self._on_engine_event("", "resume", f"machine {reason}: syncing to catch up", "INFO")
         self.engine.sync_soon()
+
+    def _report_absence(self, since):
+        """Say what happened while the machine was locked. On a worker: the
+        digest walks every repo's timeline, and this runs on the very event
+        that unlocks the screen — the last moment to freeze the desktop."""
+        def work():
+            try:
+                digest = self.engine.absence_digest(since)
+            except Exception as e:  # noqa: BLE001 — a report must never crash the tray
+                self.logger.warning("absence digest failed: %s", e)
+                return
+            try:
+                self.bridge.digest_ready.emit(digest)
+            except RuntimeError:
+                pass  # app object torn down already
+
+        threading.Thread(target=work, name="sincrogit-digest", daemon=True).start()
+
+    def _on_digest_ready(self, digest):
+        """GUI thread: keep it for the panel, and interrupt the user ONLY if
+        something actually happened. A balloon that says "nothing changed"
+        every time you unlock is how this feature would get turned off."""
+        self._last_digest = digest
+        if digest.get("trivial"):
+            return
+        from .what_happened_tab import humanize_span
+
+        span = humanize_span(digest["until"] - digest["since"])
+        self._on_engine_event("", "digest",
+                              f"while you were away ({span}): {digest['summary']}")
+        self._tray_ack(f"While you were away ({span})", digest["summary"])
 
     def _on_session_ending(self, kind):
         """The Windows session is ending (shutdown / restart / logoff): flush
@@ -1156,6 +1203,20 @@ class TrayApp:
         """Drop a mark's ref (the state stays in history). One ref delete —
         fast enough for the GUI thread, unlike everything else here."""
         return self.engine.forget_mark(name, ref)
+
+    # ---- what happened ----
+    def last_digest(self):
+        """The digest of the last absence (computed on unlock), or None when
+        this session hasn't seen one."""
+        return self._last_digest
+
+    def digest_since(self, since, until=None):
+        """The same report over any window. Blocking — it walks every repo's
+        timeline AND parses the full event history off disk (the in-memory tail
+        only covers the last couple of thousand events, which a 7-day window
+        outgrows): the panel runs it on a worker."""
+        return self.engine.absence_digest(since, until,
+                                          events=self.event_log.load_all())
 
     def ask_and_mark(self, name):
         """Ask for a name and mark ONE repo — the Status context menu's action,
