@@ -159,3 +159,57 @@ def make_icon(state: str = "running") -> QIcon:
     for s in (16, 24, 32, 48, 64, 128, 256):
         icon.addPixmap(make_pixmap(state, s))
     return icon
+
+
+# The mark goes grey while an update runs, with a ring drawn over it. Grey and
+# not one of the state colours ON PURPOSE: during an update the state signal is
+# meaningless (the engine is stopping, then the process is replaced), and a green
+# "all good" icon while the daemon is about to vanish for ~40 s is exactly the
+# lie that made an update look like a hang.
+_PROGRESS_BASE = "#7A7F87"
+_PROGRESS_ARC = "#E8EAED"
+
+
+def make_progress_pixmap(fraction, size: int = 64) -> QPixmap:
+    """The icon in grey with a progress ring over it.
+
+    `fraction` is 0.0-1.0, or None for "working, no percentage yet" — which
+    draws the track alone. An indeterminate phase must still look different from
+    a finished one, so None is a dim ring and 1.0 is a full bright one.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    painter = QPainter(pm)
+    try:
+        _draw(painter, size, _PROGRESS_BASE)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        # Inset so the ring sits over the mark instead of being clipped by the
+        # rounded background; the pen is thick enough to read at 16 px, where
+        # most people will actually see this.
+        pen_w = max(1.5, size * 0.11)
+        inset = pen_w / 2 + size * 0.08
+        box = QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
+
+        track = QColor(_PROGRESS_ARC)
+        track.setAlpha(90)
+        painter.setPen(QPen(track, pen_w, Qt.SolidLine, Qt.RoundCap))
+        painter.drawEllipse(box)
+
+        if fraction is not None:
+            done = max(0.0, min(1.0, float(fraction)))
+            painter.setPen(QPen(QColor(_PROGRESS_ARC), pen_w, Qt.SolidLine,
+                                Qt.RoundCap))
+            # Qt angles are in 1/16th of a degree; 90*16 starts at twelve
+            # o'clock and a NEGATIVE span sweeps clockwise, like every other
+            # progress ring a user has ever seen.
+            painter.drawArc(box, 90 * 16, -int(360 * 16 * done))
+    finally:
+        painter.end()
+    return pm
+
+
+def make_progress_icon(fraction) -> QIcon:
+    icon = QIcon()
+    for s in (16, 24, 32, 48, 64, 128, 256):
+        icon.addPixmap(make_progress_pixmap(fraction, s))
+    return icon
