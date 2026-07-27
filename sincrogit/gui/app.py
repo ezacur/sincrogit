@@ -141,6 +141,11 @@ class _Bridge(QObject):
     quit_requested = pyqtSignal()  # flushquit command: exit cleanly on the GUI thread
     refresh_tray = pyqtSignal()  # workers may not touch QSystemTrayIcon/QAction directly
     teardown_done = pyqtSignal()  # the engine thread joined; finish quit/restart (GUI)
+    # Self-update, two steps so the GUI thread never waits on the network:
+    # (status, release|error) after the check, then (path|None, error) after the
+    # download. Both carry a tuple; the GUI decides and only then tears down.
+    update_checked = pyqtSignal(object)
+    update_fetched = pyqtSignal(object)
 
 
 class TrayApp:
@@ -166,8 +171,12 @@ class TrayApp:
         self.bridge.quit_requested.connect(self.quit)  # flushquit -> clean exit (GUI thread)
         self.bridge.refresh_tray.connect(self._refresh_tray)
         self.bridge.teardown_done.connect(self._on_teardown_done)
+        self.bridge.update_checked.connect(self._on_update_checked)
+        self.bridge.update_fetched.connect(self._on_update_fetched)
         self._teardown_then = None   # GUI-thread continuation after the join
         self._quitting = False       # quit/restart in progress (ignore repeats)
+        self._updating = False       # a self-update is in flight (see update_and_relaunch)
+        self._pending_update = None  # staged, VERIFIED exe awaiting the swap
 
         # Mirror the Python logger into the GUI event log (DEBUG detail and
         # warnings that don't go through Engine._emit). The logger's configured
@@ -182,6 +191,13 @@ class TrayApp:
 
         self.panel = ControlPanel(self)
         self._build_tray()
+
+        # A previous "Update and relaunch" parked the old binary next to us; it
+        # only becomes deletable once that process is gone, which is now.
+        if getattr(sys, "frozen", False):
+            from .. import updater
+            if updater.cleanup_old(os.path.abspath(sys.executable)):
+                self.logger.info("removed the previous build left by an update")
 
         # Start-at-login self-heal: an entry left pointing at an exe that no
         # longer exists (dist\ moved, old install removed) would silently
@@ -398,6 +414,12 @@ class TrayApp:
         self.act_seal = menu.addAction("Seal now")
         self.act_seal.triggered.connect(self.seal_now)
         menu.addSeparator()
+        self.act_update = menu.addAction("Update and relaunch…")
+        self.act_update.setToolTip(
+            "Check GitHub for a newer SincroGit, verify it against its published "
+            "SHA-256, then flush every repo and restart into the new build.")
+        self.act_update.triggered.connect(self.update_and_relaunch)
+        menu.addSeparator()
         self.act_quit = menu.addAction("Quit")
         self.act_quit.triggered.connect(self.quit)
 
@@ -499,6 +521,143 @@ class TrayApp:
         # into pieces. Popen quotes each argument properly; then exit this process.
         subprocess.Popen(args, close_fds=True)
         self.qapp.quit()
+
+    # ------------------------------------------------------------ self-update
+    def update_and_relaunch(self):
+        """Tray action: fetch the newest published build and restart into it.
+
+        Split in two worker hops (check, then download) with a confirmation in
+        between, because the GUI thread must never wait on the network and
+        because replacing the binary the user is running deserves a yes. The
+        swap itself happens only after the engine is DOWN — see _finish_update.
+        """
+        from .. import updater
+
+        if self._quitting or not self._update_busy_guard():
+            return
+        if not getattr(sys, "frozen", False):
+            QMessageBox.information(
+                None, "SincroGit",
+                "This is running from source, not a packaged exe — there is no "
+                "binary to replace.\n\nUse `git pull` and `build.ps1` instead.")
+            self._update_done()
+            return
+
+        exe = os.path.abspath(sys.executable)
+        self._tray_ack("Checking for updates", "Asking GitHub for the latest release…")
+
+        def work():
+            try:
+                self.bridge.update_checked.emit(updater.check(exe))
+            except updater.UpdateError as e:
+                self.bridge.update_checked.emit(("error", str(e)))
+            except Exception as e:  # noqa: BLE001 — the tray must never die on this
+                self.bridge.update_checked.emit(("error", f"unexpected: {e}"))
+
+        threading.Thread(target=work, name="sincrogit-update-check",
+                         daemon=True).start()
+
+    def _update_busy_guard(self) -> bool:
+        """One update at a time: the action is disabled while one is in flight."""
+        if getattr(self, "_updating", False):
+            return False
+        self._updating = True
+        self.act_update.setEnabled(False)
+        return True
+
+    def _update_done(self):
+        self._updating = False
+        try:
+            self.act_update.setEnabled(True)
+        except RuntimeError:
+            pass  # shutting down
+
+    def _on_update_checked(self, result):
+        """GUI thread: report, or ask before downloading ~66 MB."""
+        status, info = result
+        if status == "error":
+            self._on_engine_event("", "error", f"update check failed: {info}", "ERROR")
+            QMessageBox.warning(None, "SincroGit — update",
+                                f"Could not check for updates:\n\n{info}")
+            self._update_done()
+            return
+        if status == "up-to-date":
+            QMessageBox.information(
+                None, "SincroGit — update",
+                f"You are already running the published build "
+                f"({info['tag']}).\n\nIts SHA-256 matches this exe.")
+            self._update_done()
+            return
+
+        mb = info["size"] / (1024 * 1024)
+        unverified = ("\n\nWARNING: that release publishes no SHA-256, so the "
+                      "download cannot be verified." if not info["digest"] else "")
+        if QMessageBox.question(
+                None, "SincroGit — update",
+                f"A different build is published: {info['tag']} "
+                f"({mb:.1f} MB).\n\nDownload it, verify it, and restart SincroGit "
+                f"into it?\n\nYour work is flushed and pushed before the "
+                f"restart.{unverified}",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+            self._update_done()
+            return
+
+        from .. import updater
+        exe = os.path.abspath(sys.executable)
+        dest = updater.staging_path(exe)
+        self._tray_ack("Downloading update", f"{info['tag']} — {mb:.1f} MB…")
+
+        def work():
+            try:
+                updater.download(info["url"], dest, info["size"], info["digest"])
+                self.bridge.update_fetched.emit((dest, None))
+            except updater.UpdateError as e:
+                self.bridge.update_fetched.emit((None, str(e)))
+            except Exception as e:  # noqa: BLE001
+                self.bridge.update_fetched.emit((None, f"unexpected: {e}"))
+
+        threading.Thread(target=work, name="sincrogit-update-download",
+                         daemon=True).start()
+
+    def _on_update_fetched(self, result):
+        """GUI thread: the verified binary is staged — tear the engine down and
+        swap. Nothing has touched the installed exe yet at this point."""
+        path, err = result
+        if err or not path:
+            self._on_engine_event("", "error", f"update download failed: {err}", "ERROR")
+            QMessageBox.warning(None, "SincroGit — update",
+                                f"The update was NOT installed:\n\n{err}\n\n"
+                                f"SincroGit keeps running on the current build.")
+            self._update_done()
+            return
+        if self._quitting:
+            return
+        self._quitting = True
+        self._pending_update = path
+        self._on_engine_event("", "restart",
+                              "installing the downloaded update and restarting", "INFO")
+        self.tray.setToolTip("SincroGit — updating…")
+        self._teardown_engine_async(self._finish_update)
+
+    def _finish_update(self):
+        """Engine is down: park the running exe, put the new one at the same path,
+        then take the ordinary restart path (which relaunches sys.executable — now
+        the NEW binary, since the path never changed)."""
+        from .. import updater
+
+        path, self._pending_update = getattr(self, "_pending_update", None), None
+        exe = os.path.abspath(sys.executable)
+        try:
+            updater.swap_in(exe, path)
+        except updater.UpdateError as e:
+            # swap_in restores the original on failure, so relaunching is safe —
+            # and leaving the user with NO daemon would be far worse than a
+            # failed update.
+            self.logger.error("update swap failed: %s", e)
+            QMessageBox.warning(None, "SincroGit — update",
+                                f"Could not install the update:\n\n{e}\n\n"
+                                f"Restarting on the current build.")
+        self._finish_restart()
 
     # ============================ 'controller' interface for the panel =======
     def status(self):

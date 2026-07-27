@@ -7,6 +7,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]        # a tag also publishes a release (see the `release` job)
   pull_request:
   workflow_dispatch:
 
@@ -81,3 +82,62 @@ jobs:
           if ($code -ne 0) { Write-Error "smoke: 'status' exited $code (bundle broken?)"; exit 1 }
           if ($out -notmatch "No repos configured") { Write-Error "smoke: unexpected status output"; exit 1 }
           Write-Host "==> Smoke test passed: the frozen exe runs a CLI one-shot."
+
+  # Publish the artifact the user actually runs. Triggered ONLY by a `v*` tag.
+  #
+  # This is also what closes the gap the smoke test above cannot: smoke-build
+  # compiles --onedir (fast), while the thing people run is --onefile. Here the
+  # release binary is built with the same build.ps1 the maintainer uses, but on a
+  # clean runner instead of one laptop — so the published exe is reproducible from
+  # the tag, and `SincroGit.exe --version` on any machine identifies it.
+  #
+  # The .sha256 sidecar is not decoration: the in-app "Update and relaunch"
+  # verifies the download against it and refuses to install a mismatch, and it is
+  # how two builds of the same `__version__` are told apart (see updater.py).
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, smoke-build]     # never publish something that failed its tests
+    runs-on: windows-latest
+    permissions:
+      contents: write              # required to create the release and upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install (runtime + gui/pptx + PyInstaller)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" pyinstaller
+
+      - name: Build the release exe (onefile — the shipped shape)
+        shell: pwsh
+        run: ./build.ps1
+
+      - name: Verify it runs, and record what was built
+        shell: pwsh
+        run: |
+          $exe = "dist\SincroGit.exe"
+          if (-not (Test-Path $exe)) { Write-Error "build produced no $exe"; exit 1 }
+          # --version needs no config, so it is the cheapest proof the bundle works.
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { Write-Error "--version exited $LASTEXITCODE"; exit 1 }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          # `<digest>  <name>` — the sha256sum format updater.py also accepts.
+          "$hash  SincroGit.exe" | Set-Content -Encoding ascii "$exe.sha256"
+          Write-Host "sha256: $hash"
+
+      - name: Publish the GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release create $tag `
+            "dist\SincroGit.exe" "dist\SincroGit.exe.sha256" `
+            --title "SincroGit $tag" `
+            --generate-notes `
+            --verify-tag
