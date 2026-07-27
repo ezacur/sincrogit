@@ -369,17 +369,29 @@ def attach_parent_console() -> None:
     """
     if os.name != "nt" or not getattr(sys, "frozen", False):
         return
+    # Whether the caller already handed us real streams. A windowed build has
+    # sys.stdout is None when launched from a shortcut, but NOT when the parent
+    # redirected it (`SincroGit.exe status > out.txt`, or a pipe): there Python
+    # gets a perfectly good handle. Reopening CONOUT$ over it would throw the
+    # redirection away and send the output to the console instead of the file —
+    # which is why `status`/`log`/`--version` produced EMPTY output when scripted,
+    # and why CI's smoke test could never read what the exe printed.
+    had_out = sys.stdout is not None
+    had_err = sys.stderr is not None
     try:
         import ctypes
 
         ATTACH_PARENT_PROCESS = -1
         if ctypes.windll.kernel32.AttachConsole(ATTACH_PARENT_PROCESS):
-            sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
-            sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)
-            try:
-                sys.stdin = open("CONIN$", "r", encoding="utf-8")
-            except OSError:
-                pass
+            if not had_out:
+                sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+            if not had_err:
+                sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+            if sys.stdin is None:
+                try:
+                    sys.stdin = open("CONIN$", "r", encoding="utf-8")
+                except OSError:
+                    pass
     except Exception:  # noqa: BLE001 — console attach is best-effort
         pass
     # Never leave the std streams as None (windowed builds do).
