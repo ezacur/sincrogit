@@ -228,7 +228,9 @@ yours never collide.
 
 The **tray icon colour** reflects state: green = active, amber = paused, orange-red = your
 work is not reaching the remote, red = conflict (needs you), gray = stopped. The tray menu
-also has Pause/Resume, Sync now, Seal now, **"Update and relaunch…"**, Quit.
+opens with a greyed-out identity line (`SincroGit <version>`, whose tooltip adds the build
+date — hover it to answer "which build is this machine running?" without a terminal), then
+Pause/Resume, Sync now, Seal now, **"Update and relaunch…"**, Quit.
 
 **"Update and relaunch…"** upgrades this machine in place. It asks GitHub for the latest
 release, compares its published SHA-256 against the exe you are running (the version

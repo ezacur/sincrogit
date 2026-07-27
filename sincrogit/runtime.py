@@ -121,6 +121,31 @@ def _sha256(path: str) -> str | None:
     return h.hexdigest()
 
 
+def version_label() -> tuple:
+    """(label, tooltip) identifying this build, cheap enough for the tray menu.
+
+    Deliberately does NOT hash the exe: version_report() does, and ~50 MB of
+    SHA-256 is a third of a second of blocked GUI thread — fine for a CLI call,
+    not for building a menu. A single stat for the build time is free, and
+    `--version` is where the digest lives.
+    """
+    import time
+
+    from . import __version__
+
+    if getattr(sys, "frozen", False):
+        try:
+            built = time.strftime("%Y-%m-%d %H:%M",
+                                  time.localtime(os.path.getmtime(sys.executable)))
+        except OSError:
+            built = "unknown"
+        return (f"SincroGit {__version__}",
+                f"Version {__version__}, built {built}.\n"
+                f"Run `SincroGit.exe --version` for this build's SHA-256.")
+    return (f"SincroGit {__version__} (source)",
+            f"Version {__version__}, running from source — not a packaged exe.")
+
+
 def version_report() -> str:
     """Identity of THIS build, for `--version`.
 

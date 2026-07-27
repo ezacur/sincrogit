@@ -27,7 +27,7 @@ from ..config import _validate_entry, append_repo, atomic_write_text, load_confi
 from ..engine import Engine
 from ..events import EventLog
 from ..log import setup_logging
-from ..runtime import release_instance_mutex, serve_activation
+from ..runtime import release_instance_mutex, serve_activation, version_label
 from . import icon as iconmod
 from .control_panel import ControlPanel
 from .theme import apply_theme
@@ -403,6 +403,15 @@ class TrayApp:
         self.tray = QSystemTrayIcon(iconmod.make_icon("running"))
         self.tray.setToolTip("⏳g SincroGit")
         menu = QMenu()
+
+        # Identity line: not clickable, just there so "which build is this?" is
+        # answerable without a terminal — the question that cost a hand-copied
+        # SHA-256 when the seal fix had to reach a second machine.
+        label, tip = version_label()
+        self.act_version = menu.addAction(label)
+        self.act_version.setEnabled(False)
+        self.act_version.setToolTip(tip)
+        menu.addSeparator()
 
         self.act_panel = menu.addAction("Open control panel")
         self.act_panel.triggered.connect(self.show_panel)
