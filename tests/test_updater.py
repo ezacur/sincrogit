@@ -539,7 +539,9 @@ def test_finishing_an_update_hands_the_icon_back(qapp, monkeypatch):
 
     class App:
         _refresh_tray = appmod.TrayApp._refresh_tray
+        _apply_update_action_state = lambda self: None   # covered by its own tests
         _updating = True
+        _update_checked_mono = None
         _last_state = "running"          # what it was before the update
         tray = type("T", (), {"setIcon": lambda s, i: icons.append(i),
                               "setToolTip": lambda s, t: None})()
@@ -553,3 +555,113 @@ def test_finishing_an_update_hands_the_icon_back(qapp, monkeypatch):
     appmod.TrayApp._update_done(app)
     assert app._updating is False
     assert icons, "the state icon must be repainted when the update ends"
+
+
+# ------------------------------------------------ the menu entry tells the truth
+
+def _menu_app(qapp, monkeypatch, frozen=True):
+    """A stub carrying just the menu-entry surface, with a fake QAction."""
+    import sincrogit.gui.app as appmod
+
+    monkeypatch.setattr(appmod.sys, "frozen", frozen, raising=False)
+
+    class Font:
+        def __init__(self):
+            self.bold = False
+
+        def setBold(self, v):
+            self.bold = v
+
+    class Act:
+        def __init__(self):
+            self.text = ""
+            self.enabled = True
+            self.icon = None
+            self.tip = ""
+            self._font = Font()
+
+        def setText(self, t):
+            self.text = t
+
+        def setEnabled(self, v):
+            self.enabled = v
+
+        def setIcon(self, i):
+            self.icon = i
+
+        def setToolTip(self, t):
+            self.tip = t
+
+        def font(self):
+            return self._font
+
+        def setFont(self, f):
+            self._font = f
+
+    class App:
+        UPDATE_CHECK_TTL = appmod.TrayApp.UPDATE_CHECK_TTL
+        _updating = False
+        _update_state = None
+        _update_tag = None
+        _update_checking = False
+        _update_checked_mono = None
+
+        def __init__(self):
+            self.act_update = Act()
+
+    return appmod, App()
+
+
+def test_entry_is_disabled_when_there_is_nothing_to_update_to(qapp, monkeypatch):
+    appmod, app = _menu_app(qapp, monkeypatch)
+    app._update_state = "up-to-date"
+    appmod.TrayApp._apply_update_action_state(app)
+    assert app.act_update.enabled is False
+    assert "up to date" in app.act_update.text
+    assert app.act_update._font.bold is False
+
+
+def test_entry_shouts_when_a_build_is_published(qapp, monkeypatch):
+    appmod, app = _menu_app(qapp, monkeypatch)
+    app._update_state, app._update_tag = "available", "v9.9.9"
+    appmod.TrayApp._apply_update_action_state(app)
+    assert app.act_update.enabled is True
+    assert "v9.9.9" in app.act_update.text
+    assert app.act_update._font.bold is True
+    assert app.act_update.icon is not None, "the red dot carries the colour"
+
+
+def test_an_unknown_answer_keeps_the_entry_clickable(qapp, monkeypatch):
+    """Offline or rate-limited must never disable it: clicking IS how you find
+    out, and disabling would remove the manual retry."""
+    appmod, app = _menu_app(qapp, monkeypatch)
+    app._update_state = None
+    appmod.TrayApp._apply_update_action_state(app)
+    assert app.act_update.enabled is True
+    assert app.act_update._font.bold is False
+    assert app.act_update.icon is None or app.act_update.icon.isNull()
+
+
+def test_from_source_there_is_nothing_to_replace(qapp, monkeypatch):
+    appmod, app = _menu_app(qapp, monkeypatch, frozen=False)
+    app._update_state = "available"          # even so: no exe to swap
+    appmod.TrayApp._apply_update_action_state(app)
+    assert app.act_update.enabled is False
+    assert "source" in app.act_update.text
+
+
+def test_the_menu_does_not_re_ask_within_the_ttl(qapp, monkeypatch):
+    """GitHub allows 60 unauthenticated calls an hour; opening the tray menu
+    must not burn them."""
+    import sincrogit.gui.app as appmod
+
+    appmod_, app = _menu_app(qapp, monkeypatch)
+    spawned = []
+    monkeypatch.setattr(appmod.threading, "Thread",
+                        lambda *a, **k: spawned.append(k.get("name")) or
+                        type("T", (), {"start": lambda s: None})())
+    app._update_checking = False
+    app._update_checked_mono = appmod.time.monotonic()   # just asked
+    app._apply_update_action_state = lambda: None
+    appmod.TrayApp._refresh_update_action(app)
+    assert spawned == [], "a fresh answer must not trigger another call"

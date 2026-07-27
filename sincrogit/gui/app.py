@@ -20,6 +20,7 @@ import time
 
 import yaml
 from PyQt5.QtCore import QAbstractNativeEventFilter, QObject, QTimer, pyqtSignal
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from .. import autostart
@@ -163,6 +164,10 @@ class _Bridge(QObject):
     # touch QSystemTrayIcon, and ~50 MB of silence with no daemon at the end of
     # it is indistinguishable from a hang — this is what makes the wait legible.
     update_progress = pyqtSignal(object)
+    # Passive result of "is there a newer build?", used only to style the menu
+    # entry. Separate from update_checked, which drives the interactive flow and
+    # is allowed to open dialogs — opening the tray menu must never pop one up.
+    update_status = pyqtSignal(object)
 
 
 class TrayApp:
@@ -193,6 +198,11 @@ class TrayApp:
         self.bridge.update_checked.connect(self._on_update_checked)
         self.bridge.update_fetched.connect(self._on_update_fetched)
         self.bridge.update_progress.connect(self._on_update_progress)
+        self.bridge.update_status.connect(self._on_update_status)
+        self._update_state = None       # None = never asked / could not ask
+        self._update_tag = None         # the published tag, when one is known
+        self._update_checked_mono = None
+        self._update_checking = False
         self._last_digest = None     # last absence digest (the panel reads it)
         self._teardown_then = None   # GUI-thread continuation after the join
         self._quitting = False       # quit/restart in progress (ignore repeats)
@@ -479,6 +489,9 @@ class TrayApp:
         self.act_version = menu.addAction(label)
         self.act_version.setEnabled(False)
         self.act_version.setToolTip(tip)
+        vfont = self.act_version.font()
+        vfont.setBold(True)
+        self.act_version.setFont(vfont)
         menu.addSeparator()
 
         self.act_panel = menu.addAction("Open control panel")
@@ -507,6 +520,13 @@ class TrayApp:
         menu.addSeparator()
         self.act_quit = menu.addAction("Quit")
         self.act_quit.triggered.connect(self.quit)
+
+        # The menu answers "is there anything to update to?" by ASKING, and the
+        # only honest moment to ask is when you open it: a background poller was
+        # explicitly not wanted, and an entry disabled before any check would be
+        # a deadlock (you could never click it to find out).
+        menu.aboutToShow.connect(self._refresh_update_action)
+        self._apply_update_action_state()
 
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
@@ -709,6 +729,86 @@ class TrayApp:
         threading.Thread(target=work, name="sincrogit-update-check",
                          daemon=True).start()
 
+    # How long a "there is / isn't a newer build" answer is trusted. The menu
+    # asks on open, and GitHub's unauthenticated API allows 60 calls an hour —
+    # without a cache, someone who opens the tray menu a lot would burn it and
+    # start getting rate-limit errors on the one call that matters.
+    UPDATE_CHECK_TTL = 30 * 60
+
+    def _refresh_update_action(self):
+        """Menu is opening: repaint the entry, and refresh the answer if stale."""
+        self._apply_update_action_state()
+        if not getattr(sys, "frozen", False) or self._update_checking:
+            return
+        if getattr(self, "_updating", False):
+            return
+        last = self._update_checked_mono
+        if last is not None and time.monotonic() - last < self.UPDATE_CHECK_TTL:
+            return
+
+        from .. import updater
+        exe = os.path.abspath(sys.executable)
+        self._update_checking = True
+
+        def work():
+            try:
+                status, info = updater.check(exe)
+                self.bridge.update_status.emit((status, info.get("tag")))
+            except Exception:  # noqa: BLE001
+                # Offline, rate-limited, no release yet: report "unknown" rather
+                # than a state. Never DISABLE the entry because the network is
+                # down — that would take away the manual retry.
+                self.bridge.update_status.emit((None, None))
+
+        threading.Thread(target=work, name="sincrogit-update-peek",
+                         daemon=True).start()
+
+    def _on_update_status(self, result):
+        state, tag = result
+        self._update_state, self._update_tag = state, tag
+        self._update_checked_mono = time.monotonic()
+        self._update_checking = False
+        self._apply_update_action_state()
+
+    def _apply_update_action_state(self):
+        """Style the menu entry from what we know. Disabled when there is
+        nothing to do, red + bold when there is."""
+        act = getattr(self, "act_update", None)
+        if act is None or getattr(self, "_updating", False):
+            return
+        font = act.font()
+        if not getattr(sys, "frozen", False):
+            act.setText("Update and relaunch…  (running from source)")
+            act.setEnabled(False)
+            act.setIcon(QIcon())
+            font.setBold(False)
+            act.setToolTip("There is no packaged exe to replace — use "
+                           "`git pull` and `build.ps1`.")
+        elif self._update_state == "up-to-date":
+            act.setText("Update and relaunch…  (up to date)")
+            act.setEnabled(False)
+            act.setIcon(QIcon())
+            font.setBold(False)
+            act.setToolTip("This exe is byte-for-byte the published build.")
+        elif self._update_state == "available":
+            act.setText(f"Update and relaunch…  ({self._update_tag or 'new build'})")
+            act.setEnabled(True)
+            act.setIcon(iconmod.make_dot_icon("#C2410C"))
+            font.setBold(True)
+            act.setToolTip(f"A different build is published ({self._update_tag}). "
+                           f"Downloading it is verified against its SHA-256 before "
+                           f"anything is replaced.")
+        else:
+            # Unknown: keep it clickable. Clicking IS how you find out.
+            act.setText("Update and relaunch…")
+            act.setEnabled(True)
+            act.setIcon(QIcon())
+            font.setBold(False)
+            act.setToolTip("Check GitHub for a newer SincroGit, verify it against "
+                           "its published SHA-256, then flush every repo and "
+                           "restart into the new build.")
+        act.setFont(font)
+
     def _update_busy_guard(self) -> bool:
         """One update at a time: the action is disabled while one is in flight."""
         if getattr(self, "_updating", False):
@@ -719,8 +819,11 @@ class TrayApp:
 
     def _update_done(self):
         self._updating = False
+        # Whatever we knew is stale now: the check may have just told us
+        # something new, or an install may have changed which exe we are.
+        self._update_checked_mono = None
         try:
-            self.act_update.setEnabled(True)
+            self._apply_update_action_state()
             # Hand the icon back to the state machine. _last_state must be
             # cleared or _refresh_tray sees "no change" and leaves the grey
             # progress icon on screen forever.
@@ -732,6 +835,12 @@ class TrayApp:
     def _on_update_checked(self, result):
         """GUI thread: report, or ask before downloading ~66 MB."""
         status, info = result
+        if status in ("up-to-date", "available"):
+            # An interactive check is also an answer: feed the menu's cache so
+            # the entry stops saying "unknown" the moment we know better.
+            self._update_state = status
+            self._update_tag = (info or {}).get("tag")
+            self._update_checked_mono = time.monotonic()
         if status == "error":
             self._on_engine_event("", "error", f"update check failed: {info}", "ERROR")
             QMessageBox.warning(None, "SincroGit — update",

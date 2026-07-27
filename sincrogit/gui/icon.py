@@ -211,6 +211,29 @@ def make_progress_pixmap(fraction, size: int = 64) -> QPixmap:
     return pm
 
 
+def make_dot_icon(color_hex: str, size: int = 16) -> QIcon:
+    """A small filled dot, for marking a menu entry that wants attention.
+
+    Qt cannot colour the TEXT of a QAction: a menu item is painted by the style,
+    and the only ways round it are a custom delegate or a QWidgetAction, both of
+    which cost the native hover/keyboard behaviour of a real menu. An icon is
+    what menus are actually designed to carry, so the red lives there and the
+    emphasis lives in a bold font.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    painter = QPainter(pm)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(QPen(QColor(color_hex).darker(130), max(1.0, size * 0.06)))
+        painter.setBrush(QBrush(QColor(color_hex)))
+        m = size * 0.28
+        painter.drawEllipse(QRectF(m, m, size - 2 * m, size - 2 * m))
+    finally:
+        painter.end()
+    return QIcon(pm)
+
+
 def make_progress_icon(fraction) -> QIcon:
     icon = QIcon()
     for s in (16, 24, 32, 48, 64, 128, 256):
