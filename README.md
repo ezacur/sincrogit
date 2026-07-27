@@ -40,7 +40,7 @@ Where it earns its keep:
   already on disk; SincroGit's value there is the *rollback*, not the survival.
 
 > **How to operate it** (CLI commands, panel actions, recipes): the
-> **[User Manual](MANUAL.md)** (Spanish: [MANUAL_ES.md](MANUAL_ES.md)).
+> **[User Manual](MANUAL.md)**.
 > Design and decisions: **[DESIGN.md](DESIGN.md)**.
 
 ## Already fluent in Git? The skeptic's minute

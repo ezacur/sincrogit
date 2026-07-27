@@ -81,7 +81,7 @@ def test_retired_ui_mention_is_flagged(tmp_path):
         'btn = QPushButton("Time machine…")\n', encoding="utf-8")
     for name in ("README.md", "DESIGN.md", "MANUAL.md", "GUIDE.md"):
         _write(tmp_path, name, "## A\nOpen **Time machine…** from Status.\n")
-    for name in ("LEAME.md", "DISENO.md", "MANUAL_ES.md", "GUIA.md"):
+    for name in ("LEAME.md", "GUIA.md"):
         _write(tmp_path, name, "## A\nAbre **File history…** desde Estado.\n")
     problems = cdp.check_ui_names(str(tmp_path))
     assert problems and all("File history…" in p for p in problems)

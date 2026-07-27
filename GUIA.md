@@ -11,8 +11,9 @@ la versión de un fichero del martes pasado, y no hay dónde volver porque las
 SincroGit es la respuesta a *"luego commiteo"*. Vive en la bandeja y mantiene un
 rastro recuperable de tu trabajo, escribas `git` o no lo escribas nunca.
 
-> ¿Quieres los **comandos y todas las opciones**? [Manual de usuario](MANUAL_ES.md).
-> ¿La ingeniería? [DISENO.md](DISENO.md). En inglés: [GUIDE.md](GUIDE.md).
+> ¿Quieres los **comandos y todas las opciones**? [Manual de usuario](MANUAL.md)
+> (en inglés). ¿La ingeniería? [DESIGN.md](DESIGN.md). Esta guía en inglés:
+> [GUIDE.md](GUIDE.md).
 
 ## ¿Te suena?
 
@@ -130,7 +131,7 @@ desde tu último commit manual, lo editas si quieres, y se pushea.
    `.dll` ahí? Hazle `git add` a mano una vez y SincroGit lo llevará desde
    entonces — nunca revertirá ni dejará caer un fichero que commiteaste tú.
    (Los ficheros de Word y PowerPoint *sí* se pueden versionar con diffs
-   legibles — mira `extra_includes` en el [Manual](MANUAL_ES.md).)
+   legibles — mira `extra_includes` en el [Manual](MANUAL.md).)
 2. **Nunca resuelve un conflicto por ti.** ¿Editaste en las dos máquinas sin
    sincronizar? Se detiene, deja los dos estados intactos, pone el icono en rojo y
    pregunta. Lo arreglas en tu editor y pulsas Resume.
