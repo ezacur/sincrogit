@@ -82,6 +82,12 @@ class EventLog:
                     line = json.dumps(ev.as_dict(), ensure_ascii=False) + "\n"
                     with open(self._jsonl_path, "a", encoding="utf-8") as fh:
                         fh.write(line)
+                        # One line, one write, then push it out of Python's buffer.
+                        # Without this an unclean exit (the update restart, a power
+                        # cut) leaves NTFS to zero-fill the tail of the file — which
+                        # is how this log ended up with NUL bytes in it. No fsync:
+                        # that would be a disk round-trip per event.
+                        fh.flush()
                     self._jsonl_bytes += len(line.encode("utf-8"))
                     if self._jsonl_bytes > self.MAX_JSONL_BYTES:
                         self._rotate_jsonl()
@@ -125,7 +131,10 @@ class EventLog:
             try:
                 with open(path, "r", encoding="utf-8") as fh:
                     for line in fh:
-                        line = line.strip()
+                        # NUL bytes appear when an unclean exit leaves NTFS to
+                        # zero-fill the tail; strip them so one damaged record
+                        # can't swallow the readable ones around it.
+                        line = line.replace("\x00", "").strip()
                         if not line:
                             continue
                         try:

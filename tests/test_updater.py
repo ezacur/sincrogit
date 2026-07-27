@@ -374,3 +374,81 @@ def test_a_verified_download_stages_it_and_tears_down(stub):
     # The swap must be the teardown's continuation: it may only run once the
     # engine is DOWN, never while snapshots are still in flight.
     assert app.continuation == app._finish_update
+
+
+def test_a_child_that_never_answers_is_reported_not_swallowed(qapp, monkeypatch):
+    """The failure that actually happened: the parent Popen'd, quit, and nobody
+    was left running with nothing said. Now it warns and names what to run."""
+    import sincrogit.gui.app as appmod
+
+    said, logged = [], []
+
+    class FakeBox:
+        critical = staticmethod(lambda *a, **k: said.append(a[2] if len(a) > 2 else ""))
+        warning = information = staticmethod(lambda *a, **k: None)
+
+    _qa = qapp
+
+    class App:
+        config_path = "C:/x/config.yaml"
+        logger = type("L", (), {"info": lambda s, *a: None,
+                                "error": lambda s, *a: logged.append(a)})()
+        qapp = _qa
+        tray = type("T", (), {"hide": lambda s: None})()
+
+        def _release_lock(self):
+            pass
+
+        def _wait_for_child(self, timeout=20.0):
+            return False
+
+    monkeypatch.setattr(appmod, "QMessageBox", FakeBox)
+    monkeypatch.setattr(appmod.subprocess, "Popen", lambda *a, **k: None)
+    monkeypatch.setattr(appmod, "release_instance_mutex", lambda: None)
+    monkeypatch.setattr(qapp, "quit", lambda: None)
+
+    appmod.TrayApp._finish_restart(App(), verify=True)
+    assert said, "a dead child must produce a visible message"
+    assert "NOTHING IS BEING SNAPSHOTTED" in said[0]
+    assert "SincroGit.exe.old" in said[0]
+    assert logged, "and it must reach the text log for a post-mortem"
+
+
+def test_a_child_that_answers_is_a_silent_handover(qapp, monkeypatch):
+    import sincrogit.gui.app as appmod
+
+    said = []
+
+    class FakeBox:
+        critical = staticmethod(lambda *a, **k: said.append("box"))
+        warning = information = staticmethod(lambda *a, **k: None)
+
+    _qa = qapp
+
+    class App:
+        config_path = "C:/x/config.yaml"
+        logger = type("L", (), {"info": lambda s, *a: None,
+                                "error": lambda s, *a: None})()
+        qapp = _qa
+        tray = type("T", (), {"hide": lambda s: None})()
+
+        def _release_lock(self):
+            pass
+
+        def _wait_for_child(self, timeout=20.0):
+            return True
+
+    monkeypatch.setattr(appmod, "QMessageBox", FakeBox)
+    monkeypatch.setattr(appmod.subprocess, "Popen", lambda *a, **k: None)
+    monkeypatch.setattr(appmod, "release_instance_mutex", lambda: None)
+    monkeypatch.setattr(qapp, "quit", lambda: None)
+
+    appmod.TrayApp._finish_restart(App(), verify=True)
+    assert said == []
+
+
+def test_mark_of_the_web_strip_leaves_the_file_alone(tmp_path):
+    p = tmp_path / "SincroGit.exe.new"
+    p.write_bytes(b"NEW")
+    updater.strip_mark_of_the_web(str(p))     # no stream here; must not raise
+    assert p.read_bytes() == b"NEW"
