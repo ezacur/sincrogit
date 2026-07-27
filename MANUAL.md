@@ -296,6 +296,15 @@ deleted on the next start. A failed swap restores the working binary and restart
 you are never left without a daemon. Running from source there is no exe to replace and it
 says so: use `git pull` + `build.ps1`.
 
+**While it runs, the tray icon tells you where it is.** The mark turns grey with a
+progress ring drawn over it, and the tooltip names the phase: asking GitHub (ring
+without a percentage), downloading (the ring fills, with the megabytes so far), then
+saving and pushing every repo before the restart. Grey rather than a state colour on
+purpose — mid-update the usual "is it working?" signal is meaningless, and a green icon
+while the daemon is about to disappear for the best part of a minute is what made an
+update look like a hang. During the relaunch the tooltip counts down the seconds it will
+wait for the new process before giving up and telling you.
+
 ---
 
 ## 5. Common tasks (recipes)
