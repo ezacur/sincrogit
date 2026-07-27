@@ -1,0 +1,376 @@
+"""Self-update: release discovery, verified download, and the rename dance.
+
+The invariants that matter, in order of how much damage their absence does:
+  1. a download that doesn't match the published SHA-256 is NEVER installed
+  2. a failed swap leaves a WORKING exe at the path (never nothing)
+  3. "up to date" is decided by the exe's digest, not by __version__ (which is
+     identical across builds and so cannot answer the question)
+No network: urlopen is monkeypatched.
+"""
+
+import hashlib
+import io
+import json
+import os
+import urllib.error
+
+import pytest
+
+from sincrogit import updater
+
+EXE = b"MZ-this-is-the-published-build" * 400
+EXE_SHA = hashlib.sha256(EXE).hexdigest()
+
+
+def _release(assets):
+    return json.dumps({"tag_name": "v9.9.9", "assets": assets}).encode()
+
+
+def _asset(name, size, url="https://example.invalid/a"):
+    return {"name": name, "size": size, "browser_download_url": url}
+
+
+class _Resp(io.BytesIO):
+    """Minimal urlopen() context-manager stand-in."""
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+        return False
+
+
+@pytest.fixture
+def fake_net(monkeypatch):
+    """Map URL -> bytes (or an Exception to raise)."""
+    routes = {}
+
+    def urlopen(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else req
+        for key, val in routes.items():
+            if key in url:
+                if isinstance(val, Exception):
+                    raise val
+                return _Resp(val)
+        raise urllib.error.HTTPError(url, 404, "not found", None, None)
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", urlopen)
+    return routes
+
+
+# --------------------------------------------------------------- discovery
+
+def test_latest_release_picks_the_exe_and_its_digest(fake_net):
+    fake_net["api.github.com"] = _release([
+        _asset("SincroGit.exe", len(EXE), "https://example.invalid/exe"),
+        _asset("SincroGit.exe.sha256", 70, "https://example.invalid/sha"),
+    ])
+    fake_net["example.invalid/sha"] = f"{EXE_SHA}  SincroGit.exe\n".encode()
+    rel = updater.latest_release()
+    assert rel["tag"] == "v9.9.9"
+    assert rel["size"] == len(EXE)
+    assert rel["digest"] == EXE_SHA
+
+
+def test_a_bare_digest_file_is_accepted_too(fake_net):
+    fake_net["api.github.com"] = _release([
+        _asset("SincroGit.exe", len(EXE), "https://example.invalid/exe"),
+        _asset("SincroGit.exe.sha256", 65, "https://example.invalid/sha"),
+    ])
+    fake_net["example.invalid/sha"] = (EXE_SHA + "\n").encode()
+    assert updater.latest_release()["digest"] == EXE_SHA
+
+
+def test_garbage_digest_file_degrades_to_unverifiable(fake_net):
+    """A corrupt sidecar must not be mistaken for a digest — better to report
+    'no digest' (the UI then warns) than to compare against nonsense."""
+    fake_net["api.github.com"] = _release([
+        _asset("SincroGit.exe", len(EXE), "https://example.invalid/exe"),
+        _asset("SincroGit.exe.sha256", 9, "https://example.invalid/sha"),
+    ])
+    fake_net["example.invalid/sha"] = b"<html>404</html>"
+    assert updater.latest_release()["digest"] is None
+
+
+def test_no_releases_yet_says_so(fake_net):
+    fake_net["api.github.com"] = urllib.error.HTTPError(
+        "u", 404, "Not Found", None, None)
+    with pytest.raises(updater.UpdateError, match="no published release"):
+        updater.latest_release()
+
+
+def test_release_without_the_exe_asset_is_an_error(fake_net):
+    fake_net["api.github.com"] = _release([_asset("notes.txt", 10)])
+    with pytest.raises(updater.UpdateError, match="no SincroGit.exe"):
+        updater.latest_release()
+
+
+def test_implausible_size_is_refused(fake_net):
+    fake_net["api.github.com"] = _release([
+        _asset("SincroGit.exe", updater.MAX_ASSET_BYTES + 1)])
+    with pytest.raises(updater.UpdateError, match="implausible size"):
+        updater.latest_release()
+
+
+def test_rate_limit_message_is_actionable(fake_net):
+    fake_net["api.github.com"] = urllib.error.HTTPError(
+        "u", 403, "rate limited", None, None)
+    with pytest.raises(updater.UpdateError, match="rate limit"):
+        updater.latest_release()
+
+
+# ------------------------------------------------------------------- check
+
+def test_check_compares_digests_not_versions(fake_net, tmp_path):
+    """__version__ is the same string in every build, so sameness is decided by
+    hashing the exe we are actually running."""
+    exe = tmp_path / "SincroGit.exe"
+    exe.write_bytes(EXE)
+    fake_net["api.github.com"] = _release([
+        _asset("SincroGit.exe", len(EXE), "https://example.invalid/exe"),
+        _asset("SincroGit.exe.sha256", 70, "https://example.invalid/sha"),
+    ])
+    fake_net["example.invalid/sha"] = f"{EXE_SHA}  SincroGit.exe\n".encode()
+    assert updater.check(str(exe))[0] == "up-to-date"
+
+    exe.write_bytes(EXE + b"locally-built-differently")
+    assert updater.check(str(exe))[0] == "available"
+
+
+def test_check_offers_the_update_when_the_release_has_no_digest(fake_net, tmp_path):
+    """Cannot prove sameness -> offer it, rather than silently claim to be
+    current (the UI shows the unverifiable warning)."""
+    exe = tmp_path / "SincroGit.exe"
+    exe.write_bytes(EXE)
+    fake_net["api.github.com"] = _release([
+        _asset("SincroGit.exe", len(EXE), "https://example.invalid/exe")])
+    assert updater.check(str(exe))[0] == "available"
+
+
+# ---------------------------------------------------------------- download
+
+def test_download_verifies_and_keeps_the_file(fake_net, tmp_path):
+    fake_net["example.invalid/exe"] = EXE
+    dest = tmp_path / "SincroGit.exe.new"
+    seen = []
+    updater.download("https://example.invalid/exe", str(dest), len(EXE), EXE_SHA,
+                     progress=lambda d, t: seen.append(d))
+    assert dest.read_bytes() == EXE
+    assert seen and seen[-1] == len(EXE)
+
+
+def test_download_with_a_wrong_digest_installs_nothing(fake_net, tmp_path):
+    """THE invariant: a tampered or corrupt transfer never reaches the swap."""
+    fake_net["example.invalid/exe"] = EXE + b"tampered"
+    dest = tmp_path / "SincroGit.exe.new"
+    with pytest.raises(updater.UpdateError, match="does not match the published"):
+        updater.download("https://example.invalid/exe", str(dest),
+                         len(EXE) + 8, EXE_SHA)
+    assert not dest.exists()          # partial file cleaned up
+
+
+def test_truncated_download_is_refused(fake_net, tmp_path):
+    fake_net["example.invalid/exe"] = EXE[:100]
+    dest = tmp_path / "SincroGit.exe.new"
+    with pytest.raises(updater.UpdateError, match="truncated"):
+        updater.download("https://example.invalid/exe", str(dest), len(EXE), None)
+    assert not dest.exists()
+
+
+def test_network_failure_mid_download_leaves_nothing_behind(fake_net, tmp_path):
+    fake_net["example.invalid/exe"] = urllib.error.URLError("connection reset")
+    dest = tmp_path / "SincroGit.exe.new"
+    with pytest.raises(updater.UpdateError, match="download failed"):
+        updater.download("https://example.invalid/exe", str(dest), len(EXE), EXE_SHA)
+    assert not dest.exists()
+
+
+# -------------------------------------------------------------- swap / clean
+
+def test_swap_parks_the_old_binary_and_installs_the_new(tmp_path):
+    exe = tmp_path / "SincroGit.exe"
+    exe.write_bytes(b"OLD")
+    new = tmp_path / "SincroGit.exe.new"
+    new.write_bytes(b"NEW")
+    parked = updater.swap_in(str(exe), str(new))
+    assert exe.read_bytes() == b"NEW"
+    assert open(parked, "rb").read() == b"OLD"
+    assert not new.exists()
+
+
+def test_swap_reuses_the_slot_of_a_previous_update(tmp_path):
+    exe = tmp_path / "SincroGit.exe"
+    exe.write_bytes(b"OLD2")
+    (tmp_path / "SincroGit.exe.old").write_bytes(b"ANCIENT")
+    new = tmp_path / "SincroGit.exe.new"
+    new.write_bytes(b"NEW2")
+    updater.swap_in(str(exe), str(new))
+    assert exe.read_bytes() == b"NEW2"
+    assert (tmp_path / "SincroGit.exe.old").read_bytes() == b"OLD2"
+
+
+def test_a_failed_swap_puts_the_working_exe_back(tmp_path, monkeypatch):
+    """Invariant #2: an update that goes wrong must never leave the machine
+    without a runnable SincroGit."""
+    exe = tmp_path / "SincroGit.exe"
+    exe.write_bytes(b"OLD")
+    new = tmp_path / "SincroGit.exe.new"
+    new.write_bytes(b"NEW")
+
+    real = os.replace
+    calls = []
+
+    def flaky(src, dst):
+        calls.append((src, dst))
+        if len(calls) == 2:          # the second move (new -> exe) fails
+            raise OSError("locked by antivirus")
+        return real(src, dst)
+
+    monkeypatch.setattr(updater.os, "replace", flaky)
+    with pytest.raises(updater.UpdateError, match="could not put the new exe"):
+        updater.swap_in(str(exe), str(new))
+    assert exe.exists() and exe.read_bytes() == b"OLD"
+
+
+def test_swap_without_a_staged_file_changes_nothing(tmp_path):
+    exe = tmp_path / "SincroGit.exe"
+    exe.write_bytes(b"OLD")
+    with pytest.raises(updater.UpdateError, match="gone"):
+        updater.swap_in(str(exe), str(tmp_path / "absent.new"))
+    assert exe.read_bytes() == b"OLD"
+
+
+def test_cleanup_old_removes_the_parked_build_once(tmp_path):
+    exe = tmp_path / "SincroGit.exe"
+    (tmp_path / "SincroGit.exe.old").write_bytes(b"OLD")
+    assert updater.cleanup_old(str(exe)) is True
+    assert not (tmp_path / "SincroGit.exe.old").exists()
+    assert updater.cleanup_old(str(exe)) is False    # idempotent
+
+
+def test_sha256_file_handles_a_missing_path(tmp_path):
+    assert updater.sha256_file(str(tmp_path / "nope")) is None
+
+
+# ------------------------------------------------ the tray action's decisions
+
+class _StubApp:
+    """Just enough TrayApp surface to drive the update handlers unbound.
+
+    Building a real TrayApp means a config, an Engine and the whole panel; what
+    needs locking in here is narrower and more important: WHEN does this code
+    decide to touch the installed binary.
+    """
+    class _Tray:
+        def setToolTip(self, text):
+            pass
+
+    def __init__(self):
+        self.events, self.acks, self.done, self.threads = [], [], 0, 0
+        self._quitting = False
+        self._updating = True
+        self._pending_update = None
+        self.tray = self._Tray()
+
+    def _on_engine_event(self, repo, action, msg, level="INFO"):
+        self.events.append((action, level, msg))
+
+    def _tray_ack(self, title, body):
+        self.acks.append(title)
+
+    def _update_done(self):
+        self.done += 1
+
+    def _finish_update(self):
+        """The real continuation does the swap; here we only assert it is the one
+        handed to the teardown."""
+        self.events.append(("swap", "INFO", "would swap"))
+
+    def _teardown_engine_async(self, then):
+        self.threads += 1
+        self.continuation = then   # must be _finish_update, not _finish_restart
+
+
+@pytest.fixture
+def stub(qapp, monkeypatch):
+    """A stub app plus a QMessageBox whose answers the test controls."""
+    import sincrogit.gui.app as appmod
+
+    asked = []
+
+    class FakeBox:
+        Yes, No = 1, 0
+
+        @staticmethod
+        def information(*a, **k):
+            asked.append(("info", a[2] if len(a) > 2 else ""))
+
+        @staticmethod
+        def warning(*a, **k):
+            asked.append(("warn", a[2] if len(a) > 2 else ""))
+
+        answer = 0
+
+        @classmethod
+        def question(cls, *a, **k):
+            asked.append(("question", a[2] if len(a) > 2 else ""))
+            return cls.answer
+
+    monkeypatch.setattr(appmod, "QMessageBox", FakeBox)
+    return appmod, _StubApp(), FakeBox, asked
+
+
+def test_up_to_date_reports_and_downloads_nothing(stub):
+    appmod, app, box, asked = stub
+    appmod.TrayApp._on_update_checked(app, ("up-to-date", {"tag": "v1.2.3"}))
+    assert [k for k, _ in asked] == ["info"]
+    assert "already running" in asked[0][1]
+    assert app.threads == 0 and app.done == 1
+
+
+def test_a_check_error_warns_and_logs_it(stub):
+    appmod, app, box, asked = stub
+    appmod.TrayApp._on_update_checked(app, ("error", "could not reach GitHub"))
+    assert [k for k, _ in asked] == ["warn"]
+    assert app.events and app.events[0][1] == "ERROR"
+    assert app.threads == 0 and app.done == 1
+
+
+def test_declining_the_update_touches_nothing(stub):
+    appmod, app, box, asked = stub
+    box.answer = box.No
+    appmod.TrayApp._on_update_checked(
+        app, ("available", {"tag": "v9", "size": 66 << 20, "digest": "a" * 64,
+                            "url": "https://example.invalid/exe"}))
+    assert [k for k, _ in asked] == ["question"]
+    assert app.done == 1 and app.threads == 0
+
+
+def test_an_unverifiable_release_says_so_before_asking(stub):
+    appmod, app, box, asked = stub
+    box.answer = box.No
+    appmod.TrayApp._on_update_checked(
+        app, ("available", {"tag": "v9", "size": 1 << 20, "digest": None,
+                            "url": "https://example.invalid/exe"}))
+    assert "publishes no SHA-256" in asked[0][1]
+
+
+def test_a_failed_download_keeps_the_current_build_running(stub):
+    """No teardown, no swap, and the message must say the app keeps running."""
+    appmod, app, box, asked = stub
+    appmod.TrayApp._on_update_fetched(app, (None, "download failed: reset"))
+    assert [k for k, _ in asked] == ["warn"]
+    assert "keeps running on the current build" in asked[0][1]
+    assert app.threads == 0 and app._pending_update is None
+    assert app.events and app.events[0][1] == "ERROR"
+
+
+def test_a_verified_download_stages_it_and_tears_down(stub):
+    appmod, app, box, asked = stub
+    appmod.TrayApp._on_update_fetched(app, (r"C:\x\SincroGit.exe.new", None))
+    assert app._pending_update == r"C:\x\SincroGit.exe.new"
+    assert app._quitting is True and app.threads == 1
+    assert any(a == "restart" for a, _, _ in app.events)
+    # The swap must be the teardown's continuation: it may only run once the
+    # engine is DOWN, never while snapshots are still in flight.
+    assert app.continuation == app._finish_update

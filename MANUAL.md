@@ -226,8 +226,21 @@ does NOT re-sync to the others (adjust them there, or re-inherit by removing and
 re-adding). The ref is namespaced by your git identity, so a teammate's preferences and
 yours never collide.
 
-The **tray icon colour** reflects state: green = active, amber = paused, red = conflict
-(needs you), gray = stopped. The tray menu also has Pause/Resume, Sync now, Seal now, Quit.
+The **tray icon colour** reflects state: green = active, amber = paused, orange-red = your
+work is not reaching the remote, red = conflict (needs you), gray = stopped. The tray menu
+also has Pause/Resume, Sync now, Seal now, **"Update and relaunch…"**, Quit.
+
+**"Update and relaunch…"** upgrades this machine in place. It asks GitHub for the latest
+release, compares its published SHA-256 against the exe you are running (the version
+*string* is identical across builds, so the digest is what decides), and if they differ it
+offers the download. Nothing is installed until the transfer matches that digest — a
+truncated or tampered download fails the update instead. Then it flushes and pushes every
+repo, parks the running exe as `SincroGit.exe.old` (Windows won't overwrite a running
+binary, but it will rename one), puts the new one at the same path and restarts into it.
+The path never changes, so your start-at-login entry stays valid; the leftover `.old` is
+deleted on the next start. A failed swap restores the working binary and restarts anyway —
+you are never left without a daemon. Running from source there is no exe to replace and it
+says so: use `git pull` + `build.ps1`.
 
 ---
 
