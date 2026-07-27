@@ -3,6 +3,7 @@
 Tabbed window:
   - Status: repos table + an action bar for the selected repo.
   - Timeline: per-repo snapshot timeline (its own tab module).
+  - Marks: the moments you named, and what to do with them (its own tab module).
   - Log: events filterable by repo, action, level and text.
   - Settings: friendly form over the global defaults.
   - Advanced (YAML): raw config.yaml editor (save / save and restart).
@@ -12,7 +13,8 @@ directly (per-repo dialogs it opens declare their own controller contracts):
   status(), events_all(), events_recent(), app_state(), make_icon(state),
   pause_all(), resume_all(), pause_repo(name), resume_repo(name),
   seal_repo_now(name), pull_repo_now(name), apply_handoff(name),
-  config_path, config_text(), save_config(text)->(ok,msg), restart().
+  ask_and_mark(name), config_path, config_text(),
+  save_config(text)->(ok,msg), restart().
 
 Responsiveness contract: NOTHING on the GUI thread reads disk or spawns git.
 The full JSONL event history (megabytes on a long install) loads on a worker
@@ -54,6 +56,7 @@ from .. import __version__
 from ..events import ACTIONS
 from .add_repo_dialog import AddRepoDialog
 from .machines_dialog import MachinesDialog
+from .marks_tab import MarksTab
 from .settings_tab import SettingsTab
 from .smart_commit_dialog import SmartCommitDialog
 from .time_machine_tab import TimeMachineTab
@@ -224,6 +227,11 @@ class ControlPanel(QMainWindow):
         self.tabs.addTab(self.timeline_v3, "Timeline v3")
         self.timeline_v4 = TimelineV4Tab(self.c)
         self.tabs.addTab(self.timeline_v4, "Timeline v4")
+        # Marks live next to the timeline they belong to: the tab answers "take
+        # me back to the state I named", which the day-by-day rail is the wrong
+        # shape for. Its "open in Time machine" jumps to the same rail.
+        self.marks = MarksTab(self.c, on_open_state=self._goto_time_machine_state)
+        self.tabs.addTab(self.marks, "Marks")
         self.tabs.addTab(self._build_log_tab(), "Log")
         self.settings = SettingsTab(self.c)
         self.tabs.addTab(self.settings, "Settings")
@@ -633,6 +641,8 @@ class ControlPanel(QMainWindow):
         menu = QMenu(self)
         act_open = menu.addAction("Open folder")
         act_time = menu.addAction("Time machine…")
+        act_mark = menu.addAction("Mark this moment…")
+        act_marks = menu.addAction("Marks")
         act_props = menu.addAction("Properties…")
         chosen = menu.exec_(self.tbl_repos.viewport().mapToGlobal(pos))
         menu.deleteLater()
@@ -643,6 +653,12 @@ class ControlPanel(QMainWindow):
                 pass
         elif chosen is act_time:
             self._goto_time_machine(name)
+        elif chosen is act_mark:
+            # The tray owns the dialog + worker, so all three entry points
+            # (tray, here, the CLI channel) behave identically.
+            self.c.ask_and_mark(name)
+        elif chosen is act_marks:
+            self._goto_marks(name)
         elif chosen is act_props:
             self._open_repo_properties(name)
 
@@ -659,6 +675,16 @@ class ControlPanel(QMainWindow):
         a file pinned) — the one place every view of the past now lives."""
         self.timeline.focus_repo(name or self._selected_repo() or None, pin)
         self.tabs.setCurrentWidget(self.timeline)
+
+    def _goto_time_machine_state(self, name, sha):
+        """Same jump, opened on ONE state — the Marks tab's "show me this
+        moment on the timeline"."""
+        self.timeline.focus_repo(name, None, sha)
+        self.tabs.setCurrentWidget(self.timeline)
+
+    def _goto_marks(self, name=None):
+        self.marks.focus_repo(name or self._selected_repo() or None)
+        self.tabs.setCurrentWidget(self.marks)
 
     def _open_machines(self):
         with self._wait_cursor():
@@ -839,6 +865,7 @@ class ControlPanel(QMainWindow):
         self.timeline_v2.notice_event(ev)
         self.timeline_v3.notice_event(ev)
         self.timeline_v4.notice_event(ev)
+        self.marks.notice_event(ev)
         # A seal/pull/push/sync event for a repo marks its manual action as done:
         # clear the in-flight marker so the action bar re-enables its buttons.
         if ev.repo in self._inflight and ev.action in ("seal", "push", "pull", "sync"):

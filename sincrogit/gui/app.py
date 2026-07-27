@@ -145,6 +145,11 @@ class _Bridge(QObject):
     activate = pyqtSignal()  # a second launch asks us to show the panel
     quit_requested = pyqtSignal()  # flushquit command: exit cleanly on the GUI thread
     refresh_tray = pyqtSignal()  # workers may not touch QSystemTrayIcon/QAction directly
+    # `sincrogit mark "…"` arrived on the activation channel (a code agent's
+    # hook, typically): (repo, label), repo "" meaning every configured repo.
+    # It crosses here because the listener runs on its own thread and the mark
+    # must be dispatched like any other GUI-initiated action.
+    mark_requested = pyqtSignal(object)
     teardown_done = pyqtSignal()  # the engine thread joined; finish quit/restart (GUI)
     # Self-update, two steps so the GUI thread never waits on the network:
     # (status, release|error) after the check, then (path|None, error) after the
@@ -175,6 +180,7 @@ class TrayApp:
         self.bridge.activate.connect(self.show_panel)
         self.bridge.quit_requested.connect(self.quit)  # flushquit -> clean exit (GUI thread)
         self.bridge.refresh_tray.connect(self._refresh_tray)
+        self.bridge.mark_requested.connect(self._on_mark_requested)
         self.bridge.teardown_done.connect(self._on_teardown_done)
         self.bridge.update_checked.connect(self._on_update_checked)
         self.bridge.update_fetched.connect(self._on_update_fetched)
@@ -357,6 +363,11 @@ class TrayApp:
                 verdict = serve_activation(conn)
                 if verdict == "show":
                     self.bridge.activate.emit()
+                elif isinstance(verdict, tuple) and verdict[0] == "mark":
+                    # Straight to the GUI thread: this thread must get back to
+                    # accept() at once (a mark takes a repo's op_lock and can
+                    # wait behind a push), or the next "show panel" would hang.
+                    self.bridge.mark_requested.emit((verdict[1], verdict[2]))
                 elif verdict == "flushquit":
                     # build.ps1 is about to rebuild this very exe: flush every repo
                     # (snapshot + autosnap push, synchronous — don't die mid-push)
@@ -427,6 +438,11 @@ class TrayApp:
         self.act_sync.triggered.connect(self.sync_now)
         self.act_seal = menu.addAction("Seal now")
         self.act_seal.triggered.connect(self.seal_now)
+        self.act_mark = menu.addAction("Mark this moment…")
+        self.act_mark.setToolTip(
+            "Snapshot every repo now and give that state a name you'll "
+            "recognize later. Unlike an ordinary snapshot it is kept forever.")
+        self.act_mark.triggered.connect(self.mark_now)
         menu.addSeparator()
         self.act_update = menu.addAction("Update and relaunch…")
         self.act_update.setToolTip(
@@ -782,6 +798,43 @@ class TrayApp:
         self._tray_ack("Sealing all repos", "Committing and pushing in the background…")
         self._run_async(self.engine.seal_all_now, "seal")
 
+    # ---------------------------------------------------------------- marks
+    def mark_now(self, name=None):
+        """Tray/menu action: ask for a name, then mark. `name` limits it to one
+        repo (the Status context menu); without it, every configured repo — the
+        tray has no selection, and "mark this moment" means the moment, not one
+        folder's version of it."""
+        from .marks_tab import ask_label
+
+        label = ask_label(None, name or "")
+        if not label:
+            return  # cancelled, or an unnamed mark (which would be unfindable)
+        self._start_mark(name, label)
+
+    def _on_mark_requested(self, payload):
+        """GUI thread: a `sincrogit mark` request came in over the activation
+        channel. No dialog — the label came with the request."""
+        repo, label = payload
+        self._start_mark(repo or None, label)
+
+    def _start_mark(self, name, label):
+        """One worker for all three entry points (tray, context menu, CLI
+        channel). The balloon is the receipt; the per-repo outcome — including
+        a refusal — lands in the event log, because a mark that silently didn't
+        happen is worse than no mark at all."""
+        where = f"'{name}'" if name else "every repo"
+        self._tray_ack("Marking this moment", f"Naming {where} '{label}'…")
+
+        def work():
+            results = ([(name, *self.engine.mark_now(name, label))] if name
+                       else self.engine.mark_all_now(label))
+            for repo, ok, msg in results:
+                if not ok:
+                    self._on_engine_event(repo, "mark", f"not marked: {msg}",
+                                          "WARNING")
+
+        self._run_async(work, "mark")
+
     def _tray_ack(self, title, body):
         """Immediate acknowledgment of a tray-menu action (the work itself is
         async and reports via events). Best-effort: a platform without balloon
@@ -1087,6 +1140,28 @@ class TrayApp:
     def list_autosnaps(self, name):
         """Locally-known autosnap mirrors of every machine (no network)."""
         return self.engine.list_autosnaps(name)
+
+    # ---- marks ----
+    def list_marks(self, name):
+        """The repo's named moments, newest first. Blocking (one tree diff per
+        mark): the Marks tab runs it off the GUI thread."""
+        return self.engine.list_marks(name)
+
+    def mark_repo(self, name, label):
+        """Snapshot `name` now and name that state. Blocking (takes the repo's
+        op_lock): callers run it off the GUI thread."""
+        return self.engine.mark_now(name, label)
+
+    def forget_mark(self, name, ref):
+        """Drop a mark's ref (the state stays in history). One ref delete —
+        fast enough for the GUI thread, unlike everything else here."""
+        return self.engine.forget_mark(name, ref)
+
+    def ask_and_mark(self, name):
+        """Ask for a name and mark ONE repo — the Status context menu's action,
+        routed through the tray so every entry point shares one dialog, one
+        worker and one balloon."""
+        self.mark_now(name)
 
     def this_host(self):
         """This machine's name as used in its autosnap refs. Via the engine so
