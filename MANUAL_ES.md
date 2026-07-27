@@ -90,6 +90,7 @@ terminal y sale. Todo disparo necesita una config (autodetectada, o `--config PA
 | `--action A[,B,...]` | Con `log`: solo esos tipos de acción (p. ej. `seal,leave-seal,push`). |
 | `--level LVL` | Con `log`: severidad mínima (`DEBUG`/`INFO`/`WARNING`/`ERROR`). |
 | `--tail N` | Con `log`: últimos N eventos (0 = todos; por defecto 50). |
+| `--version` | Imprimir la identidad de este build — versión, fecha de compilación y el **SHA-256 del propio exe** — y salir. No necesita config, así que funciona sobre un exe que acabas de copiar a una máquina; el hash es lo que distingue dos builds con la misma versión. |
 | `--force` | Ejecutar un disparo único aunque el demonio esté corriendo (salta el rechazo de seguridad). |
 | `--help`, `-h` | Mostrar el uso y salir. |
 

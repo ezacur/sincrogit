@@ -479,7 +479,20 @@ def main(argv=None) -> int:
                         help="With --log: minimum severity to show.")
     parser.add_argument("--tail", type=int, metavar="N",
                         help="With --log: last N events (0 = all; default 50).")
+    parser.add_argument("--version", action="store_true",
+                        help="Print this build's identity — version, build time and "
+                             "the exe's own SHA-256 — and exit. Needs no config; "
+                             "safe alongside a running daemon.")
     args = parser.parse_args(argv)
+
+    # Before ANY config resolution on purpose: the whole point of --version is
+    # answering "what did I just copy onto this machine?", which must work on a
+    # bare exe with no config next to it yet. Like --help, it also wins over any
+    # other flag instead of being rejected as a conflicting action.
+    if args.version:
+        from .runtime import version_report
+        print(version_report())
+        return 0
 
     conflict = _cli_conflict(args)
     if conflict:
