@@ -64,6 +64,8 @@ exits. Every one-shot needs a config (auto-discovered, or `--config PATH`).
 > If the daemon (tray or headless) is running, one-shots **refuse to start** — a second
 > process would race the daemon's git work on the same repos. Use the panel/tray actions
 > instead, quit or pause the daemon, or pass `--force` if you know it's safe.
+> The one exception is `mark`, which is *designed* to be called mid-session (see below):
+> it doesn't race the daemon, it asks it to do the work.
 
 | Command | Purpose |
 |---------|---------|
@@ -84,7 +86,8 @@ exits. Every one-shot needs a config (auto-discovered, or `--config PATH`).
 | `--autostart on\|off` | Register / unregister start-at-login for the current user (Windows Run key), then exit. Safe alongside a running daemon. |
 | `status` / `--status` | One glance at every repo: branch, state, snapshot/commit ages, unsealed snapshots, pending edits. Read-only — safe alongside the daemon. `--repo NAME` limits it to one repo. |
 | `log` / `--log` | Print the structured event log (the panel's Log tab, in the terminal), oldest to newest. Read-only — safe alongside the daemon. |
-| `--repo NAME` | With `status`/`log`: only this repo (`log` keeps global events too, like the panel's filter). |
+| `mark "LABEL"` / `--mark LABEL` | Snapshot every repo **now** and give that state a name you'll recognize months later. Works **while the daemon runs** (see below). `--repo NAME` narrows it to one repo. |
+| `--repo NAME` | With `status`/`log`: only this repo (`log` keeps global events too, like the panel's filter). With `mark`: mark only this repo instead of all of them. |
 | `--action A[,B,...]` | With `log`: only these action types (e.g. `seal,leave-seal,push`). |
 | `--level LVL` | With `log`: minimum severity (`DEBUG`/`INFO`/`WARNING`/`ERROR`). |
 | `--tail N` | With `log`: last N events (0 = all; default 50). |
@@ -107,6 +110,36 @@ python -m sincrogit -c config.yaml --commit myrepo -m "feat: add X" # use your o
 The editor is resolved git-style: `GIT_EDITOR` → `VISUAL` → `EDITOR` → git's `core.editor` →
 Notepad. The proposal needs an AI backend (Ollama or a Gemini key); without one it falls back
 to a deterministic message.
+
+### Name a moment — `mark "<label>"`
+
+A snapshot every few minutes is a safety net; a **mark** is a memory. The state you'll
+actually ask for in three months ("the version before I broke the parser") is anonymous
+among hundreds of identical automatic snapshots, and the reflog that holds those expires
+in about a month. A mark is kept by a git ref instead, so it **survives every later commit
+and every `git gc`** — indefinitely.
+
+```powershell
+python -m sincrogit mark "before the refactor"                 # every configured repo
+python -m sincrogit mark "demo build that worked" --repo myapp # just this one
+```
+
+- It **snapshots first**, so the mark captures what is on disk at that second — not
+  whatever the last automatic snapshot happened to catch.
+- The full label is kept verbatim (accents, symbols, punctuation). The ref name gets a
+  short ASCII slug of it: `refs/sincro/marks/<epoch>-<slug>`.
+- **It works while SincroGit is running** — unlike every other one-shot. That is the point:
+  the main caller is a hook in a code agent or a build script, which runs mid-session. When
+  a daemon is up, the command hands the request to it (the daemon holds the repo locks and
+  does the work) and returns immediately; the result — including a refusal such as *repo
+  busy* — lands in the event log:
+
+  ```powershell
+  python -m sincrogit log --action mark
+  ```
+
+- Marks appear on the **Time machine** rail as their own points, and the panel's **Marks**
+  tab lists them with what has changed since, a rollback, and a jump to that moment.
 
 ### Time machine — `--history FILE [--pick N]`
 
@@ -166,7 +199,8 @@ Open it from the tray icon (double-click) or *Open control panel*.
     push/pull/sync work from the start. If you already set this repo's options on
     **another of your machines**, the dialog offers a checkbox to **inherit those
     saved settings** — see *Cross-machine settings* below).
-  - Right-click a repo row for **Open folder / Time machine / Properties**.
+  - Right-click a repo row for **Open folder / Time machine / Mark this moment… /
+    Marks / Properties**.
   - A one-line **activity digest** under the action bar: today's snapshot / seal /
     push / pull counts (the Log has the detail; this is the glance).
 - **Time machine** — every view of the repo's past, in one grid. The left rail lists
@@ -196,6 +230,23 @@ Open it from the tray icon (double-click) or *Open control panel*.
   **Restore hunks…** opens a picker where you tick only the changed blocks you want
   back (text files only), keeping the rest of your current edits — the partial
   restore is captured as a snapshot too.
+- **Marks** — the moments you *named* (see `mark` above), newest first, with how long ago
+  each one was and how many files have drifted since. For the selected mark:
+  **What changed since** lists every file that differs from your working tree right now
+  (with what a rollback would do to it — *revert* / *delete* / *recreate* — and ⚠ on any
+  file whose current content snapshots can't capture); **Restore to this mark…** rolls the
+  whole repo back after showing that same preview in the confirmation (reversible: the
+  current state is captured as a snapshot first); **Open in Time machine** jumps to that
+  exact point on the rail; **Forget this mark** drops the *name* only — the state stays in
+  the repo's history. **Mark this moment…** creates one right here. Marks made from the
+  tray, the CLI or an agent's hook appear in this list on their own.
+- **What happened** — "was anything moving while I was away?", answered instead of logged.
+  Pick a period (*Since you left (last absence)*, *Today*, *Last 24 hours*, *Last 7 days*)
+  and get one line per repo that moved — files touched, lines added/removed, commits,
+  marks — plus the milestones only: commits, marks, handoffs, conflicts and pushes that
+  failed. Routine snapshots are deliberately left out; the Log has every one of them.
+  When you come back to a locked machine SincroGit computes this automatically and shows
+  the summary in a tray balloon — but only if something actually happened.
 - **Log** — events, newest first and updating live (no refresh needed); filterable by
   repo / action / level / text, including the DEBUG detail the file log gets.
 - **Settings** — master-detail, all in one screen: the list on the left holds
@@ -230,7 +281,8 @@ The **tray icon colour** reflects state: green = active, amber = paused, orange-
 work is not reaching the remote, red = conflict (needs you), gray = stopped. The tray menu
 opens with a greyed-out identity line (`SincroGit <version>`, whose tooltip adds the build
 date — hover it to answer "which build is this machine running?" without a terminal), then
-Pause/Resume, Sync now, Seal now, **"Update and relaunch…"**, Quit.
+Pause/Resume, Sync now, Seal now, **"Mark this moment…"** (asks for a name and marks every
+repo), **"Update and relaunch…"**, Quit.
 
 **"Update and relaunch…"** upgrades this machine in place. It asks GitHub for the latest
 release, compares its published SHA-256 against the exe you are running (the version
@@ -261,6 +313,10 @@ says so: use `git pull` + `build.ps1`.
 | **Check the whole setup is healthy** | `python -m sincrogit --doctor` (git, remotes, credentials, pandoc, AI, daemon). |
 | **See if my other machines are backing up** | Panel → *Machines…* (stale mirrors show in red; *Fetch latest* refreshes). |
 | **Roll the whole repo back** | Panel → *Time machine* → pick a state → *Restore ENTIRE repo…* (with a preview of what changes). |
+| **Save a state I'll want back later** | Tray → *Mark this moment…* (or `mark "before the refactor"`, or the *Marks* tab). Named, and kept forever. |
+| **Go back to a state I named** | Panel → *Marks* → pick it → *What changed since*, then *Restore to this mark…*. |
+| **Mark from a script or an agent hook** | `sincrogit mark "step 3 done" --repo myapp` — works with the daemon running; check it with `log --action mark`. |
+| **See what happened while I was away** | Nothing: unlock and the tray tells you. For any other period, panel → *What happened*. |
 | **Make a clean, documented commit now** | Per-repo **Commit…** button, or `--commit REPO`. |
 | **Move my work to another machine** | Just **lock the screen / close the lid** — SincroGit flushes; on the other machine, unlock and it syncs. Or **Smart Commit** before leaving for an instant handoff. |
 | **Leave knowing home will be fresh** | Nothing: lock (Win+L) and go. After ~20 min away the pending work is sealed (`sincro: [leave]`) and pushed; back sooner = no commit. Tune/disable with `seal_on_leave_min` (off in purist mode). |
@@ -314,6 +370,10 @@ table and both idioms in the **[README → Configuration](README.md#configuratio
   travel with the repo.
 - **Autosnap refs (on the remote):** `refs/autosnap/<user>/<host>/<branch>` — per-user,
   per-machine live mirrors; never your working branch.
+- **Mark refs (local):** `refs/sincro/marks/<epoch>-<slug>` — one per named moment. Local
+  by design (they are *your* landmarks, not the repo's history) and never pushed; a ref
+  keeps its state alive through every `git gc`, which is exactly what makes a mark
+  outlast the ~30-day snapshot window.
 
 ---
 
@@ -331,6 +391,14 @@ Example (a scheduled nightly seal):
 
 ```powershell
 python -m sincrogit -c C:\repos\config.yaml --seal-once
+```
+
+`mark` follows the same codes and is the one command safe to call from a hook while the
+daemon runs: **0** = done (or handed to the daemon), **1** = a repo refused it (or the
+daemon didn't answer), **2** = no name given / no config.
+
+```powershell
+python -m sincrogit mark "pre-edit checkpoint" --repo myapp
 ```
 
 ---
