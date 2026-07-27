@@ -86,6 +86,15 @@ $pyiArgs = @(
     "--exclude-module", "pandas",
     "--exclude-module", "scipy",
     "--exclude-module", "matplotlib",
+    # Never UPX-compress. PyInstaller's default is upx=True, which silently does
+    # NOTHING when upx.exe isn't on PATH — so the setting was a no-op here and an
+    # ambush everywhere else: the day upx.exe shows up (a dev box, a CI image) the
+    # build starts compressing and the artifact changes character with no repo
+    # change behind it. Worse, onefile+UPX is the highest-false-positive shape for
+    # antivirus/SmartScreen, and this exe already looks suspicious enough (unsigned,
+    # self-registers at logon, opens a localhost port). ~5 MB saved on a 50 MB
+    # download is not worth either problem. Explicit beats "depends on your PATH".
+    "--noupx",
     "--noconfirm"
 )
 if ($Fast) { $pyiArgs += "--onedir" } else { $pyiArgs += "--onefile" }
