@@ -22,6 +22,8 @@ ACTIONS = [
     "snapshot",
     "seal",
     "leave-seal",  # the seal fired ~20 min after locking the machine (left for real)
+    "mark",       # a moment the user NAMED (tray / Marks tab / `sincrogit mark`)
+    "digest",     # "what happened while you were away", reported on arrival
     "push",
     "autosnap",
     "pull",

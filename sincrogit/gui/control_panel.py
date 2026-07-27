@@ -4,6 +4,8 @@ Tabbed window:
   - Status: repos table + an action bar for the selected repo.
   - Timeline: per-repo snapshot timeline (its own tab module).
   - Marks: the moments you named, and what to do with them (its own tab module).
+  - What happened: the Log aggregated per period ("did anything move while I
+    was away?"), also its own module.
   - Log: events filterable by repo, action, level and text.
   - Settings: friendly form over the global defaults.
   - Advanced (YAML): raw config.yaml editor (save / save and restart).
@@ -60,6 +62,7 @@ from .marks_tab import MarksTab
 from .settings_tab import SettingsTab
 from .smart_commit_dialog import SmartCommitDialog
 from .time_machine_tab import TimeMachineTab
+from .what_happened_tab import WhatHappenedTab
 from .timeline_v2_tab import TimelineV2Tab
 from .timeline_v3_tab import TimelineV3Tab
 from .timeline_v4_tab import TimelineV4Tab
@@ -232,6 +235,10 @@ class ControlPanel(QMainWindow):
         # shape for. Its "open in Time machine" jumps to the same rail.
         self.marks = MarksTab(self.c, on_open_state=self._goto_time_machine_state)
         self.tabs.addTab(self.marks, "Marks")
+        # Between the marks and the raw Log on purpose: it is the Log's content
+        # answered as a question ("did anything move while I was gone?").
+        self.what = WhatHappenedTab(self.c)
+        self.tabs.addTab(self.what, "What happened")
         self.tabs.addTab(self._build_log_tab(), "Log")
         self.settings = SettingsTab(self.c)
         self.tabs.addTab(self.settings, "Settings")
@@ -866,6 +873,7 @@ class ControlPanel(QMainWindow):
         self.timeline_v3.notice_event(ev)
         self.timeline_v4.notice_event(ev)
         self.marks.notice_event(ev)
+        self.what.notice_event(ev)
         # A seal/pull/push/sync event for a repo marks its manual action as done:
         # clear the in-flight marker so the action bar re-enables its buttons.
         if ev.repo in self._inflight and ev.action in ("seal", "push", "pull", "sync"):

@@ -2699,3 +2699,134 @@ class Engine:
                 return False, str(e)
         self._emit(repo_name, "info", f"restored whole repo to {sha[:8]}")
         return True, "restored"
+
+    # ------------------------------------------- what happened while you were away
+    # Milestones worth a line in a digest. Ordinary snapshots are deliberately
+    # NOT here: there are hundreds of them and they are the background noise the
+    # digest exists to summarize, not to reprint.
+    _DIGEST_ACTIONS = ("seal", "leave-seal", "mark", "handoff", "conflict")
+    DIGEST_MILESTONES_MAX = 50
+    # How far back one repo's timeline is read for a digest. The walk itself
+    # caps at 500; asking for more would silently return the same window while
+    # costing the same, so the digest reports `partial` instead of pretending.
+    DIGEST_TIMELINE_LIMIT = 500
+
+    def absence_digest(self, since_epoch, until_epoch=None, events=None) -> dict:
+        """What happened between `since_epoch` and now (or `until_epoch`).
+
+        Two sources, both already there: each repo's snapshot timeline for the
+        FACTS (which repos moved, how many files, how many lines) and the
+        structured event log for the EVENTS a git walk cannot know about
+        (handoffs applied, conflicts, pushes that failed). Neither is asked to
+        do the other's job — the timeline is authoritative about seals and
+        marks because it sees the commits themselves, and the log is
+        authoritative about everything that never became a commit.
+
+        `events` overrides the injected reader (see __init__): the panel's
+        longer windows need the FULL history off disk, while the arrival
+        balloon only ever looks back minutes and uses the in-memory tail.
+
+        Read-only and side-effect free — it is also the "What happened" tab's
+        query, so it must never write to a repo or emit anything.
+        """
+        now = time.time()
+        since = float(since_epoch or 0)
+        until = float(until_epoch or now)
+
+        repos, files, adds, dels, seals, marks = [], 0, 0, 0, 0, 0
+        partial = False
+        for st in self._states_snapshot():
+            try:
+                timeline = st.repo.snapshot_timeline(st.active_branch,
+                                                     self.DIGEST_TIMELINE_LIMIT)
+            except GitError as e:
+                log.warning("[%s] digest timeline failed: %s", st.cfg.name, e)
+                continue
+            if timeline and len(timeline) >= self.DIGEST_TIMELINE_LIMIT \
+                    and timeline[-1]["epoch"] > since:
+                partial = True  # the window reaches past what one walk can see
+            paths, a_sum, d_sum, n_seal, n_mark = set(), 0, 0, 0, 0
+            for e in timeline:
+                if not (since <= e["epoch"] <= until):
+                    continue
+                if e["kind"] == "mark":
+                    n_mark += 1
+                    continue  # a mark's tree equals its parent's: no churn
+                if e["kind"] == "seal":
+                    n_seal += 1
+                for _status, path, add, dele in e["files"]:
+                    paths.add(path)
+                    a_sum += add or 0
+                    d_sum += dele or 0
+            if not (paths or n_seal or n_mark):
+                continue  # untouched: a digest lists what MOVED
+            repos.append({"name": st.cfg.name, "files": len(paths),
+                          "adds": a_sum, "dels": d_sum,
+                          "seals": n_seal, "marks": n_mark})
+            files += len(paths)
+            adds += a_sum
+            dels += d_sum
+            seals += n_seal
+            marks += n_mark
+        repos.sort(key=lambda r: (r["files"], r["adds"] + r["dels"]), reverse=True)
+
+        evs = events if events is not None else (
+            self._read_events() if self._read_events else [])
+        milestones, handoffs, conflicts, push_failed = [], 0, 0, 0
+        for ev in evs:
+            ts = getattr(ev, "ts", 0)
+            if not (since <= ts <= until):
+                continue
+            action = getattr(ev, "action", "")
+            level = getattr(ev, "level", "INFO")
+            failed_push = action == "push" and level in ("WARNING", "ERROR")
+            if action == "handoff" and level == "INFO":
+                handoffs += 1
+            elif action == "conflict":
+                conflicts += 1
+            elif failed_push:
+                push_failed += 1
+            if action in self._DIGEST_ACTIONS or failed_push:
+                milestones.append({"epoch": ts, "repo": getattr(ev, "repo", ""),
+                                   "action": action, "level": level,
+                                   "message": getattr(ev, "message", "")})
+        milestones.sort(key=lambda m: m["epoch"], reverse=True)
+
+        digest = {
+            "since": since, "until": until,
+            "repos": repos, "files": files, "adds": adds, "dels": dels,
+            "seals": seals, "marks": marks, "handoffs": handoffs,
+            "conflicts": conflicts, "push_failed": push_failed,
+            "milestones": milestones[:self.DIGEST_MILESTONES_MAX],
+            "partial": partial,
+        }
+        # Trivial = nothing moved and nothing worth telling. The arrival
+        # balloon checks THIS: interrupting someone who just unlocked their
+        # machine to say "nothing happened" is how a helpful feature becomes an
+        # annoyance people disable.
+        digest["trivial"] = not (repos or milestones)
+        digest["summary"] = self._digest_summary(digest)
+        return digest
+
+    @staticmethod
+    def _digest_summary(d: dict) -> str:
+        """One scannable line, built here so the tray balloon and the panel can
+        never disagree about what the same digest says."""
+        if d["trivial"]:
+            return "nothing changed"
+        n = len(d["repos"])
+        bits = [f"{n} repo{'s' if n != 1 else ''}",
+                f"{d['files']} file{'s' if d['files'] != 1 else ''}"]
+        if d["adds"] or d["dels"]:
+            bits.append(f"+{d['adds']} −{d['dels']}")
+        for count, word in ((d["seals"], "commit"), (d["marks"], "mark"),
+                            (d["handoffs"], "handoff")):
+            if count:
+                bits.append(f"{count} {word}{'s' if count != 1 else ''}")
+        # The bad news goes last, where a reader's eye lands, and is never
+        # summed into the neutral counts above.
+        if d["conflicts"]:
+            bits.append(f"⚠ {d['conflicts']} conflict(s)")
+        if d["push_failed"]:
+            bits.append(f"⚠ {d['push_failed']} push failure(s)")
+        return " · ".join(bits)
