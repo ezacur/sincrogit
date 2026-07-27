@@ -1,22 +1,34 @@
 # ⏳g — SincroGit
 
-SincroGit gives any repo an automatic, versioned **time machine** — without you ever
-running `git`. Every few minutes it snapshots your **saved** files, every ~6 h it "seals"
-a clean permanent commit, and it mirrors your latest state to the remote so your work
-follows you between machines with near-zero effort.
+**You know Git. You just don't run it.** You meant to commit before you closed the
+laptop, and you didn't — and you didn't the next day either. Weeks later something
+breaks, or you simply want the version of a file from last Tuesday, and there is nothing
+to go back to.
 
-**What it's actually good for** (no overselling):
+SincroGit is a tray daemon that fixes that without asking anything of you. Every few
+minutes it records your **saved** files on a side ref, every ~6 h it "seals" a clean
+permanent commit, and it mirrors your latest state to the remote so your work follows you
+between machines.
 
-- **A time machine for people/projects that won't commit by hand.** You broke or deleted
-  something hours ago and only just noticed? Roll back to any earlier *saved* state — no
-  discipline, no `git add` ever. Ideal for the busy/forgetful/learning developer.
+It was built for one person working alone on `main` who is bad at ceremony — and it has
+become *more* useful now that an agent writes most of the code: the volume is higher, and
+"put it back the way it was an hour ago" turned into a daily need instead of an emergency.
+
+**→ [Get it running in five minutes](#installation)** · new here? the plain-language
+**[GUIDE.md](GUIDE.md)** is the place to start (Spanish: [GUIA.md](GUIA.md)).
+
+Where it earns its keep:
+
+- **The trail you'd otherwise never have.** Roll back to any earlier *saved* state — no
+  discipline, no `git add` ever. This is the reason to install it; everything else is a
+  bonus.
 - **Scratch & experiment repos.** Code that doesn't deserve a curated history but whose
-  *trail* you'd hate to lose — spikes, tests, throwaways. Full recoverable history, zero
-  ceremony. (Arguably its sweet spot.)
-- **A safety net for AI coding agents.** An agent editing your repo is the ultimate
-  "won't commit by hand" user: many files, fast, review after the fact. SincroGit gives
-  you the trail and the rollback of everything it did — with **zero integration**, the
-  agent doesn't change how it works (see
+  *trail* you'd hate to lose — spikes, tests, throwaways. Zero ceremony.
+- **A safety net for AI coding agents.** An agent is the ultimate "won't commit by hand"
+  user, and its own checkpoints are narrower than they look: they cover the edits it made
+  through its own file tools, in one session — not shell commands, not a second agent,
+  not what you changed by hand meanwhile. SincroGit photographs the tree on a clock, so
+  it covers all of them, with **zero integration** (see
   [A safety net for AI coding agents](#a-safety-net-for-ai-coding-agents)).
 - **Low-effort multi-machine continuity.** Move between your office and home machines and
   your work follows you — *delayed by minutes, not instant* (see
@@ -28,8 +40,7 @@ follows you between machines with near-zero effort.
   already on disk; SincroGit's value there is the *rollback*, not the survival.
 
 > **How to operate it** (CLI commands, panel actions, recipes): the
-> **[User Manual](MANUAL.md)** (Spanish: [MANUAL_ES.md](MANUAL_ES.md)). New to Git or want
-> the plain-language *when/why*? See **[GUIDE.md](GUIDE.md)** (Spanish: [GUIA.md](GUIA.md)).
+> **[User Manual](MANUAL.md)** (Spanish: [MANUAL_ES.md](MANUAL_ES.md)).
 > Design and decisions: **[DESIGN.md](DESIGN.md)**.
 
 ## Already fluent in Git? The skeptic's minute
@@ -64,9 +75,9 @@ How each guarantee is implemented is documented in [DESIGN.md](DESIGN.md) §11. 
 SincroGit relates to jj, GitButler, dura and friends, see
 [How it compares](#how-it-compares-with-neighboring-tools).
 
-## Status: Phases 1, 2 and 4 complete (Phase 3, deployment: partial)
+## What works today
 
-**Phase 1 (local core):**
+**Local core:**
 
 - ✅ Filesystem watcher (`watchdog`) + *debounce*.
 - ✅ **Snapshot** every 5 min: a commit on a private side ref (`refs/sincro/wip/…`),
@@ -85,7 +96,7 @@ SincroGit relates to jj, GitButler, dura and friends, see
 - ✅ Clean shutdown with a final local snapshot.
 - ✅ Logging to a rotating file + console.
 
-**Phase 2 (AI + remote sync):**
+**AI + remote sync:**
 
 - ✅ **AI commit messages** when sealing, hybrid mode: Ollama (local) → Gemini (cloud) →
   deterministic fallback. Never blocks the commit if the AI fails. Automatic seals are
@@ -126,7 +137,7 @@ SincroGit relates to jj, GitButler, dura and friends, see
   caches), SincroGit suggests once — a notification — adding it to `extra_excludes`. Never
   auto-edits. Toggle `suggest_excludes`.
 
-**Phase 4 (system tray UI):**
+**Tray UI:**
 
 - ✅ **System tray icon** with the hourglass+g brand mark. The
   **color reflects the state**: green=active, amber=paused, red=conflict, gray=stopped.
@@ -169,11 +180,12 @@ SincroGit relates to jj, GitButler, dura and friends, see
 - ✅ **My machines view**: each machine's last autosnap mirror per repo, freshness
   color-coded — at a glance, whether your other machine is still backing itself up.
 
-Pending (Phase 3): see the [TODO](#todo) below.
+Still missing (distribution, mostly): see [What's next](#whats-next) below.
 
-## TODO
+## What's next
 
-In priority order:
+In priority order (items marked **done** shipped after this list was written and
+are kept for the trail):
 
 1. **Frictionless onboarding for Git newcomers.** The audience that needs SincroGit most
    is the least equipped to create a remote and wire up credentials — today that setup is
@@ -195,7 +207,7 @@ In priority order:
    event log in the terminal (`--repo`, `--action`, `--level`, `--tail`). Both are
    read-only and safe alongside the running daemon.
 
-### TODO — AI messages (the aicommit2-inspired batch)
+### Next — AI messages (the aicommit2-inspired batch)
 
 Adopted after surveying [aicommit2](https://github.com/tak-bro/aicommit2), keeping
 SincroGit's three contracts intact: the commit/seal is never blocked by an AI failure,
@@ -213,7 +225,7 @@ stdlib-`urllib`).
   (Ollama-only) while the rest may use the cloud — consistent with the existing
   per-repo defaults.
 
-### TODO — the lazygit-inspired batch
+### Next — the lazygit-inspired batch
 
 From surveying [lazygit](https://github.com/jesseduffield/lazygit) — the natural cockpit
 to use *alongside* SincroGit (complement, not donor: we deliberately don't rebuild a git
@@ -231,7 +243,7 @@ client in the panel):
   reword the WIP, GitButler hand-off rules — already exists:
   [MANUAL §9](MANUAL.md#9-sharing-the-repo-with-other-git-tools).)*
 
-### TODO — technical (for developers)
+### Next — technical (for developers)
 
 - **Automated test suite — EXISTS** (`tests/`, pytest, ~1 min): the restore
   refusals and the rename-safe restore, the selective restore / timeline / export /
