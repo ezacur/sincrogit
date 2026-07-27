@@ -12,6 +12,7 @@ Launch model:
   --autostart on|off        -> register/unregister start-at-login (per-user Run key)
   status | --status         -> one glance at every repo (read-only, daemon-safe)
   log | --log               -> print the event log (filter: --repo/--action/--level, --tail)
+  mark "LABEL" [--repo R]   -> snapshot now and NAME it (works with the daemon running)
 
 With no arguments the GUI launches; if an instance is already running, the new
 launch just asks the running one to show its panel and exits. Any argument is
@@ -19,6 +20,7 @@ treated as a command-line invocation (output goes to the launching terminal).
 """
 
 import argparse
+import logging
 import os
 import signal
 import subprocess
@@ -37,6 +39,7 @@ from .runtime import (
     ensure_config,
     find_config,
     ping_existing_instance,
+    request_mark,
     serve_activation,
     signal_existing_instance,
 )
@@ -268,6 +271,50 @@ def _commit_command(engine, repo_name: str, message, assume_yes: bool) -> int:
     return 0
 
 
+def _mark_command(config, label: str, repo_name: str | None) -> int:
+    """`sincrogit mark "<label>"` — snapshot now and name that state.
+
+    The ONLY write command that works alongside a live daemon, and it has to:
+    the main caller is a CODE AGENT's hook ("mark before I start editing"),
+    which runs while the daemon is doing its thing. Every other one-shot refuses
+    there because two processes amending the same repos race each other — so
+    instead of racing, this one DELEGATES: the running daemon (which already
+    holds the locks) does the work, over the activation channel.
+
+    With no daemon there is nothing to delegate to and nothing to race, so it
+    runs in-process like any other one-shot.
+    """
+    label = " ".join((label or "").split())
+    if not label:
+        print("A mark needs a name: sincrogit mark \"before the refactor\"",
+              file=sys.stderr)
+        return 2
+
+    if _daemon_running():
+        if request_mark(repo_name or "", label):
+            where = f"'{repo_name}'" if repo_name else "every configured repo"
+            print(f"SincroGit is running: it will mark {where} as '{label}'.\n"
+                  f"(Check it with:  sincrogit log --action mark)")
+            return 0
+        print("A SincroGit daemon is running but did not answer the request. "
+              "Retry, or quit the daemon and run this again.", file=sys.stderr)
+        return 1
+
+    engine = Engine(config)
+    engine.setup(with_watcher=False)
+    if not engine.states:
+        print("No valid repos.", file=sys.stderr)
+        return 1
+    if repo_name:
+        results = [(repo_name, *engine.mark_now(repo_name, label))]
+    else:
+        results = engine.mark_all_now(label)
+    for name, ok, msg in results:
+        print(f"[{name}] {msg}" if ok else f"[{name}] not marked: {msg}",
+              file=sys.stdout if ok else sys.stderr)
+    return 0 if all(ok for _n, ok, _m in results) else 1
+
+
 def _daemon_running() -> bool:
     """Is a SincroGit daemon (tray or headless) already running? Side-effect-free
     detection for CLI one-shots: the Windows named mutex is authoritative; the
@@ -292,7 +339,9 @@ def _serve_activation_pings(lock, get_engine=None) -> None:
     A "flushquit" command (build.ps1's rebuild cycle) flushes every repo and
     stops the engine — `get_engine` returns the live Engine (or None during the
     brief startup window, in which case the command is ignored and the caller's
-    forced-kill fallback covers it)."""
+    forced-kill fallback covers it). A "mark" command is served the same way:
+    headless is the shape a server/automation setup runs, which is precisely
+    where a scripted `sincrogit mark` lives."""
     def loop():
         while True:
             try:
@@ -300,12 +349,23 @@ def _serve_activation_pings(lock, get_engine=None) -> None:
             except OSError:
                 break  # socket closed at exit
             verdict = serve_activation(conn)
-            if verdict == "flushquit" and get_engine is not None:
-                eng = get_engine()
-                if eng is not None:
-                    eng.flush_now(wait=True)
-                    eng.stop()  # run() returns -> the process exits cleanly
-                    break
+            eng = get_engine() if get_engine is not None else None
+            if verdict == "flushquit" and eng is not None:
+                eng.flush_now(wait=True)
+                eng.stop()  # run() returns -> the process exits cleanly
+                break
+            if isinstance(verdict, tuple) and verdict[0] == "mark" and eng is not None:
+                # On THIS thread, not the engine's: mark_now takes the repo's
+                # op_lock itself, so the tick keeps running while we wait for it.
+                repo, label = verdict[1], verdict[2]
+                results = ([(repo, *eng.mark_now(repo, label))] if repo
+                           else eng.mark_all_now(label))
+                for name, ok, msg in results:
+                    if not ok:
+                        # A refusal must not be silent: the requester only got a
+                        # "received" ACK, so the log is where it can be found.
+                        logging.getLogger("sincrogit").warning(
+                            "[%s] mark refused: %s", name, msg)
 
     threading.Thread(target=loop, name="sincrogit-activation", daemon=True).start()
 
@@ -381,6 +441,8 @@ def _cli_conflict(args) -> str | None:
         actions.append("--status")
     if args.log:
         actions.append("--log")
+    if args.mark is not None:
+        actions.append("--mark")
     # --snapshot-once/--seal-once/--sync-once DELIBERATELY combine (one batch pass),
     # so they count as a single action category here.
     once = [n for n, v in (("--snapshot-once", args.snapshot_once),
@@ -397,8 +459,9 @@ def _cli_conflict(args) -> str | None:
         return "--message/--yes only apply with --commit"
     if args.message is not None and args.yes:
         return "--message and --yes are mutually exclusive (one gives the message, the other accepts the AI's)"
-    if args.repo is not None and not (args.log or args.status):
-        return "--repo only applies with --status/--log"
+    if args.repo is not None and not (args.log or args.status
+                                      or args.mark is not None):
+        return "--repo only applies with --status/--log/--mark"
     if any(v is not None for v in (args.action, args.level, args.tail)) and not args.log:
         return "--action/--level/--tail only apply with --log"
     return None
@@ -418,7 +481,7 @@ def main(argv=None) -> int:
     # Word-command sugar: `sincrogit status` / `sincrogit log` read better than
     # flags for the two everyday views. First token only — everything after it
     # stays ordinary flags (`sincrogit log --repo x --level WARNING`).
-    _WORDS = {"status": "--status", "log": "--log"}
+    _WORDS = {"status": "--status", "log": "--log", "mark": "--mark"}
     if argv and argv[0] in _WORDS:
         argv = [_WORDS[argv[0]], *argv[1:]]
 
@@ -469,9 +532,16 @@ def main(argv=None) -> int:
                         help="Print the structured event log (the panel's Log tab, in "
                              "the terminal). Read-only — safe alongside the daemon. "
                              "(Word form: `sincrogit log`.)")
+    parser.add_argument("--mark", metavar="LABEL",
+                        help="Snapshot every repo NOW and name that state LABEL — a "
+                             "milestone that outlives the ~30-day snapshot window "
+                             "and every later commit. Works while the daemon runs "
+                             "(it does the work). Narrow it with --repo NAME. "
+                             "(Word form: `sincrogit mark \"before the refactor\"`.)")
     parser.add_argument("--repo", metavar="NAME",
                         help="With --status/--log: only this repo (--log keeps global "
-                             "events too, like the panel's filter).")
+                             "events too, like the panel's filter). With --mark: mark "
+                             "only this repo instead of all of them.")
     parser.add_argument("--action", metavar="A[,B,...]",
                         help="With --log: only these action types "
                              "(e.g. seal,leave-seal,push).")
@@ -549,6 +619,12 @@ def main(argv=None) -> int:
         return run_log(config, repo=args.repo, actions=args.action,
                        level=args.level,
                        tail=50 if args.tail is None else max(0, args.tail))
+
+    # `mark` is the one WRITE command that must work with the daemon alive (a code
+    # agent's hook calls it mid-session), so it goes BEFORE the refusal below: it
+    # doesn't race the daemon, it asks the daemon. See _mark_command.
+    if args.mark is not None:
+        return _mark_command(config, args.mark, args.repo)
 
     # One-shots run their own Engine on the same repos: against a live daemon the
     # two processes would race git (amend vs. amend, TOCTOU over index.lock).

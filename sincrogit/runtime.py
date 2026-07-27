@@ -358,11 +358,53 @@ def ping_existing_instance(port: int = _LOCK_PORT) -> bool:
         return False
 
 
+def request_mark(repo: str, label: str, port: int = _LOCK_PORT) -> bool:
+    """Ask the RUNNING daemon to mark this moment in `repo` (empty = every
+    configured repo). True only if a real SincroGit ACKed the request.
+
+    The ACK means RECEIVED, not done: the daemon hands the request to its GUI
+    thread and answers immediately, because the mark itself takes the repo's
+    lock and may wait on a push in flight — a hook that blocked on that would
+    stall the agent that called it. The outcome lands in the event log (and the
+    tray balloon), which is where `sincrogit log --action mark` finds it.
+    """
+    # The label travels in a newline-terminated line, so a newline inside it
+    # would silently truncate the command; fold it instead of rejecting the
+    # request (a multi-line mark name is a typo, not an attack).
+    label = " ".join((label or "").split())[:_MARK_LABEL_MAX]
+    payload = _HANDSHAKE_MARK + f"{repo}|{label}\n".encode("utf-8")
+    try:
+        with socket.create_connection((_LOCK_HOST, port), timeout=2) as c:
+            c.sendall(payload)
+            c.settimeout(3)
+            reply = c.recv(64)
+        return reply.startswith(_HANDSHAKE_ACK)
+    except OSError:
+        return False
+
+
+def _read_mark_line(conn, data: bytes) -> bytes:
+    """Complete a mark command that arrived split across TCP reads. Only the
+    mark command needs this (it is the only one with a payload, and the only one
+    that can exceed a single small read); bounded by _MARK_MAX_BYTES so a client
+    that never sends its newline can't make us buffer without end."""
+    while b"\n" not in data and len(data) < _MARK_MAX_BYTES:
+        try:
+            chunk = conn.recv(_MARK_MAX_BYTES)
+        except OSError:
+            break
+        if not chunk:
+            break  # peer closed: use what we have (tolerate a missing newline)
+        data += chunk
+    return data
+
+
 def serve_activation(conn):
     """Handle one inbound connection on the lock socket (server side).
 
     Returns the command verdict: "show" (bring the panel to front), "flushquit"
-    (flush all repos then exit cleanly — the build script's rebuild cycle), or
+    (flush all repos then exit cleanly — the build script's rebuild cycle), a
+    ("mark", repo, label) tuple (name this moment; repo "" = all of them), or
     None for anything else that hit the port — including a presence ping, which
     is ACKed but demands no action. Always closes the connection.
     """
@@ -372,12 +414,23 @@ def serve_activation(conn):
         # forever: the listen socket is blocking, so without this recv() would
         # never return and every later "show panel" / "flushquit" would hang.
         conn.settimeout(3)
-        data = conn.recv(64)
+        data = conn.recv(_MARK_MAX_BYTES)
         # NOTE: "flushquit" must be tested BEFORE bare prefixes ever overlap; the
         # current commands share no prefix, but keep the most specific first.
         if data.startswith(_HANDSHAKE_FLUSHQUIT):
             conn.sendall(_HANDSHAKE_ACK)  # ACK receipt; the flush+quit follows
             return "flushquit"
+        if data.startswith(_HANDSHAKE_MARK):
+            data = _read_mark_line(conn, data)
+            line = data[len(_HANDSHAKE_MARK):].split(b"\n", 1)[0]
+            # Never let a malformed payload reach git: decode defensively, split
+            # on the FIRST '|' only (so a label may contain one), and bound it.
+            repo, _, label = line.decode("utf-8", "replace").partition("|")
+            label = " ".join(label.split())[:_MARK_LABEL_MAX]
+            if not label:
+                return None  # a mark with no name is not a request we can serve
+            conn.sendall(_HANDSHAKE_ACK)  # ACK receipt; the mark follows
+            return ("mark", repo.strip(), label)
         if data.startswith(_HANDSHAKE_PING):
             conn.sendall(_HANDSHAKE_ACK)  # presence probe: acknowledge, no action
             return None

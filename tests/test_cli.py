@@ -7,6 +7,8 @@ lock in the up-front rejection.
 
 import argparse
 
+import pytest
+
 from sincrogit import __version__
 from sincrogit.__main__ import _cli_conflict, main
 from sincrogit.runtime import version_report
@@ -18,7 +20,7 @@ def _args(**kw):
              commit=None, apply_handoff=None, doctor=False, autostart=None,
              status=False, log=False, repo=None, action=None, level=None,
              tail=None, snapshot_once=False, seal_once=False, sync_once=False,
-             pick=None, message=None, yes=False)
+             pick=None, message=None, yes=False, mark=None)
     d.update(kw)
     return argparse.Namespace(**d)
 
@@ -93,6 +95,84 @@ def test_view_modifiers_need_their_action():
     assert _cli_conflict(_args(status=True, repo="x")) is None
     msg = _cli_conflict(_args(status=True, tail=5))
     assert msg and "--tail" in msg and "--log" in msg
+
+
+# ---------------------------------------------------------------------- mark
+def test_mark_is_an_action_that_takes_repo():
+    assert _cli_conflict(_args(mark="before the refactor")) is None
+    assert _cli_conflict(_args(mark="x", repo="myrepo")) is None
+    msg = _cli_conflict(_args(mark="x", status=True))
+    assert msg and "--mark" in msg and "--status" in msg
+    # --tail still belongs to --log only, mark or no mark.
+    assert "--tail" in _cli_conflict(_args(mark="x", tail=3))
+
+
+def test_mark_word_form_reaches_the_flag(monkeypatch, tmp_path, capsys):
+    """`sincrogit mark "label"` is sugar for --mark, and the label after the word
+    stays an ordinary argparse value."""
+    import logging
+
+    import sincrogit.__main__ as m
+    monkeypatch.setattr(m, "setup_logging",
+                        lambda *a, **k: logging.getLogger("sincrogit-cli-test"))
+    seen = {}
+    monkeypatch.setattr(m, "_mark_command",
+                        lambda cfg, label, repo: seen.update(label=label, repo=repo) or 0)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("repos: []\nlog:\n  file: %s\n"
+                   % str(tmp_path / "s.log").replace("\\", "/"), encoding="utf-8")
+    assert main(["mark", "before the refactor", "-c", str(cfg),
+                 "--repo", "myrepo"]) == 0
+    assert seen == {"label": "before the refactor", "repo": "myrepo"}
+
+
+def test_mark_delegates_to_a_live_daemon_instead_of_racing_it(monkeypatch, capsys):
+    """The whole point: with the daemon alive the one-shot must NOT run its own
+    engine over the same repos — it asks the daemon over the activation channel."""
+    import sincrogit.__main__ as m
+    asked = []
+    monkeypatch.setattr(m, "_daemon_running", lambda: True)
+    monkeypatch.setattr(m, "request_mark",
+                        lambda repo, label: asked.append((repo, label)) or True)
+    monkeypatch.setattr(m, "Engine", lambda *a, **k: pytest.fail(
+        "a live daemon must be delegated to, not raced"))
+    assert m._mark_command(object(), "  spaced   label  ", None) == 0
+    assert asked == [("", "spaced label")]        # whitespace folded, all repos
+    assert "every configured repo" in capsys.readouterr().out
+
+
+def test_mark_reports_a_daemon_that_does_not_answer(monkeypatch, capsys):
+    import sincrogit.__main__ as m
+    monkeypatch.setattr(m, "_daemon_running", lambda: True)
+    monkeypatch.setattr(m, "request_mark", lambda repo, label: False)
+    assert m._mark_command(object(), "x", "r") == 1
+    assert "did not answer" in capsys.readouterr().err
+
+
+def test_mark_runs_in_process_without_a_daemon(monkeypatch, capsys, make_repo,
+                                               tmp_path):
+    """No daemon = nothing to delegate to and nothing to race: do it here."""
+    import sincrogit.__main__ as m
+    from sincrogit.config import AiConfig, Config, LogConfig, RepoConfig
+
+    from conftest import git, write
+    repo = make_repo({"a.txt": "v1\n"})
+    write(repo, "a.txt", "v2\n")
+    monkeypatch.setattr(m, "_daemon_running", lambda: False)
+    config = Config(repos=[RepoConfig(path=repo, name="t", push=False, pull=False,
+                                      autosnap=False)],
+                    log=LogConfig(file=str(tmp_path / "log.txt")),
+                    ai=AiConfig(mode="none"))
+    assert m._mark_command(config, "done by hand", None) == 0
+    assert "done by hand" in capsys.readouterr().out
+    assert "marks" in git(repo, "for-each-ref", "--format=%(refname)",
+                          "refs/sincro/marks/")
+
+
+def test_mark_without_a_name_is_rejected_before_anything_runs(capsys):
+    import sincrogit.__main__ as m
+    assert m._mark_command(object(), "   ", None) == 2
+    assert "needs a name" in capsys.readouterr().err
 
 
 def test_word_aliases_reach_the_flag_handlers(tmp_path, capsys, monkeypatch):

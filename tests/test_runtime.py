@@ -121,6 +121,62 @@ def test_flushquit_raw_bytes_get_acked_and_flushquit_verdict():
     assert verdict == "flushquit"
 
 
+def test_mark_request_carries_repo_and_label():
+    """`sincrogit mark` against a live daemon: the client ACK means RECEIVED and
+    the server hands back the parsed request."""
+    result, verdict = _run_protocol(
+        lambda port: runtime.request_mark("myrepo", "before the refactor", port))
+    assert result is True
+    assert verdict == ("mark", "myrepo", "before the refactor")
+
+
+def test_mark_request_for_every_repo_and_awkward_labels():
+    """No repo = all of them. A newline would truncate the line protocol, so it
+    is folded; a '|' inside the label survives (only the FIRST one splits)."""
+    result, verdict = _run_protocol(
+        lambda port: runtime.request_mark("", "step 1|2\nsecond line", port))
+    assert result is True
+    assert verdict == ("mark", "", "step 1|2 second line")
+
+
+def test_mark_payload_split_across_reads_is_reassembled():
+    """A long label can arrive in pieces; the server reads until the newline."""
+    label = "L" * 150
+
+    def _split_send(port):
+        payload = b"SINCROGIT:mark |" + label.encode() + b"\n"
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as c:
+            c.sendall(payload[:20])
+            c.sendall(payload[20:])
+            c.settimeout(3)
+            return c.recv(64)
+
+    reply, verdict = _run_protocol(_split_send)
+    assert reply.startswith(b"SINCROGIT:ok")
+    assert verdict == ("mark", "", label)
+
+
+def test_mark_without_a_label_is_not_served():
+    """A nameless mark is not a request we can serve: no ACK, no action."""
+    def _empty(port):
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as c:
+            c.sendall(b"SINCROGIT:mark |\n")
+            c.settimeout(3)
+            try:
+                return c.recv(64)
+            except OSError:
+                return b""
+
+    reply, verdict = _run_protocol(_empty)
+    assert not reply.startswith(b"SINCROGIT:ok")
+    assert verdict is None
+
+
+def test_request_mark_without_a_listener_is_false():
+    """No daemon on the port: the caller must learn that, not hang."""
+    assert runtime.request_mark("r", "label", _free_port()) is False
+
+
 def test_garbage_client_gets_no_ack_and_no_action():
     """A client sending an unrelated payload gets no ACK and yields verdict None."""
     def _garbage(port):
