@@ -163,6 +163,23 @@ def download(url: str, dest: str, expected_size: int, expected_digest: str | Non
         _unlink(dest)
         raise UpdateError("downloaded file does not match the published SHA-256 "
                           "— refusing to install it")
+    strip_mark_of_the_web(dest)
+
+
+def strip_mark_of_the_web(path: str) -> bool:
+    """Remove the NTFS `Zone.Identifier` stream, if any. True if one was removed.
+
+    Belt and braces: urllib does NOT apply the mark of the web (that is the
+    Attachment Execution Service, used by browsers), so a file we wrote should
+    never carry one. But the cost of being wrong is SmartScreen or an EDR
+    blocking the relaunched exe with the parent already gone, and the cost of
+    the check is one failed open. Keep it.
+    """
+    try:
+        os.remove(path + ":Zone.Identifier")
+        return True
+    except OSError:
+        return False
 
 
 def _unlink(path: str) -> None:
