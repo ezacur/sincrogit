@@ -232,9 +232,22 @@ una máquina NO se re-sincroniza a las otras (ajústalas allí, o vuelve a hered
 quitando y re-añadiendo). El ref lleva tu identidad de git, así que las preferencias de un
 compañero y las tuyas nunca chocan.
 
-El **color del icono de bandeja** refleja el estado: verde = activo, ámbar = pausado, rojo =
-conflicto (te necesita), gris = parado. El menú de bandeja tiene además Pause/Resume, Sync now,
-Seal now, Quit.
+El **color del icono de bandeja** refleja el estado: verde = activo, ámbar = pausado,
+naranja-rojo = tu trabajo no está llegando al remoto, rojo = conflicto (te necesita), gris =
+parado. El menú de bandeja tiene además Pause/Resume, Sync now, Seal now,
+**"Update and relaunch…"**, Quit.
+
+**"Update and relaunch…"** actualiza esta máquina en el sitio. Pregunta a GitHub por la
+última release, compara su SHA-256 publicado con el del exe que estás ejecutando (la
+*cadena* de versión es idéntica entre builds, así que lo que decide es el hash) y si
+difieren te ofrece la descarga. No se instala nada hasta que la transferencia cuadra con ese
+hash — una descarga truncada o manipulada hace fallar la actualización en su lugar. Después
+vuelca y pushea todos los repos, aparca el exe en ejecución como `SincroGit.exe.old`
+(Windows no deja sobrescribir un binario en ejecución, pero sí renombrarlo), pone el nuevo en
+la misma ruta y reinicia en él. La ruta no cambia, así que tu entrada de arranque al iniciar
+sesión sigue válida; el `.old` sobrante se borra en el siguiente arranque. Si el intercambio
+falla, restaura el binario que funcionaba y reinicia igual — nunca te quedas sin demonio.
+Ejecutando desde fuente no hay exe que reemplazar y te lo dice: usa `git pull` + `build.ps1`.
 
 ---
 

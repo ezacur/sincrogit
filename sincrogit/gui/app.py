@@ -20,7 +20,7 @@ import time
 
 import yaml
 from PyQt5.QtCore import QAbstractNativeEventFilter, QObject, QTimer, pyqtSignal
-from PyQt5.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PyQt5.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from .. import autostart
 from ..config import _validate_entry, append_repo, atomic_write_text, load_config
