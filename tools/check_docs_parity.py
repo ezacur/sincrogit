@@ -37,8 +37,11 @@ from collections import Counter
 # (english, spanish) filename pairs, relative to the repo root.
 PAIRS = [
     ("README.md", "LEAME.md"),
-    ("DESIGN.md", "DISENO.md"),
-    ("MANUAL.md", "MANUAL_ES.md"),
+    # DESIGN/DISENO and MANUAL/MANUAL_ES were retired to olds/ (2026-07-27): the
+    # Spanish mirror had cost 51% of all documentation effort, and those two
+    # documents serve the maintainer and the CLI-reference reader — a bilingual
+    # audience — while the front door (LEAME) and the plain-language guide (GUIA)
+    # are where Spanish earns its keep. Kept on disk, unmaintained, not checked.
     ("GUIDE.md", "GUIA.md"),
 ]
 
