@@ -234,7 +234,9 @@ compañero y las tuyas nunca chocan.
 
 El **color del icono de bandeja** refleja el estado: verde = activo, ámbar = pausado,
 naranja-rojo = tu trabajo no está llegando al remoto, rojo = conflicto (te necesita), gris =
-parado. El menú de bandeja tiene además Pause/Resume, Sync now, Seal now,
+parado. El menú de bandeja empieza con una línea de identidad en gris (`SincroGit <version>`,
+cuyo tooltip añade la fecha de compilación — pásale el ratón para responder "¿qué build corre
+esta máquina?" sin terminal), y luego Pause/Resume, Sync now, Seal now,
 **"Update and relaunch…"**, Quit.
 
 **"Update and relaunch…"** actualiza esta máquina en el sitio. Pregunta a GitHub por la

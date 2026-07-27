@@ -168,3 +168,24 @@ def test_sha256_streams_and_survives_a_missing_file(tmp_path):
     p.write_bytes(data)
     assert runtime._sha256(str(p)) == hashlib.sha256(data).hexdigest()
     assert runtime._sha256(str(tmp_path / "nope.bin")) is None
+
+
+def test_version_label_is_cheap_and_says_where_it_came_from(monkeypatch):
+    """The tray builds its identity line from this, so it must not hash the exe
+    (~50 MB of SHA-256 on the GUI thread) — only a stat for the build time."""
+    from sincrogit import runtime
+
+    hashed = []
+    monkeypatch.setattr(runtime, "_sha256", lambda p: hashed.append(p) or "x" * 64)
+
+    label, tip = runtime.version_label()
+    assert label == f"SincroGit {__version__} (source)"
+    assert "running from source" in tip
+
+    monkeypatch.setattr(runtime.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(runtime.sys, "executable", "C:/x/SincroGit.exe", raising=False)
+    monkeypatch.setattr(runtime.os.path, "getmtime", lambda p: 1_700_000_000.0)
+    label, tip = runtime.version_label()
+    assert label == f"SincroGit {__version__}"       # no "(source)" when packaged
+    assert "built " in tip and "--version" in tip     # points at where the digest is
+    assert hashed == []                                # never hashed anything
