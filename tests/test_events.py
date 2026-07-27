@@ -92,3 +92,16 @@ def test_rotation_reads_backup_then_current_in_order(tmp_path):
 
     events = EventLog(jsonl_path=path).load_all()
     assert [e.message for e in events] == ["m%02d" % i for i in range(total)]
+
+
+def test_nul_bytes_do_not_swallow_readable_records(tmp_path):
+    """An unclean exit leaves NTFS to zero-fill the tail; those NULs must not
+    take the surrounding records down with them."""
+    from sincrogit.events import EventLog
+
+    p = tmp_path / "events.jsonl"
+    good = '{"ts": 1.0, "repo": "r", "action": "seal", "level": "INFO", "message": "ok"}'
+    p.write_text(good + "\n" + good.replace("ok", "also\x00ok") + "\n",
+                 encoding="utf-8")
+    evs = EventLog(str(p)).load_all()
+    assert [e.message for e in evs] == ["ok", "alsook"]

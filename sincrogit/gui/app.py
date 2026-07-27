@@ -27,7 +27,12 @@ from ..config import _validate_entry, append_repo, atomic_write_text, load_confi
 from ..engine import Engine
 from ..events import EventLog
 from ..log import setup_logging
-from ..runtime import release_instance_mutex, serve_activation, version_label
+from ..runtime import (
+    ping_existing_instance,
+    release_instance_mutex,
+    serve_activation,
+    version_label,
+)
 from . import icon as iconmod
 from .control_panel import ControlPanel
 from .theme import apply_theme
@@ -514,7 +519,28 @@ class TrayApp:
         self.tray.setToolTip("SincroGit — restarting…")
         self._teardown_engine_async(self._finish_restart)
 
-    def _finish_restart(self):
+    def _wait_for_child(self, timeout: float = 20.0) -> bool:
+        """Poll the activation channel until the relaunched process answers.
+
+        Why this exists: the parent used to Popen and quit in the same breath, so
+        ANY failure in the child — it loses the single-instance race, an EDR holds
+        the freshly written exe, the bundle is broken — ended with no SincroGit
+        running and NOTHING said about it. That happened for real on an update.
+        The tray is already hidden and the engine already stopped by now, so a few
+        seconds of unresponsiveness here costs nothing and buys the difference
+        between a reported failure and a silent disappearance.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.qapp.processEvents()          # stay repaintable while we wait
+            if ping_existing_instance():
+                return True
+            time.sleep(0.5)
+        return False
+
+    def _finish_restart(self, verify: bool = False):
+        """Relaunch this program and exit. With `verify`, do not exit quietly if
+        the child never came up — say so, loudly, with what to run by hand."""
         self._release_lock()  # free the single-instance port before re-launching
         # Also release the named mutex NOW: the child starts while this process
         # is still dying — if it still held the mutex, the child would see
@@ -529,6 +555,22 @@ class TrayApp:
         # quoting, so a path like "C:\Program Files\..." reaches the child split
         # into pieces. Popen quotes each argument properly; then exit this process.
         subprocess.Popen(args, close_fds=True)
+        if verify:
+            self.logger.info("update: relaunched %s, waiting for it to answer",
+                             args[0])
+            if self._wait_for_child():
+                self.logger.info("update: the new build is up — handing over")
+            else:
+                self.logger.error(
+                    "update: the relaunched process never answered; SincroGit is "
+                    "NOT running. Start %s by hand.", args[0])
+                QMessageBox.critical(
+                    None, "SincroGit — update",
+                    f"The update was installed, but the new SincroGit did not "
+                    f"start.\n\nNOTHING IS BEING SNAPSHOTTED RIGHT NOW.\n\n"
+                    f"Start it by hand:\n{args[0]}\n\n"
+                    f"If it refuses to run, the previous build is next to it as "
+                    f"SincroGit.exe.old — rename it back. See the log for detail.")
         self.qapp.quit()
 
     # ------------------------------------------------------------ self-update
@@ -656,17 +698,22 @@ class TrayApp:
 
         path, self._pending_update = getattr(self, "_pending_update", None), None
         exe = os.path.abspath(sys.executable)
+        # Log to the TEXT log, not only the event store: when this path went
+        # wrong the only trace lived in events.jsonl, which made the failure
+        # undiagnosable. A path that replaces the user's binary narrates itself.
+        self.logger.info("update: installing %s over %s", path, exe)
         try:
-            updater.swap_in(exe, path)
+            parked = updater.swap_in(exe, path)
+            self.logger.info("update: installed; previous build kept at %s", parked)
         except updater.UpdateError as e:
             # swap_in restores the original on failure, so relaunching is safe —
             # and leaving the user with NO daemon would be far worse than a
             # failed update.
-            self.logger.error("update swap failed: %s", e)
+            self.logger.error("update: swap FAILED, keeping the current build: %s", e)
             QMessageBox.warning(None, "SincroGit — update",
                                 f"Could not install the update:\n\n{e}\n\n"
                                 f"Restarting on the current build.")
-        self._finish_restart()
+        self._finish_restart(verify=True)
 
     # ============================ 'controller' interface for the panel =======
     def status(self):
