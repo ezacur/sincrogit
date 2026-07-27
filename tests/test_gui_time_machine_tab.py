@@ -136,6 +136,28 @@ def test_seals_only_filter(tab, qspin):
     assert [c["kind"] for c in _cards(t)] == ["seal"]
 
 
+def test_a_mark_stays_on_the_rail_and_can_be_opened_directly(tab, qspin):
+    """A mark's tree equals its parent's, so it has NO files — the generic
+    "nothing to show, skip it" rule would take every named moment off the
+    timeline. And the Marks tab's jump has to land on it."""
+    ctl, t, _ = tab
+    assert qspin(lambda: t.lst.count() > 0)
+    plain = Ctl.snapshot_timeline
+    ctl.snapshot_timeline = lambda name, limit=200: (
+        [] if name != "t" else
+        [{"sha": "mk", "parent": "", "epoch": ctl.now - 30,
+          "subject": "before the refactor", "kind": "mark", "files": []}]
+        + plain(ctl, name, limit))
+    t._reload()
+    assert qspin(lambda: any(c["kind"] == "mark" for c in _cards(t)))
+
+    t.focus_repo("t", None, "mk")                 # the Marks tab's jump
+    assert t._selected_entry()["sha"] == "mk"
+    # A sha that isn't on the rail must still leave a usable view.
+    t.focus_repo("t", None, "does-not-exist")
+    assert t._selected_entry() is not None
+
+
 def test_repo_switch_clears_everything(tab, qspin):
     _, t, _ = tab
     assert qspin(lambda: t.lst.count() > 0)
