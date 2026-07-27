@@ -185,10 +185,10 @@ class TrayApp:
         self.bridge.refresh_tray.connect(self._refresh_tray)
         self.bridge.mark_requested.connect(self._on_mark_requested)
         self.bridge.digest_ready.connect(self._on_digest_ready)
-        self._last_digest = None     # the last absence digest (the panel reads it)
         self.bridge.teardown_done.connect(self._on_teardown_done)
         self.bridge.update_checked.connect(self._on_update_checked)
         self.bridge.update_fetched.connect(self._on_update_fetched)
+        self._last_digest = None     # last absence digest (the panel reads it)
         self._teardown_then = None   # GUI-thread continuation after the join
         self._quitting = False       # quit/restart in progress (ignore repeats)
         self._updating = False       # a self-update is in flight (see update_and_relaunch)
@@ -489,7 +489,10 @@ class TrayApp:
         self.act_mark.setToolTip(
             "Snapshot every repo now and give that state a name you'll "
             "recognize later. Unlike an ordinary snapshot it is kept forever.")
-        self.act_mark.triggered.connect(self.mark_now)
+        # Lambda, not the bound method: QAction.triggered hands its `checked`
+        # bool to any slot that accepts an argument, and mark_now's first one
+        # is the repo name — it would arrive as False.
+        self.act_mark.triggered.connect(lambda: self.mark_now())
         menu.addSeparator()
         self.act_update = menu.addAction("Update and relaunch…")
         self.act_update.setToolTip(
