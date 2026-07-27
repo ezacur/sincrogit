@@ -72,6 +72,13 @@ class RepoState:
                                  # panel shows "—" instead of time-since-startup
         self.last_pull_mono = time.monotonic()
         self.net_busy = False     # a network task (fetch/pull/push/autosnap) is in flight
+        # Consecutive failed pushes (0 = the last one landed). A single failure is
+        # routine weather (remote ahead -> the next sync reconciles); a STREAK means
+        # the remote copy the user believes in has stopped advancing, which has to
+        # become a visible state instead of a WARNING line. See Engine._do_push.
+        self.push_fail_streak = 0
+        self.push_fail_msg = ""        # why the last push failed (UI tooltip)
+        self.push_fail_since = None    # wall clock of the streak's FIRST failure
         self.autosnap_pending = False  # HEAD changed since the last autosnap push
         self.last_autosnap_mono = time.monotonic()
         self.last_gc_mono = time.monotonic()  # last `git gc --auto` (decoupled from sealing)
@@ -162,6 +169,16 @@ class Engine:
     # editor, so past this long we tell the user once. High enough that a normal
     # merge — or the transient index.lock of any git command — never trips it.
     BUSY_WARN_SEC = 600
+
+    # Consecutive failed pushes before the repo turns "push-failing" and the user
+    # is TOLD (ERROR event -> tray balloon + toast), once per streak. The push is
+    # retried on every sync (pull_interval_min, ~10 min), so one or two failures
+    # are normal weather — a remote that moved ahead is reconciled by the next
+    # sync. This many in a row means something structural: the credential expired,
+    # the remote is gone, the branch is protected. That is exactly the failure a
+    # backup tool must not keep to itself: the local history stays safe, but the
+    # off-machine copy the user is counting on has silently stopped advancing.
+    PUSH_FAIL_ALERT = 3
 
     # How long flush_now waits for ONE repo's op_lock before skipping it: the
     # session-end budget (~20 s for ALL repos) must never be eaten by a single
@@ -539,12 +556,16 @@ class Engine:
     def _repo_state(st: RepoState) -> str:
         """Collapse the pause-like flags into ONE canonical state for the UIs.
 
-        Precedence: conflict > busy > off-branch > paused > handoff > active.
-        This is the single source of truth — the GUIs map these keys to
-        labels/colors but must not re-derive the precedence. `busy` outranks
-        `off-branch` because a manual rebase detaches HEAD, setting both — and
-        "a merge/rebase is running" is the truthful one. It comes from the
-        tick's tracking (no git call here), so it can lag by up to MAX_TICK_SEC.
+        Precedence: conflict > busy > off-branch > paused > push-failing >
+        handoff > active. This is the single source of truth — the GUIs map
+        these keys to labels/colors but must not re-derive the precedence.
+        `busy` outranks `off-branch` because a manual rebase detaches HEAD,
+        setting both — and "a merge/rebase is running" is the truthful one.
+        `push-failing` outranks `handoff` because a fault the user must repair
+        beats an offer they can accept whenever (and the handoff survives to be
+        offered again on the next sync, while a dead credential does not fix
+        itself). It comes from the tick's tracking (no git call here), so it can
+        lag by up to MAX_TICK_SEC.
         """
         if st.paused:
             return "conflict"
@@ -554,6 +575,8 @@ class Engine:
             return "off-branch"
         if st.user_paused:
             return "paused"
+        if st.push_fail_streak >= Engine.PUSH_FAIL_ALERT:
+            return "push-failing"
         if st.pending_handoff:
             return "handoff"
         return "active"
@@ -582,6 +605,9 @@ class Engine:
                 "last_action_ts": st.last_action_ts,
                 "push": st.cfg.push,
                 "pull": st.cfg.pull,
+                "push_fail_streak": st.push_fail_streak,
+                "push_fail_msg": st.push_fail_msg,
+                "push_fail_since": st.push_fail_since,
             })
         return {
             "paused": self.is_paused(),
@@ -881,7 +907,7 @@ class Engine:
             tree = repo.sync_shadow_index(branch)
             head = repo.head_sha()
             base_tree = repo.tree_of(head) if head else repo._empty_tree()
-            tree = repo.graft_uncaptured(base_tree, tree)
+            tree = repo.graft_uncaptured(base_tree, tree, self._uncaptured(st))
             if repo.trees_match(base_tree, tree):
                 # The 6 h seal (or the user's own commit) got there first:
                 # nothing to publish, and — per the design — NO clock moves.
@@ -1249,10 +1275,12 @@ class Engine:
         tree = repo.sync_shadow_index(branch)
         head = repo.head_sha()
         base_tree = repo.tree_of(head) if head else repo._empty_tree()
-        # Manually committed uncapturable files (binaries, oversize) live in
-        # HEAD's tree but never in the shadow's — graft them back so the seal
-        # doesn't record them as deleted (and doesn't fire JUST because of them).
-        tree = repo.graft_uncaptured(base_tree, tree)
+        # Manually committed uncapturable files (binaries, oversize, LFS) are
+        # missing from the shadow tree — or frozen there at an older revision.
+        # Graft HEAD's version back so the seal neither records them as deleted
+        # nor REVERTS the user's own commit (and doesn't fire JUST because of
+        # them). See GitRepo.graft_uncaptured.
+        tree = repo.graft_uncaptured(base_tree, tree, self._uncaptured(st))
         if repo.trees_match(base_tree, tree):
             log.debug("[%s] nothing to seal", st.cfg.name)
             st.last_seal_epoch = now_epoch
@@ -1276,7 +1304,7 @@ class Engine:
         tree = repo.sync_shadow_index(branch)
         head = repo.head_sha()
         base_tree = repo.tree_of(head) if head else repo._empty_tree()
-        tree = repo.graft_uncaptured(base_tree, tree)
+        tree = repo.graft_uncaptured(base_tree, tree, self._uncaptured(st))
         if repo.trees_match(base_tree, tree):
             log.debug("[%s] nothing to seal", st.cfg.name)
             st.last_seal_epoch = now_epoch
@@ -1317,7 +1345,7 @@ class Engine:
         tree = repo.sync_shadow_index(branch)
         head = repo.head_sha()
         base_tree = repo.tree_of(head) if head else repo._empty_tree()
-        tree = repo.graft_uncaptured(base_tree, tree)
+        tree = repo.graft_uncaptured(base_tree, tree, self._uncaptured(st))
         if repo.trees_match(base_tree, tree):
             log.debug("[%s] nothing to seal", st.cfg.name)  # DEBUG: avoids noise over idle days
             st.last_seal_epoch = now_epoch  # reschedule the clock
@@ -1397,10 +1425,34 @@ class Engine:
         repo, cfg = st.repo, st.cfg
         ok, msg = repo.push_sealed(cfg.remote, st.active_branch, timeout=cfg.git_timeout_sec)
         if ok:
+            was_failing = st.push_fail_streak >= self.PUSH_FAIL_ALERT
+            st.push_fail_streak = 0
+            st.push_fail_msg = ""
+            st.push_fail_since = None
             self._mark_action(st, "push")
             self._emit(cfg.name, "push", f"push OK -> {cfg.remote}/{st.active_branch}")
+            if was_failing:
+                # Close the loop out loud: the user was told the mirror had
+                # stopped, so they get told when it starts again.
+                self._emit(cfg.name, "push",
+                           f"push recovered — {cfg.remote}/{st.active_branch} is "
+                           f"up to date again")
+            return
+        # A rejected push (remote ahead) is reconciled in the next sync, so one
+        # failure is routine. A streak is a broken promise (see PUSH_FAIL_ALERT).
+        st.push_fail_streak += 1
+        st.push_fail_msg = msg
+        if st.push_fail_since is None:
+            st.push_fail_since = time.time()
+        if st.push_fail_streak == self.PUSH_FAIL_ALERT:
+            # ERROR (not WARNING) on purpose: it is what raises the tray balloon
+            # and turns the icon. Emitted ONCE per streak — the retries that
+            # follow stay at WARNING so a dead remote can't flood the Log.
+            self._emit(cfg.name, "push",
+                       f"push has failed {st.push_fail_streak} times in a row — your "
+                       f"work is safe locally but is NOT reaching {cfg.remote}: {msg}",
+                       "ERROR")
         else:
-            # A rejected push (remote ahead) is reconciled in the next sync.
             self._emit(cfg.name, "push", f"push failed (will retry): {msg}", "WARNING")
 
     # --------------------------------------------------------- autosnap (mirror)
@@ -2297,9 +2349,14 @@ class Engine:
     def _hunk_text_pair(self, st: RepoState, relpath: str, sha: str):
         """(target_text, worktree_text) for a hunk restore, or (None, reason)
         when the file can't be hunk-restored: it's binary, an Office document
-        (its readable form is a lossy render — restore whole-file instead), or
-        absent in one side (nothing to diff line by line). Text is decoded
-        UTF-8 with line terminators kept, so exact bytes round-trip."""
+        (its readable form is a lossy render — restore whole-file instead),
+        absent in one side (nothing to diff line by line), or not valid UTF-8.
+
+        The UTF-8 check is a DATA-SAFETY guard, not a nicety: a hunk restore
+        rebuilds and rewrites the WHOLE file, so decoding leniently would turn
+        every undecodable byte into U+FFFD across the entire file — including
+        the hunks the user did NOT select. Strict decoding is what makes the
+        'exact bytes round-trip' promise true; anything else gets refused."""
         rel = relpath.replace("\\", "/")
         if st.repo._text_converter(rel) is not None:
             return None, (f"'{rel}' is an Office document; its diff is a "
@@ -2317,8 +2374,18 @@ class Engine:
         if b"\x00" in target or b"\x00" in current:
             return None, (f"'{rel}' looks binary; restore the whole file "
                           f"instead of individual hunks")
-        return (target.decode("utf-8", "replace"),
-                current.decode("utf-8", "replace")), None
+        try:
+            return (target.decode("utf-8"), current.decode("utf-8")), None
+        except UnicodeDecodeError:
+            # The filter accepts legacy 8-bit text (any high byte is "text", see
+            # filefilter._TEXT_BYTES), so cp1252/Latin-1 files DO get snapshotted
+            # and DO reach this path. Rewriting one in UTF-8 would corrupt every
+            # accented character in the file, so refuse and point at the restore
+            # that rewrites nothing it wasn't asked to.
+            return None, (f"'{rel}' isn't valid UTF-8 (a legacy 8-bit encoding "
+                          f"like Latin-1/cp1252?); restore the whole file instead "
+                          f"— a partial restore would have to rewrite it as UTF-8 "
+                          f"and mangle every non-ASCII character")
 
     def file_hunks(self, repo_name: str, relpath: str, sha: str):
         """The changed blocks between `relpath`'s version at `sha` and the

@@ -1,131 +1,168 @@
-# ⏳g SincroGit for the lazy and forgetful 🦥
+# ⏳g SincroGit — for developers who know Git and still don't commit
 
-Let's be honest: Git is great, but it demands discipline. And sometimes we just **don't
-feel like** running `git add`, crafting the perfect message, and `git push`ing every time
-we get up for a coffee. If you've ever overwritten a good version with a bad one and wished
-for an *undo*, or your history is full of messages like `asdffdsa` and `now it really
-works`, you're in the right place.
+You know how to clone, branch and commit. That was never the problem. The problem
+is that you stand up at the end of the day, close the laptop, and the commit you
+meant to make doesn't happen — and then it doesn't happen tomorrow either.
 
-SincroGit has **one rule**: *you focus on coding; it keeps a quiet, versioned **time
-machine** of your saved files, so you can always go back.*
+Nothing bad comes of that. Until something does: the machine dies, or you simply
+want the version of a file from last Tuesday, and there is nothing to go back to
+because the last three weeks of work are one undifferentiated pile on disk.
 
-> It's also perfect for **scratch and experiment repos** — code that doesn't deserve a
-> hand-crafted history, but whose trail you'd hate to lose. Let it run; never lose a spike.
+SincroGit is the answer to *"I'll commit later"*. It runs in the tray and keeps a
+recoverable trail of your work whether or not you ever type `git`.
 
-> Need the exact **commands and options** (the *how*)? See the [User Manual](MANUAL.md). Want
-> the technical detail? [DESIGN.md](DESIGN.md). (Versión en español: [GUIA.md](GUIA.md).) Here
-> we keep it practical.
+> Want the **commands and every option**? [User Manual](MANUAL.md). The
+> engineering? [DESIGN.md](DESIGN.md). Spanish: [GUIA.md](GUIA.md).
 
-## 🪄 The magic underneath: three rhythms
+## Does this sound familiar?
 
-Forget the terminal. SincroGit has your back with three automatic rhythms:
+- You've found yourself with **weeks or months of work uncommitted** — not because
+  it's hard, but because there's never a moment that feels like the right one.
+- You work **alone**, on `main`, and branches are ceremony you don't need.
+- You'd like the version from **an hour ago**, and `Ctrl+Z` is long gone.
+- You used a file syncer (Dropbox, OneDrive) and liked that it just *happened* —
+  but "the copy from 30 days ago, one file at a time" isn't version history.
+- You have **two machines** and the handoff is always a manual push you forget.
 
-- **🖊️ The draft — every ~5 min.** While you code (or watch memes while it compiles), it
-  takes an invisible "snapshot" of your **saved** files. So if you delete a function, break
-  something, or just want how it looked an hour ago, you can roll back — even though you
-  never committed. *If you didn't touch anything, it does nothing.* (It snapshots what you
-  saved to disk — not your editor's unsaved buffer; that's your editor's autosave.)
-- **☁️ The cloud copy — every ~30 min.** It pushes your latest state to a private corner
-  of the remote. It's your safety net for a **disk disaster** (not the day-to-day one).
-- **📦 The seal — every ~6 h.** It bundles all those invisible drafts into a "real"
-  commit, the **AI writes a decent summary**, and it pushes it to your branch.
+If three of those are true, this was built for you. Literally — it was built by
+someone the list describes.
 
-The result: a clean history, made for you. You get the reputation of a disciplined
-developer… while being the laziest one. 😎
+## What it does, in one line
 
-## 💻↔💻 A normal day: from desktop to laptop
+**Every few minutes it records the state of your saved files, so any moment of the
+last month is somewhere you can get back to — without you ever running `git`.**
 
-SincroGit shines if you use more than one computer (and you're the type who closes the
-laptop lid without `push`ing).
+It does that *beside* your history, not in it. Your `git log` stays yours, your
+staging area is never touched, and `git status` keeps telling the truth. If you
+uninstall it tomorrow, your repo is a completely ordinary Git repo.
 
-**In the morning, on the desktop:**
-1. You sit down. SincroGit started with your session (tick "Start SincroGit when I
-   sign in to Windows" in Settings, once) and **quietly pulls** whatever you last synced.
-2. You code for three hours. No sign of the console.
-3. Lunch break. You get up and leave **without touching anything**.
+## The three rhythms
 
-**Before switching machines:** nothing you *must* do — your work mirrors itself. Best part:
-when you **lock the screen or close the lid**, SincroGit pushes your latest state to the
-remote right then. So if you leave the way you normally do, the handoff is **seconds**, not
-minutes. (If you just walk away without locking, it still catches up on its own within ~30
-min. And a **Smart Commit** before you go is always instant.)
+Three clocks run per repo. You can change or switch off any of them.
 
-**In the afternoon, on the laptop:**
-- You open it (unlock / wake it) and SincroGit **immediately** spots your desktop's newer
-  work and **fast-forwards you to it** — you carry on where you left off. No commit, no pull,
-  nothing. (You get a small heads-up notification, so it's never silent. Rather press a
-  button yourself before your files change? Set `live_handoff: ask`.)
+| | Every | What happens | Where it lands |
+|---|---|---|---|
+| 🖊️ **Snapshot** | ~5 min | Your saved files are recorded, invisibly | A side ref, local only |
+| ☁️ **Mirror** | ~30 min | That state is copied off the machine | `refs/autosnap/…` on your remote |
+| 📦 **Seal** | ~6 h | The accumulated work becomes ONE real commit, with an AI-written message | Your branch, pushed |
 
-> 🤝 **"Your machines diverged"?** That only happens if you changed things on **both**
-> machines without syncing in between. SincroGit won't guess how to blend two piles of
-> half-finished work, so it leaves **both** intact and asks you. Easiest fix: **Smart
-> Commit** on one machine, then the other syncs normally (full recipe in the
-> [README](README.md#cross-machine-handoff-live-wip)).
+Nothing happens when you haven't touched anything — an idle repo costs nothing.
 
-> 🔥 **What if the desktop actually dies?** That's what the cloud copy is for: on the
-> laptop, *Time machine → "Fetch autosnaps"* recovers your latest state (up to ~30 min old).
+The seal is the only one that writes to your branch, and it's the one people
+argue about. Two honest answers: leave it on and your history gains a tidy
+`sincro:` checkpoint every few hours (trivial to squash before a PR), or set
+`seal_interval_min: inf` and your branch stays **100 % yours** while the snapshots
+and the mirror keep running underneath. Both are supported on purpose.
 
-## ✨ Taking control: the manual commit (Smart Commit)
+## Getting your code back
 
-Being lazy doesn't mean you don't do important things. Say you just finished something big
-(e.g. *the payment gateway*) and want it **closed and documented now**, without waiting 6 h.
-
-1. In the panel, hit **"Commit…"** on that repo.
-2. SincroGit looks at everything you've touched **since your last manual commit** and the
-   AI proposes a **clean title + a bulleted list** of the changes.
-3. You read it, nod (the AI writes better than you do at 6 PM on a Friday) and, if you
-   like, edit it. You accept.
-4. That bundle gets pushed and the **6 h timer resets**. Back to procrastinating.
-
-> No mouse? From the terminal: `python -m sincrogit -c config.yaml --commit myrepo`
-> (it opens the proposed message in your editor so you can tweak it).
-
-## ⏪ Help, I broke something! The time machine
-
-You deleted a vital function, saved out of reflex (`Ctrl+S`)… and then realize the
-disaster. Don't panic.
+This is the part you actually installed it for.
 
 1. Open the panel → the **Time machine** tab.
-2. Pick the file you messed up.
-3. You'll see **all** its versions (including the secret drafts from 15 min ago), with a
-   **red/green diff** against how it is now.
-4. Pick the one that worked, **Restore**, and SincroGit brings the file back to life. (If
-   you really made a mess, you can also restore the **whole repo**.)
+2. Pick the day on the left, then the moment. Every snapshot is there, including
+   the ones from 20 minutes ago that you never committed.
+3. Double-click a file to pin it: you get every version of it, a red/green diff
+   against how it looks *right now*, and a search box across all of them.
+4. Restore the file, a selection of files, only some **blocks** of a file, or the
+   whole repo. Or **"Save a copy…"** if you'd rather not overwrite anything.
 
-## ⚠️ Golden rules for peace of mind
+Two things worth knowing. First, **the restore is itself versioned** — it becomes
+a new snapshot, so an undo of an undo is always available; nothing you do here is
+one-way. Second, it **refuses** to overwrite content it couldn't capture (an
+excluded file, something too big) rather than destroying it silently, and tells
+you which files to move aside first.
 
-Just four things to remember:
+## Why this got worse when the AI started writing
 
-1. **Huge files and photos:** SincroGit ignores heavy images and binaries (it only
-   versions text under 1 MB). Want to add an image? A manual `git add photo.jpg` and done;
-   it'll say "sure, fine" and include it in the next bundle.
-   *(Word docs? Those you CAN version with a readable diff: add `**/*.docx` to
-   `extra_includes` in the config — needs [pandoc](https://pandoc.org). See the
-   [README](README.md). Versioned when you change text or structure — purely visual
-   styling like font or color doesn't count.)*
-2. **Conflicts ("I stepped on myself"):** if you worked on both machines without syncing,
-   SincroGit won't guess which version wins. Since it's **never** destructive, it pauses
-   (red icon) and asks for help. Fix it in your editor and hit **"Resume"**.
-3. **Branch switch:** if you jump to another branch from the terminal (`git checkout
-   tests`), SincroGit is smart enough to **pause** and not pollute your experiments. When
-   you go back to your usual branch, it resumes. *(Power user on feature branches? Set
-   `track_current_branch: true` and it will **follow** each branch instead of pausing.)*
-4. **Don't keep the repo inside Dropbox / OneDrive / Drive.** Those tools can **corrupt**
-   the `.git` by syncing at the same time. Let SincroGit handle Git, and let the other tool
-   handle *other* files.
+The old failure mode was *"I lost an afternoon"*. It has changed shape:
 
-## 🚫 What it does NOT do (so there are no surprises)
+- **The volume went up.** An agent rewrites twelve files in ninety seconds. What
+  broke is somewhere in there, and it wasn't in a commit.
+- **Review happens after the fact.** You read the result, not the keystrokes — so
+  "go back to before that" is now a normal daily need, not an emergency.
+- **Your agent's undo is narrower than you think.** The checkpoints in today's
+  coding agents cover the edits made through their own file tools, within one
+  session. Anything the agent did through the shell, anything a second agent did,
+  anything you changed by hand in the editor meanwhile — outside the net.
 
-- It doesn't merge work from **two machines at once** (it's turn-based).
-- It doesn't sync **instantly** between machines — it's a few minutes' relay (see above).
-- It doesn't rescue **unsaved** work — it versions what you've **saved** to disk (your
-  editor's autosave handles the rest). A power cut with an intact disk loses nothing anyway.
-- It doesn't version **binaries or files > 1 MB** automatically (those, by hand).
-- It's not a **full backup**: it keeps your text code, not the whole folder.
-- It doesn't resolve conflicts for you: it warns you and you resolve them.
-- On a **total** disk failure (rare) you can lose **up to ~30 min** (not zero).
+SincroGit doesn't care who typed it. It photographs the working tree on a clock,
+so the trail covers the agent, the shell, the other agent, and you. Nothing to
+install in the agent, nothing it has to do differently.
 
----
+For a repo an agent works in, turn the resolution up — a rollback point per burst
+instead of per five minutes:
 
-That's it. Close this guide, open your editor, and relax: the dirty work —saving, syncing,
-labeling— is on it. 🦥
+```yaml
+repos:
+  - path: "C:/work/agent-playground"
+    snapshot_interval_sec: 30   # a recoverable point every ~30-60 s
+    debounce_sec: 5             # agents write in bursts; settle fast
+```
+
+## A normal day
+
+**Morning, desktop.** SincroGit started with your Windows session. You code for
+three hours. Nothing asks you anything.
+
+**You get up for lunch** and lock the screen. That lock is a signal: your latest
+state goes to the remote right then. Stay away past ~20 minutes and it decides
+you actually left, turns the pending work into a real commit and pushes it.
+
+**Afternoon, laptop.** You unlock it and it *already* has this morning's work —
+it noticed the desktop was ahead and fast-forwarded you to it. No pull, no
+commit, no thinking. You get a notification so it's never silent.
+
+**Finished something real?** Don't wait for the 6 h clock. Hit **"Commit…"** on
+that repo: the AI proposes a Conventional Commits message from everything since
+your last manual commit, you edit it if you like, and it's pushed.
+
+## Four rules and you're done
+
+1. **Big files and binaries stay manual.** Only text under 1 MB is versioned
+   automatically. Want a `.jpg` or a `.dll` in there? `git add` it by hand once
+   and SincroGit will carry it from then on — it will never revert or drop a file
+   you committed yourself. (Word and PowerPoint files *can* be versioned with
+   readable diffs — see `extra_includes` in the [Manual](MANUAL.md).)
+2. **It never resolves a conflict for you.** Edited on both machines without
+   syncing? It stops, leaves both states intact, turns the icon red and asks. You
+   fix it in your editor and press Resume.
+3. **Switching branch pauses it.** `git checkout experiment` and it steps aside
+   rather than polluting your experiment; back on `main`, it resumes. If you do
+   live on feature branches, `track_current_branch: true` makes it follow you.
+4. **Don't keep the repo inside Dropbox / OneDrive / Drive.** Those tools corrupt
+   `.git` when two things write at once. Let SincroGit handle Git and let them
+   handle everything else.
+
+## What it does NOT do
+
+- It doesn't rescue what you **never saved** — it versions files on disk. Your
+  editor's autosave owns that gap.
+- It isn't **real-time** between machines. Lock the screen and the handoff takes
+  seconds; walk away without locking and it's up to ~40 minutes.
+- It doesn't **merge two machines at once**. It's turn-based, by design.
+- It isn't a **full backup**: it keeps your text, not your build folder.
+- It won't make your history pretty. Time-bucketed `sincro:` commits are a trail,
+  not curated history — use **"Commit…"** when you want a real one.
+- It's **Windows-first**. Elsewhere you pull by hand.
+
+## What it costs to leave running
+
+Measured on a real install with five repos, after seven weeks:
+about 90 MB of RAM, a few seconds of CPU per day, and roughly 7 MB of extra
+`.git` for a medium-sized code repo. Snapshots are local and cost no network;
+the daily `git gc` keeps the object store packed. You will not notice it.
+
+## Start in five minutes
+
+1. Get `SincroGit.exe` (or `pip install -e .` from source — see the
+   [README](README.md#installation)).
+2. Run it. The tray icon appears; the folder holding the exe becomes the install,
+   and a config file is created there with every option commented.
+3. **"Add repo…"** → pick the folder. If it has no remote yet, paste a URL and hit
+   Verify: it checks reachability *and* write access before adding anything.
+4. Tick **"Start SincroGit when I sign in to Windows"** in Settings. Once.
+5. Go back to work and forget it's there. That's the whole point.
+
+Worried something isn't right? `sincrogit --doctor` checks git, your remotes,
+credentials, the AI backends and the daemon, and tells you what to fix.
+`sincrogit status` shows every repo at a glance.

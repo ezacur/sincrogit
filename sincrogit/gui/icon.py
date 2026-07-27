@@ -25,6 +25,10 @@ from PyQt5.QtGui import (
 STATE_COLORS = {
     "running": "#2E9E5B",   # green: working
     "paused": "#E0A400",    # amber: paused by the user
+    # Orange-red, deliberately distinct from `conflict`: the snapshots ARE
+    # running (nothing is paused), but the copy that leaves the machine is not
+    # landing — a green icon there would be a lie.
+    "attention": "#C2410C",
     "conflict": "#D23F3F",  # red: conflict, needs attention
     "stopped": "#7A7F87",   # gray: stopped / idle
 }
@@ -32,6 +36,7 @@ STATE_COLORS = {
 STATE_TOOLTIP = {
     "running": "⏳g SincroGit: active",
     "paused": "⏳g SincroGit: paused",
+    "attention": "⏳g SincroGit: your work is NOT reaching the remote (open the panel)",
     "conflict": "⏳g SincroGit: conflict (needs attention)",
     "stopped": "⏳g SincroGit: stopped",
 }

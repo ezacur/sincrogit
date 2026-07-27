@@ -89,6 +89,37 @@ def test_restore_hunks_refuses_binary(make_repo, make_engine):
     assert not ok and "binary" in msg
 
 
+def test_restore_hunks_refuses_non_utf8(make_repo, make_engine):
+    """The filter counts every high byte as text (filefilter._TEXT_BYTES), so a
+    cp1252/Latin-1 file IS snapshotted and DOES reach the hunk path. A hunk
+    restore rebuilds the WHOLE file, so a lenient decode would replace every
+    accented byte with U+FFFD — including in the hunks the user left alone.
+    Refuse instead, and leave the bytes exactly as they were."""
+    latin1 = "café — piñón\nsegunda línea\n".encode("cp1252")
+    repo = make_repo({"legacy.txt": latin1})
+    sha = git(repo, "rev-parse", "HEAD")
+    mutated = "café — piñón\nsegunda línea EDITADA\n".encode("cp1252")
+    write(repo, "legacy.txt", mutated)
+    eng, _ = make_engine(repo)
+    # It is genuinely accepted as text (otherwise the scenario is moot).
+    assert eng.states[0].file_filter.reason_to_skip(
+        os.path.join(repo, "legacy.txt"), "legacy.txt") is None
+    ok, msg = eng.file_hunks("t", "legacy.txt", sha)
+    assert not ok and "UTF-8" in msg
+    ok, msg = eng.restore_hunks("t", "legacy.txt", sha, [0], "whatever")
+    assert not ok and "UTF-8" in msg
+    with open(os.path.join(repo, "legacy.txt"), "rb") as fh:
+        assert fh.read() == mutated          # not one byte rewritten
+    # And a UTF-8 file with the same accents still works normally.
+    write(repo, "modern.txt", "café\nlínea\n")
+    git(repo, "add", "modern.txt")
+    git(repo, "commit", "-m", "feat: utf-8 file")
+    sha2 = git(repo, "rev-parse", "HEAD")
+    write(repo, "modern.txt", "café\nlínea EDITADA\n")
+    ok, payload = eng.file_hunks("t", "modern.txt", sha2)
+    assert ok and payload["hunks"]
+
+
 def test_restore_hunks_refuses_uncapturable(make_repo, make_engine):
     """An excluded file's current content lives nowhere in git; a hunk restore
     would still overwrite it, so it's refused like whole-file restore."""

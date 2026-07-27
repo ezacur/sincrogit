@@ -720,28 +720,51 @@ class GitRepo:
             args.append(old)
         self._run(args)
 
-    def graft_uncaptured(self, base_tree: str, tree: str) -> str:
-        """Return `tree` (the shadow tree about to be sealed) with every entry
-        of `base_tree` (HEAD's tree) that is MISSING from it grafted back in —
-        provided the file still exists in the worktree.
+    def graft_uncaptured(self, base_tree: str, tree: str, uncaptured=()) -> str:
+        """Return `tree` (the shadow tree about to be sealed) with HEAD's
+        version of every UNCAPTURABLE entry grafted back in.
 
         The shadow chain is filtered on purpose (no binaries, no oversize
-        files), so content the user committed BY HAND lives in HEAD's tree but
-        never in the shadow's. Sealing the raw shadow tree over HEAD would
-        record every such file as *deleted* — the exact opposite of the
-        'a manual `git add photo.jpg` and done' promise. The worktree check
-        keeps real deletions honest: a file the user removed from disk (whether
-        we captured it or not) still drops out of the seal."""
+        files), so content the user committed BY HAND has no faithful copy
+        there. That shows up in two shapes, and sealing the raw shadow tree
+        gets BOTH wrong:
+
+        * MISSING from `tree` — the file only ever lived in HEAD's tree. The
+          seal would record it as *deleted*: the exact opposite of the
+          'a manual `git add photo.jpg` and done' promise.
+        * PRESENT in `tree` but STALE — the file WAS captured (back when it
+          still passed the filter, or because a re-anchor seeded the private
+          index from HEAD) and then grew past `max_file_bytes`, turned binary,
+          or became a Git LFS entry whose worktree side is the real blob rather
+          than the pointer. The shadow froze the old content, so the seal would
+          silently REVERT the user's manual commit — and push the revert.
+
+        `uncaptured` is the set of paths whose CURRENT worktree content the
+        filter refused (`Engine._uncaptured`, valid right after a snapshot
+        pass). Only those are grafted in the second shape: a modified path we
+        DID capture is a real change and must go through untouched.
+
+        The worktree check keeps real deletions honest: a file the user removed
+        from disk (whether we captured it or not) still drops out of the seal.
+        """
         if not base_tree or base_tree == tree:
             return tree
+        stale = {p.replace("\\", "/") for p in uncaptured}
         out = self._run(["diff-tree", "-r", "-z", "--no-renames",
-                         "--diff-filter=D", base_tree, tree]).stdout
+                         "--diff-filter=DMT", base_tree, tree]).stdout
         toks = out.split("\0")
         lines = []
         for meta, path in zip(toks[::2], toks[1::2]):
             if not meta.startswith(":") or not path:
                 continue
-            mode, _new_mode, sha = meta[1:].split(" ")[:3]
+            fields = meta[1:].split(" ")
+            mode, sha = fields[0], fields[2]   # base_tree's side of the diff
+            status = fields[4] if len(fields) > 4 else ""
+            # D is always grafted (see above). M/T only when the shadow's copy
+            # is stale BY CONSTRUCTION — otherwise we would undo every ordinary
+            # captured edit.
+            if status != "D" and path not in stale:
+                continue
             if os.path.lexists(os.path.join(self.path, path)):
                 lines.append(f"{mode} {sha}\t{path}")
         if not lines:
