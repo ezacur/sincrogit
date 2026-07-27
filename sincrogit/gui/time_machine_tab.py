@@ -63,11 +63,13 @@ _HEADER_H = 26
 
 # Version-type accents and explanations (shared with the machines view).
 _TYPE_COLOR = {"sealed": "#2e9e5b", "seal": "#2e9e5b",
-               "snapshot": "#6b7280", "autosnap": "#8a63d2"}
+               "snapshot": "#6b7280", "autosnap": "#8a63d2",
+               "mark": "#c2410c"}
 _TYPE_TIP = {
     "sealed": "A permanent commit — part of the repo's history (pushed to the remote).",
     "snapshot": "An intra-window snapshot from the reflog (~30 days, this machine only).",
     "autosnap": "Another machine's live mirror (refs/autosnap), fetched from the remote.",
+    "mark": "A moment you NAMED — kept by a ref, so it outlives every commit and gc.",
 }
 
 _VERB_COLOR = {"revert": "#a87900", "delete": "#d23f3f", "recreate": "#2e9e5b"}
@@ -146,6 +148,7 @@ class _RailDelegate(QStyledItemDelegate):
         self._bad = QColor(p.get("danger", "#d23f3f"))
         self._sel = QColor(p.get("sel_bg", "#dce9f7"))
         self._auto = QColor(_TYPE_COLOR["autosnap"])
+        self._mark = QColor(_TYPE_COLOR["mark"])
         # Fonts + metrics are CACHED, built once from the first paint's font.
         # Constructing QFont/QFontMetrics on every paint (per visible row, on
         # every hover/scroll/selection) is the classic Qt delegate stall — it
@@ -174,6 +177,8 @@ class _RailDelegate(QStyledItemDelegate):
             return self._ok, 6
         if kind == "autosnap":
             return self._auto, 6
+        if kind == "mark":
+            return self._mark, 7   # the biggest dot: a mark is a landmark
         return self._accent, 4
 
     def paint(self, painter: QPainter, option, index):
@@ -223,7 +228,9 @@ class _RailDelegate(QStyledItemDelegate):
         kind_txt = {"sealed": "seal"}.get(kind, kind)
         if entry.get("host"):
             kind_txt += f" ({entry['host']})"
-        if entry.get("files") is not None:
+        # A mark's tree equals its parent's, so "0 files" is technically true and
+        # completely useless: its second line carries the NAME instead.
+        if entry.get("files") is not None and kind != "mark":
             files_text, adds, dels = _summary(entry)
             seg = f"{kind_txt}  ·  {files_text}"
             painter.drawText(x, y1, seg)
@@ -284,6 +291,7 @@ class TimeMachineTab(QWidget):
         self._files = []         # rows of the QUÉ table: (verb_or_status, path, adds, dels)
         self._risky = set()      # unselectable paths ("vs today")
         self._pinned = None      # relpath of the pinned file, or None
+        self._want_sha = None    # state to select once the rail is rendered
         self._loaded_once = False
         self._stale = True
 
@@ -479,17 +487,22 @@ class TimeMachineTab(QWidget):
         self._apply_mode_ui()
 
     # ------------------------------------------------------------ public API
-    def focus_repo(self, name=None, pin=None):
-        """Jump here from Status (button / context menu / double-click):
-        select `name` and optionally pin a file."""
+    def focus_repo(self, name=None, pin=None, sha=None):
+        """Jump here from Status (button / context menu / double-click) or from
+        the Marks tab: select `name`, optionally pin a file, and optionally open
+        ONE state — `sha` is honored after the (asynchronous) load, so the
+        caller doesn't have to know whether the rail is already warm."""
         self._sync_repos()
         if name:
             i = self.cb_repo.findText(name)
             if i >= 0 and i != self.cb_repo.currentIndex():
                 self.cb_repo.setCurrentIndex(i)  # triggers _repo_changed
         self._set_pin(pin)
+        self._want_sha = sha
         if self._stale or not self._loaded_once:
             self._reload()
+        elif sha:
+            self._render()  # already loaded: re-select without a git round trip
 
     def notice_event(self, ev):
         """Panel hook (GUI thread): refresh only when new states land for the
@@ -672,7 +685,10 @@ class TimeMachineTab(QWidget):
             if not self._pinned:
                 if want == "seal" and e["kind"] != "seal":
                     continue
-                if not e["files"]:
+                # Marks are the exception to "no files, nothing to show": their
+                # tree equals their parent's BY CONSTRUCTION, and hiding them
+                # would take the named moments off the timeline entirely.
+                if not e["files"] and e["kind"] != "mark":
                     continue  # anchors / empty states: nothing to show
             day = datetime.date.fromtimestamp(e["epoch"])
             if day != last_day:
@@ -687,12 +703,21 @@ class TimeMachineTab(QWidget):
             it.setToolTip(f"{_fmt(e['epoch'])} — {_TYPE_TIP.get(e['kind'], '')}")
             self.lst.addItem(it)
         self.lst.blockSignals(False)
-        for i in range(self.lst.count()):
-            if self.lst.item(i).data(ROLE_ENTRY) is not None:
-                self.lst.setCurrentRow(i)
-                break
-        else:
+        # Open the state the caller asked for (the Marks tab's "open this
+        # moment"); otherwise the newest one. A `sha` that isn't on the rail
+        # must still leave a usable view, so it falls back rather than
+        # selecting nothing.
+        want_sha, self._want_sha = self._want_sha, None
+        rows = [i for i in range(self.lst.count())
+                if self.lst.item(i).data(ROLE_ENTRY) is not None]
+        chosen = next((i for i in rows if want_sha and
+                       self.lst.item(i).data(ROLE_ENTRY).get("sha") == want_sha),
+                      rows[0] if rows else None)
+        if chosen is None:
             self._clear_right("")
+        else:
+            self.lst.setCurrentRow(chosen)
+            self.lst.scrollToItem(self.lst.item(chosen))
 
     # ------------------------------------------------------------ QUÉ loading
     def _selected_entry(self):
