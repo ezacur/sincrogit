@@ -6,4 +6,4 @@ v0.2: the SHADOW model — snapshots live on a private side ref instead of a
 WIP commit at the user's tip (invisible to git log/status). See DESIGN.md §2.
 """
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"
