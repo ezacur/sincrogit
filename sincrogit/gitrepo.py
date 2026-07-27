@@ -802,6 +802,125 @@ class GitRepo:
         self._refresh_user_index()  # user's index -> the new HEAD
         return new
 
+    # ---------------------------------------------------------------- marks
+    # A NAMED milestone in the shadow timeline: "before the refactor", "demo
+    # build". Snapshots are anonymous and their reflog expires (~30 days), so
+    # the one state a user will want in three months is exactly the one the
+    # automatic machinery cannot promise to keep. A mark is a ref, so it keeps
+    # its state alive forever — and it survives every later seal/re-anchor,
+    # which is the whole point.
+    MARK_PREFIX = "refs/sincro/marks/"
+    MARK_MESSAGE = "sincro: mark"
+    MARK_SLUG_MAX = 40          # ref names stay short and readable
+    _MARK_ASCII = re.compile(r"[^a-z0-9]+")
+
+    @classmethod
+    def mark_slug(cls, label: str) -> str:
+        """A ref-name-safe slug of a human label: NFKD-folded to ASCII,
+        lowercase, every other run of characters collapsed to one '-', capped.
+
+        Deliberately ASCII-only: git stores refnames as raw bytes, so an
+        accented one round-trips through the filesystem, the reflog and every
+        `git for-each-ref` consumer on a different code page — "Añadí café" was
+        never worth that. The FULL label survives untouched in the mark
+        commit's message (see create_mark), so nothing readable is lost here.
+        """
+        import unicodedata
+        folded = unicodedata.normalize("NFKD", label or "")
+        ascii_only = folded.encode("ascii", "ignore").decode("ascii")
+        slug = cls._MARK_ASCII.sub("-", ascii_only.lower()).strip("-")
+        slug = slug[:cls.MARK_SLUG_MAX].strip("-")
+        # A label of nothing but punctuation/CJK folds away entirely; the ref
+        # still needs a name (and 'refs/sincro/marks/1753-' is a bad one).
+        return slug or "mark"
+
+    def create_mark(self, branch: str, label: str) -> str:
+        """Mark the CURRENT state (the shadow tip) as `label`. Returns the ref.
+
+        The ref points at a commit whose TREE IS the shadow tip's tree and
+        whose parent IS the shadow tip — not at the snapshot commit itself.
+        Two reasons, both learned from what the alternatives cost:
+
+        * the full label needs a home. The slug in the ref name is lossy by
+          construction, and a ref-message would live in the ref's reflog —
+          which `gc.reflogExpire` prunes at 90 days, so the name of a mark
+          would quietly disappear while the mark itself stayed. The commit
+          message is permanent and `for-each-ref` reads it in ONE call.
+        * the mark gets its OWN sha, so it's a distinct point on the time
+          machine's rail (see snapshot_timeline) instead of silently colliding
+          with the snapshot that happened to be current.
+
+        Identical content, so restoring to a mark restores exactly the state
+        that was marked.
+        """
+        self._ensure_reflog_enabled()  # side refs get no reflog unless asked
+        self.ensure_shadow(branch)
+        tip = self.shadow_tip(branch)
+        tree = self.tree_of(tip) if tip else self._empty_tree()
+        args = ["commit-tree", tree, "-m", f"{self.MARK_MESSAGE} {label}".strip()]
+        if tip:
+            args += ["-p", tip]
+        new = self._run(args).stdout.strip()
+        ref = self._free_mark_ref(self.mark_slug(label))
+        # Empty expected-old value = "the ref must NOT exist": two marks racing
+        # for the same name fail loudly instead of one overwriting the other.
+        self._run(["update-ref", "-m", self.MARK_MESSAGE, ref, new, ""])
+        return ref
+
+    def _free_mark_ref(self, slug: str) -> str:
+        """`refs/sincro/marks/<epoch>-<slug>`, suffixed if that already exists.
+        Only two marks with the SAME slug in the SAME second collide, but a
+        scripted hook (an agent marking per step) is precisely the caller that
+        can do it."""
+        base = f"{self.MARK_PREFIX}{int(time.time())}-{slug}"
+        ref = base
+        for n in range(1, 100):
+            if not self._run(["rev-parse", "--verify", "--quiet", ref],
+                             check=False).stdout.strip():
+                return ref
+            ref = f"{base}-{n}"
+        return ref  # 100 in one second: let update-ref reject it and say so
+
+    def list_marks(self, branch: str = "main", limit: int = 200) -> list:
+        """Marks newest first: {ref, label, sha, epoch}. One `for-each-ref`.
+
+        `branch` is accepted (and ignored) for symmetry with create_mark: the
+        mark namespace is deliberately branch-independent — "before the
+        refactor" is a moment in YOUR work, and a user who marks a moment and
+        then changes branch would not expect the name to vanish.
+
+        Git commit dates are second-granular, so two marks made within the same
+        second cannot be time-ordered; the ref name breaks the tie so the list
+        is at least STABLE (a rail whose rows reshuffle between two identical
+        loads reads as a bug).
+        """
+        fmt = ("--format=%(refname)\t%(objectname)\t%(committerdate:unix)"
+               "\t%(contents:subject)")
+        res = self._run(["for-each-ref", fmt, self.MARK_PREFIX], check=False)
+        out = []
+        for line in res.stdout.splitlines():
+            ref, sha, ct, subj = (line.split("\t", 3) + ["", "", "", ""])[:4]
+            if not ref or not sha:
+                continue
+            label = subj[len(self.MARK_MESSAGE):].strip() if subj.startswith(
+                self.MARK_MESSAGE) else subj.strip()
+            # A mark whose message was somehow lost still has to be usable:
+            # fall back to the slug in its own ref name.
+            if not label:
+                label = ref[len(self.MARK_PREFIX):].split("-", 1)[-1]
+            out.append({"ref": ref, "label": label, "sha": sha,
+                        "epoch": int(ct) if ct.isdigit() else 0})
+        out.sort(key=lambda e: (e["epoch"], e["ref"]), reverse=True)
+        return out[:limit]
+
+    def delete_mark(self, ref: str) -> bool:
+        """Drop one mark (the state stays recoverable while the snapshot chain
+        holds it). Refuses anything outside the mark namespace — this takes a
+        ref name straight from the GUI's selection."""
+        if not ref.startswith(self.MARK_PREFIX):
+            return False
+        return self._run(["update-ref", "-d", ref], check=False).returncode == 0
+
     def _refresh_user_index(self) -> None:
         """Mixed `git reset` so the user's index tracks the just-moved HEAD.
 
@@ -1606,6 +1725,21 @@ class GitRepo:
                 "sha": sha, "parent": parent, "epoch": r["epoch"],
                 "subject": f"autosnap: {r['host']}", "kind": "autosnap",
                 "host": r["host"], "files": list(files.values()),
+            }
+
+        # Named marks belong on the same axis: they ARE points in this
+        # timeline, and putting them here is what lets "go to that moment"
+        # work forever — a mark's own sha never leaves the rail, while the
+        # snapshot it was taken from eventually falls out of the reflog window.
+        # Their file list is empty on purpose (a mark's tree equals its
+        # parent's), so the rail shows the LABEL, not a change count.
+        for m in self.list_marks(branch):
+            if m["sha"] in entries:
+                continue
+            entries[m["sha"]] = {
+                "sha": m["sha"], "parent": "", "epoch": m["epoch"],
+                "subject": m["label"], "kind": "mark", "files": [],
+                "label": m["label"], "ref": m["ref"],
             }
 
         out = sorted(entries.values(), key=lambda e: e["epoch"], reverse=True)
