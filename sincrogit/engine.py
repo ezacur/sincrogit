@@ -170,6 +170,16 @@ class Engine:
     # merge — or the transient index.lock of any git command — never trips it.
     BUSY_WARN_SEC = 600
 
+    # Consecutive failed pushes before the repo turns "push-failing" and the user
+    # is TOLD (ERROR event -> tray balloon + toast), once per streak. The push is
+    # retried on every sync (pull_interval_min, ~10 min), so one or two failures
+    # are normal weather — a remote that moved ahead is reconciled by the next
+    # sync. This many in a row means something structural: the credential expired,
+    # the remote is gone, the branch is protected. That is exactly the failure a
+    # backup tool must not keep to itself: the local history stays safe, but the
+    # off-machine copy the user is counting on has silently stopped advancing.
+    PUSH_FAIL_ALERT = 3
+
     # How long flush_now waits for ONE repo's op_lock before skipping it: the
     # session-end budget (~20 s for ALL repos) must never be eaten by a single
     # worker mid-push. The skipped repo's last autosnap is the backstop.
