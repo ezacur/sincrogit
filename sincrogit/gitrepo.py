@@ -888,6 +888,11 @@ class GitRepo:
         mark namespace is deliberately branch-independent — "before the
         refactor" is a moment in YOUR work, and a user who marks a moment and
         then changes branch would not expect the name to vanish.
+
+        Git commit dates are second-granular, so two marks made within the same
+        second cannot be time-ordered; the ref name breaks the tie so the list
+        is at least STABLE (a rail whose rows reshuffle between two identical
+        loads reads as a bug).
         """
         fmt = ("--format=%(refname)\t%(objectname)\t%(committerdate:unix)"
                "\t%(contents:subject)")
@@ -905,7 +910,7 @@ class GitRepo:
                 label = ref[len(self.MARK_PREFIX):].split("-", 1)[-1]
             out.append({"ref": ref, "label": label, "sha": sha,
                         "epoch": int(ct) if ct.isdigit() else 0})
-        out.sort(key=lambda e: e["epoch"], reverse=True)
+        out.sort(key=lambda e: (e["epoch"], e["ref"]), reverse=True)
         return out[:limit]
 
     def delete_mark(self, ref: str) -> bool:

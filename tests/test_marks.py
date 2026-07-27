@@ -34,7 +34,7 @@ def test_slug_is_bounded_and_never_empty():
 def test_mark_captures_the_state_at_that_moment(make_repo, make_engine):
     repo = make_repo({"a.txt": "v1\n"})
     eng, events = make_engine(repo)
-    write(repo, "a.txt", "v2 — the state I want to name\n")
+    write(repo, "a.txt", "v2 the state I want to name\n")
 
     ok, msg = eng.mark_now("t", "before the refactor")
     assert ok and "before the refactor" in msg
@@ -43,7 +43,7 @@ def test_mark_captures_the_state_at_that_moment(make_repo, make_engine):
     m = marks[0]
     # The mark's own tree holds the edit that was NOT yet snapshotted when the
     # user asked: mark_now snapshots first, always.
-    assert git(repo, "show", f"{m['sha']}:a.txt") == "v2 — the state I want to name"
+    assert git(repo, "show", f"{m['sha']}:a.txt") == "v2 the state I want to name"
     assert m["label"] == "before the refactor"       # full label, not the slug
     assert m["ref"].startswith("refs/sincro/marks/")
     assert "before-the-refactor" in m["ref"]         # slug, for a readable ref
@@ -74,16 +74,22 @@ def test_mark_survives_a_later_seal_and_reanchor(make_repo, make_engine):
     assert git(repo, "rev-parse", "--verify", m["ref"]) == sha
 
 
-def test_marks_are_ordered_newest_first_and_names_are_kept(make_repo, make_engine):
+def test_labels_round_trip_verbatim_and_the_order_is_stable(make_repo, make_engine):
+    """The full label — accents, dashes, symbols — comes back exactly as typed
+    (that is why it lives in the commit message, not in the ref name). Three
+    marks inside one second can't be time-ordered (git dates are seconds), so
+    what's promised is a STABLE order, not a chronological one."""
     repo = make_repo({"a.txt": "v1\n"})
     eng, _ = make_engine(repo)
-    for i, label in enumerate(("first one", "SECOND — with dash", "tercera ✓")):
+    labels = ["first one", "SECOND — with dash", "tercera ✓ añadida"]
+    for i, label in enumerate(labels):
         write(repo, "a.txt", f"v{i}\n")
         assert eng.mark_now("t", label)[0]
-    labels = [m["label"] for m in eng.list_marks("t")]
-    assert labels == ["tercera ✓", "SECOND — with dash", "first one"]
-    assert [m["epoch"] for m in eng.list_marks("t")] == sorted(
-        (m["epoch"] for m in eng.list_marks("t")), reverse=True)
+    got = [m["label"] for m in eng.list_marks("t")]
+    assert sorted(got) == sorted(labels)
+    assert got == [m["label"] for m in eng.list_marks("t")]   # same twice
+    epochs = [m["epoch"] for m in eng.list_marks("t")]
+    assert epochs == sorted(epochs, reverse=True)             # newest first
 
 
 def test_two_marks_in_the_same_second_do_not_collide(make_repo, make_engine):
@@ -148,7 +154,7 @@ def test_marks_appear_on_the_timeline_as_their_own_point(make_repo, make_engine)
     assert len(marks) == 1
     assert marks[0]["subject"] == "the moment"
     assert marks[0]["sha"] == eng.list_marks("t")[0]["sha"]
-    assert marks[0]["files"] == ()   # a mark's tree equals its parent's
+    assert marks[0]["files"] == []   # a mark's tree equals its parent's
 
 
 def test_restoring_to_a_mark_brings_that_state_back(make_repo, make_engine):

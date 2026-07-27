@@ -26,10 +26,21 @@ _LOCK_PORT = 29677
 # "flushquit" asks the daemon to flush every repo (snapshot + autosnap push) and then
 # exit cleanly — build.ps1 uses it to rebuild the very exe that is running. Localhost
 # only; the worst an abuser gains is a clean shutdown of a personal tool.
+# "mark <repo>|<label>" asks the RUNNING daemon to snapshot and name this moment.
+# It is the one command that carries a payload, because it is the one command a
+# CODE AGENT's hook calls while the daemon is alive: every other one-shot refuses
+# in that situation (it would race the daemon's git work), and refusing here would
+# make `sincrogit mark` useless exactly when it matters.
 _HANDSHAKE_REQ = b"SINCROGIT:show"
 _HANDSHAKE_PING = b"SINCROGIT:ping"
 _HANDSHAKE_FLUSHQUIT = b"SINCROGIT:flushquit"
+_HANDSHAKE_MARK = b"SINCROGIT:mark "
 _HANDSHAKE_ACK = b"SINCROGIT:ok"
+# The mark payload is NEWLINE-terminated and read in a loop: it is the only
+# command longer than one TCP read's worth of prefix, and a label is arbitrary
+# user text. Bounded so a rogue client can't make us buffer forever.
+_MARK_MAX_BYTES = 4096
+_MARK_LABEL_MAX = 200   # a mark is a title (mirrors Engine.MARK_LABEL_MAX)
 
 # Template written on first run when no config is found anywhere.
 # 'repos' starts empty: add them from the GUI (Status -> Add repo...).
