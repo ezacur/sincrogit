@@ -296,6 +296,15 @@ deleted on the next start. A failed swap restores the working binary and restart
 you are never left without a daemon. Running from source there is no exe to replace and it
 says so: use `git pull` + `build.ps1`.
 
+**The entry itself tells you whether there is anything to do.** Opening the tray menu
+asks GitHub (at most once every 30 minutes — the unauthenticated API allows 60 calls an
+hour and opening a menu must not burn them). If this exe already IS the published build,
+the entry is greyed out and says "up to date". If a different build is published, it
+turns bold, gains a red dot and names the tag. If the answer is unknown — offline, rate
+limited, no release yet — it stays clickable on purpose: clicking is how you find out,
+and disabling it would take away the retry. Running from source it is disabled, since
+there is no packaged exe to replace.
+
 **While it runs, the tray icon tells you where it is.** The mark turns grey with a
 progress ring drawn over it, and the tooltip names the phase: asking GitHub (ring
 without a percentage), downloading (the ring fills, with the megabytes so far), then
