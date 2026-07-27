@@ -7,7 +7,9 @@ lock in the up-front rejection.
 
 import argparse
 
+from sincrogit import __version__
 from sincrogit.__main__ import _cli_conflict, main
+from sincrogit.runtime import version_report
 
 
 def _args(**kw):
@@ -113,3 +115,56 @@ def test_word_aliases_reach_the_flag_handlers(tmp_path, capsys, monkeypatch):
     assert "daemon:" in capsys.readouterr().out
     assert main(["log", "-c", str(cfg), "--tail", "5"]) == 0
     assert "has the daemon run?" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------- --version
+
+def test_version_needs_no_config(capsys, tmp_path, monkeypatch):
+    """`--version` answers "what did I just copy onto this machine?", so it must
+    work on a bare exe with no config anywhere near it — it returns before any
+    config resolution."""
+    monkeypatch.chdir(tmp_path)          # nothing to find here
+    monkeypatch.delenv("APPDATA", raising=False)
+    assert main(["--version"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("sincrogit ")
+    assert __version__ in out
+
+
+def test_version_wins_over_other_actions(capsys):
+    """Informational like --help: combined with an action it prints and exits,
+    instead of being rejected by the conflict check."""
+    assert main(["--version", "--doctor"]) == 0
+    assert "sincrogit " in capsys.readouterr().out
+
+
+def test_version_report_fingerprints_the_exe_only_when_frozen(monkeypatch):
+    """The POINT of the fingerprint: `__version__` alone can't tell two builds
+    apart, so a packaged exe reports its own mtime + SHA-256. From source there
+    is no artifact, and it must say so rather than hash python.exe."""
+    from sincrogit import runtime
+
+    src = version_report()
+    assert "running from source" in src and "sha256" not in src
+
+    fake = "C:/somewhere/SincroGit.exe"
+    monkeypatch.setattr(runtime.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(runtime.sys, "executable", fake, raising=False)
+    monkeypatch.setattr(runtime, "_sha256", lambda p: "a" * 64)
+    monkeypatch.setattr(runtime.os.path, "getmtime", lambda p: 1_700_000_000.0)
+    frozen = runtime.version_report()
+    assert "packaged exe" in frozen
+    assert "sha256: " + "a" * 16 in frozen     # a PREFIX, not the whole digest
+    assert "running from source" not in frozen
+
+
+def test_sha256_streams_and_survives_a_missing_file(tmp_path):
+    import hashlib
+
+    from sincrogit import runtime
+
+    p = tmp_path / "blob.bin"
+    data = b"x" * (3 * (1 << 20) + 7)          # > one 1 MiB read chunk
+    p.write_bytes(data)
+    assert runtime._sha256(str(p)) == hashlib.sha256(data).hexdigest()
+    assert runtime._sha256(str(tmp_path / "nope.bin")) is None

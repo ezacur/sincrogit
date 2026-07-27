@@ -106,6 +106,59 @@ repos: []
 """
 
 
+# ------------------------------------------------------------------- identity
+def _sha256(path: str) -> str | None:
+    """SHA-256 of a file, streamed — the exe is ~66 MB and must never be slurped
+    whole. None if it can't be read."""
+    import hashlib
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def version_report() -> str:
+    """Identity of THIS build, for `--version`.
+
+    Deliberately more than the package version. `__version__` changes only when
+    someone bumps it, so the SAME "0.2.0" ships in many different builds — and
+    on a two-machine setup that string cannot answer the only question that
+    matters: "is this the build with the fix?". So a frozen exe also reports its
+    own build time (its mtime) and a SHA-256 prefix OF ITSELF — the very number
+    `Get-FileHash`/`sha256sum` prints, so a deployment can be verified without
+    having to trust the version string at all.
+
+    Run from source there is no artifact to fingerprint, so we name the package
+    directory instead and say so plainly.
+    """
+    import platform
+    import time
+
+    from . import __version__
+
+    lines = [f"sincrogit {__version__}"]
+    if getattr(sys, "frozen", False):
+        exe = os.path.abspath(sys.executable)
+        try:
+            built = time.strftime("%Y-%m-%d %H:%M:%S",
+                                  time.localtime(os.path.getmtime(exe)))
+        except OSError:
+            built = "unknown"
+        digest = _sha256(exe)
+        lines.append(f"build:  {built}  (packaged exe)")
+        lines.append(f"sha256: {digest[:16] if digest else '(unreadable)'}  {exe}")
+    else:
+        lines.append("build:  running from source (not a packaged exe)")
+        lines.append(f"source: {os.path.dirname(os.path.abspath(__file__))}")
+    lines.append(f"python: {platform.python_version()} on "
+                 f"{platform.system()} {platform.release()}")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------- paths / config
 def exe_dir() -> str:
     """Directory of the running executable (or cwd when run as a script)."""

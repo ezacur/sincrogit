@@ -88,6 +88,7 @@ exits. Every one-shot needs a config (auto-discovered, or `--config PATH`).
 | `--action A[,B,...]` | With `log`: only these action types (e.g. `seal,leave-seal,push`). |
 | `--level LVL` | With `log`: minimum severity (`DEBUG`/`INFO`/`WARNING`/`ERROR`). |
 | `--tail N` | With `log`: last N events (0 = all; default 50). |
+| `--version` | Print this build's identity — version, build time, and the **exe's own SHA-256** — then exit. Needs no config, so it works on an exe you just copied onto a machine; the hash is what tells two builds of the same version apart. |
 | `--force` | Run a one-shot even while the daemon is running (skips the safety refusal). |
 | `--help`, `-h` | Show usage and exit. |
 
