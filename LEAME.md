@@ -43,8 +43,8 @@ Donde de verdad se gana el sueldo:
   supervivencia.
 
 > **Cómo manejarlo** (comandos CLI, acciones del panel, recetas): el
-> **[Manual de usuario](MANUAL_ES.md)** (English: [MANUAL.md](MANUAL.md)).
-> Diseño y decisiones: **[DISENO.md](DISENO.md)**.
+> **[Manual de usuario](MANUAL.md)** (en inglés).
+> Diseño y decisiones: **[DESIGN.md](DESIGN.md)** (en inglés).
 
 ## ¿Ya dominas Git? El minuto del escéptico
 
@@ -76,7 +76,7 @@ nunca:
   el espejo autosnap y el relevo entre máquinas siguen funcionando en el ref lateral
   (ver [Pragmática vs purista](#pragmática-vs-purista-tú-decides-qué-significa-un-commit)).
 
-Cómo se implementa cada garantía está documentado en [DISENO.md](DISENO.md) §11. Para
+Cómo se implementa cada garantía está documentado en [DESIGN.md](DESIGN.md) §11. Para
 ver cómo se relaciona SincroGit con jj, GitButler, dura y compañía, ver
 [Cómo se compara](#cómo-se-compara-con-las-herramientas-vecinas).
 
@@ -212,7 +212,7 @@ lista y se conservan como rastro):
    actuales en la **clave Run por usuario** (sin admin; también se puede activar/
    desactivar desde Administrador de tareas → Aplicaciones de arranque), `--doctor`
    informa de su estado, y la bandeja auto-repara una entrada que apunte a un programa
-   que ya no existe — ver [DISENO.md §9](DISENO.md).
+   que ya no existe — ver [DESIGN.md §9](DESIGN.md).
 3. **Comando `sincrogit status`** — **hecho**, junto con su hermano `sincrogit log`:
    un vistazo por repo (rama, edades de snapshot/commit, trabajo sin sellar) y el log
    de eventos del panel en la terminal (`--repo`, `--action`, `--level`, `--tail`).
@@ -253,7 +253,7 @@ cliente git en el panel):
   para manejar SincroGit desde dentro de lazygit (`--commit REPO -y`,
   `--apply-handoff REPO`, inspeccionar `refs/autosnap/...`). *(La nota de "compartir el
   repo con otras herramientas git" — no rewordear el WIP, reglas con GitButler — ya
-  existe: [MANUAL §9](MANUAL_ES.md#9-compartir-el-repo-con-otras-herramientas-git).)*
+  existe: [MANUAL §9](MANUAL.md#9-sharing-the-repo-with-other-git-tools).)*
 
 ### Siguiente — técnico (para desarrolladores)
 
@@ -311,7 +311,7 @@ pip install -r requirements.txt
 | `--commit REPO [-m MSG \| -y]` | commit manual de REPO: edita el mensaje propuesto por IA en `$EDITOR` y sella+pushea |
 | `--apply-handoff REPO` | aplica a REPO el trabajo vivo pendiente de tu otra máquina (relevo) |
 | `--doctor` | chequeo de salud: git, config, rama/remoto/credenciales de cada repo (push --dry-run), pandoc, backends de IA, demonio. Exit 0 = sano |
-| `--force` | ejecuta un disparo único aunque el demonio esté corriendo (por defecto rehúsan, para no competir con su git — ver el [Manual](MANUAL_ES.md)) |
+| `--force` | ejecuta un disparo único aunque el demonio esté corriendo (por defecto rehúsan, para no competir con su git — ver el [Manual](MANUAL.md)) |
 
 ### Mensajes con IA (opcional)
 

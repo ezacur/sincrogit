@@ -6,7 +6,7 @@ command, the control-panel actions, common task recipes, and where its files liv
 > This manual is the **how**. For the **when/why** (which scenarios SincroGit is good for, in
 > plain language) read **[GUIDE.md](GUIDE.md)**; for the internals and design rationale,
 > **[DESIGN.md](DESIGN.md)**; for the full configuration reference, the
-> **[README](README.md#configuration)**. (Versión en español: **[MANUAL_ES.md](MANUAL_ES.md)**.)
+> **[README](README.md#configuration)**.
 
 In the examples below, `python -m sincrogit …` and the standalone `SincroGit.exe …` are
 interchangeable.
