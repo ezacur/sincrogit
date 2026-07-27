@@ -159,6 +159,10 @@ class _Bridge(QObject):
     # download. Both carry a tuple; the GUI decides and only then tears down.
     update_checked = pyqtSignal(object)
     update_fetched = pyqtSignal(object)
+    # (fraction|None, text) while an update runs. The download worker cannot
+    # touch QSystemTrayIcon, and ~50 MB of silence with no daemon at the end of
+    # it is indistinguishable from a hang — this is what makes the wait legible.
+    update_progress = pyqtSignal(object)
 
 
 class TrayApp:
@@ -188,6 +192,7 @@ class TrayApp:
         self.bridge.teardown_done.connect(self._on_teardown_done)
         self.bridge.update_checked.connect(self._on_update_checked)
         self.bridge.update_fetched.connect(self._on_update_fetched)
+        self.bridge.update_progress.connect(self._on_update_progress)
         self._last_digest = None     # last absence digest (the panel reads it)
         self._teardown_then = None   # GUI-thread continuation after the join
         self._quitting = False       # quit/restart in progress (ignore repeats)
