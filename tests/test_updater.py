@@ -265,12 +265,29 @@ class _StubApp:
         def setToolTip(self, text):
             pass
 
+        def setIcon(self, icon):
+            pass
+
     def __init__(self):
         self.events, self.acks, self.done, self.threads = [], [], 0, 0
+        self.progress = []
         self._quitting = False
         self._updating = True
         self._pending_update = None
+        self._last_state = None
         self.tray = self._Tray()
+        self.act_update = type("U", (), {"setEnabled": lambda s, v: None})()
+        self.act_pause = type("A", (), {"setText": lambda s, t: None})()
+
+    def app_state(self):
+        return "running"
+
+    def _refresh_tray(self):
+        pass
+
+    def _on_update_progress(self, payload):
+        self.progress.append(payload)
+
 
     def _on_engine_event(self, repo, action, msg, level="INFO"):
         self.events.append((action, level, msg))
@@ -374,6 +391,10 @@ def test_a_verified_download_stages_it_and_tears_down(stub):
     # The swap must be the teardown's continuation: it may only run once the
     # engine is DOWN, never while snapshots are still in flight.
     assert app.continuation == app._finish_update
+    # The longest opaque stretch (flush + push + swap + relaunch) must announce
+    # itself, or it reads as "SincroGit closed itself and never came back".
+    assert app.progress and app.progress[-1][0] is None
+    assert "restarting" in app.progress[-1][1]
 
 
 def test_a_child_that_never_answers_is_reported_not_swallowed(qapp, monkeypatch):
@@ -452,3 +473,83 @@ def test_mark_of_the_web_strip_leaves_the_file_alone(tmp_path):
     p.write_bytes(b"NEW")
     updater.strip_mark_of_the_web(str(p))     # no stream here; must not raise
     assert p.read_bytes() == b"NEW"
+
+
+# ------------------------------------------------------- progress on the icon
+
+def test_progress_pixmaps_differ_by_stage(qapp):
+    """0%, mid, done and indeterminate must be visually DISTINCT — a ring that
+    looks the same at 10% and 100% is decoration, not feedback."""
+    from sincrogit.gui import icon as iconmod
+
+    shots = {name: iconmod.make_progress_pixmap(f, 64).toImage()
+             for name, f in (("none", None), ("zero", 0.0),
+                             ("half", 0.5), ("full", 1.0))}
+    seen = {}
+    for name, img in shots.items():
+        key = img.bits().asstring(img.byteCount())
+        assert key not in seen, f"{name} renders identically to {seen[key]}"
+        seen[key] = name
+    # And none of them is the normal state icon.
+    normal = iconmod.make_pixmap("running", 64).toImage()
+    assert shots["half"] != normal
+
+
+def test_progress_icon_is_grey_not_a_state_colour(qapp):
+    """Mid-update the state is meaningless (the engine is stopping, the process
+    is about to be replaced); a green 'all good' there is a lie."""
+    from sincrogit.gui import icon as iconmod
+
+    assert iconmod._PROGRESS_BASE not in iconmod.STATE_COLORS.values() or \
+        iconmod._PROGRESS_BASE == iconmod.STATE_COLORS["stopped"]
+
+
+def test_the_refresh_timer_does_not_repaint_over_a_running_update(qapp, monkeypatch):
+    """The 2.5 s tray timer would overwrite the ring several times a second."""
+    import sincrogit.gui.app as appmod
+
+    painted = []
+
+    class Tray:
+        def setIcon(self, i):
+            painted.append("icon")
+
+        def setToolTip(self, t):
+            pass
+
+    class App:
+        _updating = True
+        _last_state = None
+        tray = Tray()
+        act_pause = type("A", (), {"setText": lambda s, t: None})()
+
+        def app_state(self):
+            return "running"
+
+    appmod.TrayApp._refresh_tray(App())
+    assert painted == [], "an update must own the icon"
+
+
+def test_finishing_an_update_hands_the_icon_back(qapp, monkeypatch):
+    """_last_state must be cleared, or _refresh_tray sees 'no change' and the
+    grey ring stays on screen forever."""
+    import sincrogit.gui.app as appmod
+
+    icons = []
+
+    class App:
+        _refresh_tray = appmod.TrayApp._refresh_tray
+        _updating = True
+        _last_state = "running"          # what it was before the update
+        tray = type("T", (), {"setIcon": lambda s, i: icons.append(i),
+                              "setToolTip": lambda s, t: None})()
+        act_pause = type("A", (), {"setText": lambda s, t: None})()
+        act_update = type("U", (), {"setEnabled": lambda s, v: None})()
+
+        def app_state(self):
+            return "running"
+
+    app = App()
+    appmod.TrayApp._update_done(app)
+    assert app._updating is False
+    assert icons, "the state icon must be repainted when the update ends"

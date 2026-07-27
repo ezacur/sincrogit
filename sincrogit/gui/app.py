@@ -519,10 +519,30 @@ class TrayApp:
     def _refresh_tray(self):
         state = self.app_state()
         self.act_pause.setText("Resume" if state == "paused" else "Pause")
+        if getattr(self, "_updating", False):
+            # An update owns the icon: the 2.5 s timer would repaint the state
+            # icon over the progress ring a few times a second and the ring
+            # would flicker or vanish. The state is meaningless mid-update
+            # anyway — see icon.make_progress_pixmap.
+            return
         if state != self._last_state:
             self._last_state = state
             self.tray.setIcon(iconmod.make_icon(state))
             self.tray.setToolTip(iconmod.STATE_TOOLTIP.get(state, "SincroGit"))
+
+    def _on_update_progress(self, payload):
+        """GUI thread: paint the update's progress onto the tray icon."""
+        fraction, text = payload
+        pct = f" {int(fraction * 100)}%" if fraction is not None else ""
+        self.tray.setIcon(iconmod.make_progress_icon(fraction))
+        self.tray.setToolTip(f"⏳g SincroGit — updating{pct}\n{text}")
+
+    def _update_progress(self, fraction, text):
+        """Callable from ANY thread: the download worker reports through here."""
+        try:
+            self.bridge.update_progress.emit((fraction, text))
+        except RuntimeError:
+            pass  # the app is going away
 
     # --------------------------------------------------------------- lifecycle
     def run(self) -> int:
@@ -603,6 +623,15 @@ class TrayApp:
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            left = max(0, int(deadline - time.monotonic()))
+            try:
+                # The tray is still on screen during this wait, so keep it
+                # talking: a frozen icon here is what "it hung" looks like.
+                self.tray.setToolTip(
+                    f"⏳g SincroGit — waiting for the new version to start "
+                    f"({left}s)")
+            except RuntimeError:
+                pass
             self.qapp.processEvents()          # stay repaintable while we wait
             if ping_existing_instance():
                 return True
@@ -667,6 +696,7 @@ class TrayApp:
 
         exe = os.path.abspath(sys.executable)
         self._tray_ack("Checking for updates", "Asking GitHub for the latest release…")
+        self._on_update_progress((None, "Asking GitHub for the latest release…"))
 
         def work():
             try:
@@ -691,6 +721,11 @@ class TrayApp:
         self._updating = False
         try:
             self.act_update.setEnabled(True)
+            # Hand the icon back to the state machine. _last_state must be
+            # cleared or _refresh_tray sees "no change" and leaves the grey
+            # progress icon on screen forever.
+            self._last_state = None
+            self._refresh_tray()
         except RuntimeError:
             pass  # shutting down
 
@@ -728,10 +763,27 @@ class TrayApp:
         exe = os.path.abspath(sys.executable)
         dest = updater.staging_path(exe)
         self._tray_ack("Downloading update", f"{info['tag']} — {mb:.1f} MB…")
+        self._on_update_progress((0.0, f"Downloading {info['tag']} ({mb:.1f} MB)…"))
+
+        # Throttle to whole percents: the download reports every 1 MiB, and
+        # repainting a 7-resolution icon 50 times for a bar nobody can see move
+        # that finely is wasted work on the GUI thread.
+        last = [-1]
+
+        def on_bytes(done, total):
+            pct = int(done * 100 / total) if total else 0
+            if pct != last[0]:
+                last[0] = pct
+                self._update_progress(
+                    pct / 100.0,
+                    f"Downloading {info['tag']} — "
+                    f"{done / (1024 * 1024):.0f} of {mb:.0f} MB")
 
         def work():
             try:
-                updater.download(info["url"], dest, info["size"], info["digest"])
+                updater.download(info["url"], dest, info["size"], info["digest"],
+                                 progress=on_bytes)
+                self._update_progress(None, "Verified. Installing…")
                 self.bridge.update_fetched.emit((dest, None))
             except updater.UpdateError as e:
                 self.bridge.update_fetched.emit((None, str(e)))
@@ -758,7 +810,14 @@ class TrayApp:
         self._pending_update = path
         self._on_engine_event("", "restart",
                               "installing the downloaded update and restarting", "INFO")
-        self.tray.setToolTip("SincroGit — updating…")
+        # The longest opaque stretch of the whole thing: flushing and pushing
+        # every repo, then swapping the binary, then waiting for the new process.
+        # Say so, or it reads as "SincroGit closed itself and never came back".
+        self._on_update_progress(
+            (None, "Saving and pushing every repo, then restarting…"))
+        self._tray_ack("Installing the update",
+                       "Saving your work and restarting SincroGit — this takes a "
+                       "few seconds.")
         self._teardown_engine_async(self._finish_update)
 
     def _finish_update(self):

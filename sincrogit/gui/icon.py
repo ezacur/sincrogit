@@ -196,7 +196,10 @@ def make_progress_pixmap(fraction, size: int = 64) -> QPixmap:
         painter.drawEllipse(box)
 
         if fraction is not None:
-            done = max(0.0, min(1.0, float(fraction)))
+            # A known 0% must still look STARTED: with a zero-length span the
+            # ring renders identically to the indeterminate one, so "downloading"
+            # and "still asking GitHub" would be the same picture.
+            done = max(0.03, min(1.0, float(fraction)))
             painter.setPen(QPen(QColor(_PROGRESS_ARC), pen_w, Qt.SolidLine,
                                 Qt.RoundCap))
             # Qt angles are in 1/16th of a degree; 90*16 starts at twelve
