@@ -138,8 +138,18 @@ jobs:
           $exe = "dist\SincroGit.exe"
           if (-not (Test-Path $exe)) { Write-Error "build produced no $exe"; exit 1 }
           # --version needs no config, so it is the cheapest proof the bundle works.
-          & $exe --version
-          if ($LASTEXITCODE -ne 0) { Write-Error "--version exited $LASTEXITCODE"; exit 1 }
+          # It MUST be piped: this is a GUI-subsystem (--noconsole) binary, and
+          # PowerShell does not wait for one of those — a bare `& $exe` returns
+          # immediately, leaving $LASTEXITCODE unset, which then compares
+          # non-zero and failed this step on a perfectly good build. Piping makes
+          # PowerShell read stdout to EOF, so it waits and reports the real code.
+          $out = & $exe --version 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host "exit=$code output=<$out>"
+          if ($code -ne 0) { Write-Error "--version exited $code (bundle broken?)"; exit 1 }
+          if ($out -notmatch "sincrogit ") {
+            Write-Warning "--version produced no recognizable output"
+          }
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
           # `<digest>  <name>` — the sha256sum format updater.py also accepts.
           "$hash  SincroGit.exe" | Set-Content -Encoding ascii "$exe.sha256"
