@@ -665,3 +665,77 @@ def test_the_menu_does_not_re_ask_within_the_ttl(qapp, monkeypatch):
     app._apply_update_action_state = lambda: None
     appmod.TrayApp._refresh_update_action(app)
     assert spawned == [], "a fresh answer must not trigger another call"
+
+
+# --------------------------------------- abandoned onefile runtimes in %TEMP%
+
+def _stale_setup(tmp_path, monkeypatch, names):
+    """Lay out %TEMP% with extraction folders, all aged past the guard."""
+    import tempfile as _tf
+    import time as _t
+
+    from sincrogit import runtime
+
+    old = _t.time() - 2 * runtime._MEI_MIN_AGE_SEC
+    for name, age in names:
+        d = tmp_path / name
+        d.mkdir()
+        (d / "base_library.zip").write_bytes(b"x" * 1024)
+        if age == "old":
+            os.utime(d, (old, old))
+    monkeypatch.setattr(runtime.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(runtime.sys, "_MEIPASS", str(tmp_path / "_MEIours"),
+                        raising=False)
+    monkeypatch.setattr(_tf, "gettempdir", lambda: str(tmp_path))
+    return runtime
+
+
+def test_stale_extractions_are_removed_and_ours_is_kept(tmp_path, monkeypatch):
+    """One real machine had 18 of these, ~2 GB: every forced kill strands one."""
+    runtime = _stale_setup(tmp_path, monkeypatch, [
+        ("_MEI111", "old"), ("_MEI222", "old"), ("_MEIours", "old"),
+        ("notmine", "old"), ("_MEIfresh", "new"),
+    ])
+    gone, freed = runtime.cleanup_stale_temp_dirs()
+    assert gone == 2 and freed >= 2048
+    assert not (tmp_path / "_MEI111").exists()
+    assert (tmp_path / "_MEIours").exists(), "never delete the one we run from"
+    assert (tmp_path / "notmine").exists(), "only _MEI* folders"
+    assert (tmp_path / "_MEIfresh").exists(), "too young: a sibling may have started"
+
+
+def test_a_locked_extraction_is_left_alone(tmp_path, monkeypatch):
+    """The rename guard: a folder another app is USING must survive untouched —
+    a partial delete of a live runtime is the very bug this code exists for."""
+    runtime = _stale_setup(tmp_path, monkeypatch, [("_MEIbusy", "old")])
+    monkeypatch.setattr(runtime.os, "rename",
+                        lambda a, b: (_ for _ in ()).throw(OSError("in use")))
+    assert runtime.cleanup_stale_temp_dirs() == (0, 0)
+    assert (tmp_path / "_MEIbusy" / "base_library.zip").exists()
+
+
+def test_from_source_there_is_nothing_to_clean(monkeypatch):
+    from sincrogit import runtime
+    monkeypatch.setattr(runtime.sys, "frozen", False, raising=False)
+    assert runtime.cleanup_stale_temp_dirs() == (0, 0)
+
+
+def test_a_missing_runtime_is_not_reported_as_a_network_problem(monkeypatch):
+    """What actually happened: urlopen lazily imports ssl/http out of
+    base_library.zip; with the extraction gone the OSError read as 'could not
+    reach GitHub' and sent the user to check their connection."""
+    from sincrogit import runtime
+    monkeypatch.setattr(runtime.sys, "_MEIPASS", r"C:\gone\_MEI177442",
+                        raising=False)
+    msg = updater._explain_transport_failure(
+        OSError(2, "No such file or directory",
+                r"C:\gone\_MEI177442\base_library.zip"))
+    assert "network" in msg and "start it again" in msg
+    assert "could not reach GitHub" not in msg
+
+
+def test_a_real_network_error_still_says_so(monkeypatch):
+    from sincrogit import runtime
+    monkeypatch.setattr(runtime.sys, "_MEIPASS", None, raising=False)
+    msg = updater._explain_transport_failure(OSError("connection refused"))
+    assert msg.startswith("could not reach GitHub")
