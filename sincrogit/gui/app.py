@@ -232,8 +232,16 @@ class TrayApp:
         # only becomes deletable once that process is gone, which is now.
         if getattr(sys, "frozen", False):
             from .. import updater
+            from ..runtime import cleanup_stale_temp_dirs
             if updater.cleanup_old(os.path.abspath(sys.executable)):
                 self.logger.info("removed the previous build left by an update")
+            # Every forced kill (build.ps1 on a daemon that won't flush, a
+            # self-update replacing the binary) strands a ~114 MB extraction in
+            # %TEMP%. Nobody else will ever clean those up.
+            gone, freed = cleanup_stale_temp_dirs()
+            if gone:
+                self.logger.info("removed %d abandoned runtime folder(s) from "
+                                 "TEMP, freeing %.0f MB", gone, freed / (1 << 20))
 
         # Start-at-login self-heal: an entry left pointing at an exe that no
         # longer exists (dist\ moved, old install removed) would silently

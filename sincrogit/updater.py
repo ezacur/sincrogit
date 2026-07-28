@@ -58,7 +58,26 @@ def _get(url: str, timeout: float, accept: str = "application/vnd.github+json") 
             raise UpdateError("GitHub rate limit reached; try again in a few minutes")
         raise UpdateError(f"GitHub returned HTTP {e.code}")
     except (urllib.error.URLError, OSError) as e:
-        raise UpdateError(f"could not reach GitHub: {e}")
+        raise UpdateError(_explain_transport_failure(e))
+
+
+def _explain_transport_failure(exc: Exception) -> str:
+    """Turn a transport error into the RIGHT instruction.
+
+    Not every OSError out of urlopen is the network. A onefile build imports
+    ssl/http lazily, so if %TEMP%\\_MEIxxxxx has been cleaned while the process
+    runs, the first HTTP call fails with a missing base_library.zip — and
+    reporting that as "could not reach GitHub" sends the user to check their
+    connection when the fix is to restart the app. Seen in the wild.
+    """
+    from .runtime import runtime_files_missing
+
+    text = str(exc)
+    if runtime_files_missing() or "base_library.zip" in text or "_MEI" in text:
+        return ("SincroGit's own runtime files were removed while it was running "
+                "(a temp-folder cleanup). Nothing is wrong with your network or "
+                "your repos — quit SincroGit and start it again, then retry.")
+    return f"could not reach GitHub: {exc}"
 
 
 def sha256_file(path: str) -> str | None:
@@ -153,7 +172,7 @@ def download(url: str, dest: str, expected_size: int, expected_digest: str | Non
         raise
     except (urllib.error.URLError, OSError) as e:
         _unlink(dest)
-        raise UpdateError(f"download failed: {e}")
+        raise UpdateError(f"download failed: {_explain_transport_failure(e)}")
 
     if expected_size and done != expected_size:
         _unlink(dest)
