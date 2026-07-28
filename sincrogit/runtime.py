@@ -195,6 +195,84 @@ def version_report() -> str:
     return "\n".join(lines)
 
 
+# ------------------------------------------------------- leftover extractions
+# A PyInstaller ONEFILE exe extracts its whole runtime (stdlib zip, Qt, DLLs —
+# ~114 MB here) to %TEMP%\_MEIxxxxx and deletes it on a clean exit. It cannot
+# delete it when the process is KILLED, and this daemon gets killed routinely:
+# build.ps1 force-kills a daemon that won't flush, and every self-update replaces
+# the running binary. One real machine had 18 orphans, ~2 GB, going back weeks.
+_MEI_PREFIX = "_MEI"
+# Don't touch anything young: a sibling instance may have just started, and the
+# rename guard below is about locks, not about who owns what.
+_MEI_MIN_AGE_SEC = 3600
+
+
+def cleanup_stale_temp_dirs(max_removals: int = 40) -> tuple:
+    """Delete abandoned _MEIxxxxx extraction folders. Returns (count, bytes).
+
+    Safety, because another PyInstaller app's LIVE folder looks exactly like an
+    abandoned one: each candidate is RENAMED first. Windows refuses to rename a
+    directory that has open handles inside it, so a rename that succeeds proves
+    nothing is using it — and a rename that fails costs nothing. Never a partial
+    delete of a running app's runtime, which is precisely the failure this whole
+    function exists because of.
+    """
+    import shutil
+    import tempfile
+    import time as _time
+
+    if not getattr(sys, "frozen", False):
+        return (0, 0)
+    tmp = tempfile.gettempdir()
+    ours = os.path.abspath(getattr(sys, "_MEIPASS", "") or "")
+    now = _time.time()
+    removed = freed = 0
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return (0, 0)
+
+    for name in names:
+        if removed >= max_removals:
+            break
+        if not name.startswith(_MEI_PREFIX):
+            continue
+        path = os.path.join(tmp, name)
+        if not os.path.isdir(path) or os.path.abspath(path) == ours:
+            continue
+        try:
+            if now - os.path.getmtime(path) < _MEI_MIN_AGE_SEC:
+                continue
+            size = sum(os.path.getsize(os.path.join(r, f))
+                       for r, _d, fs in os.walk(path) for f in fs
+                       if os.path.exists(os.path.join(r, f)))
+            doomed = path + ".stale"
+            if os.path.exists(doomed):
+                shutil.rmtree(doomed, ignore_errors=True)
+            os.rename(path, doomed)      # fails if anything is still using it
+        except OSError:
+            continue                     # in use, or vanished under us: leave it
+        shutil.rmtree(doomed, ignore_errors=True)
+        removed += 1
+        freed += size
+    return (removed, freed)
+
+
+def runtime_files_missing() -> bool:
+    """Has our own onefile extraction been deleted out from under us?
+
+    Windows temp cleaners (and a half-finished shutdown) can remove _MEIxxxxx
+    while the process still runs. Nothing breaks until something LAZILY imports
+    — `urlopen` pulling in ssl/http is the usual first victim — and the error
+    then reads as a network failure, which sends the user chasing the wrong
+    thing. Cheap to check, and it turns a lie into an instruction.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        return False
+    return not os.path.exists(os.path.join(base, "base_library.zip"))
+
+
 # --------------------------------------------------------------- paths / config
 def exe_dir() -> str:
     """Directory of the running executable (or cwd when run as a script)."""
